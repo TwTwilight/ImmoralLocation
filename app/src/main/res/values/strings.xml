@@ -1,0 +1,316 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ImmoralLocation</string>
+
+    <!-- 通知 -->
+    <string name="notif_channel_engine">位置模拟引擎</string>
+    <string name="notif_channel_engine_desc">保持模拟运行的通知</string>
+    <string name="notif_channel_overlay">悬浮摇杆</string>
+    <string name="notif_channel_overlay_desc">悬浮摇杆运行时的常驻通知</string>
+    <string name="notif_engine_title">位置模拟运行中</string>
+    <string name="notif_engine_text">%1$.6f, %2$.6f · %3$s</string>
+    <string name="notif_action_stop">停止</string>
+    <string name="notif_action_joystick">摇杆</string>
+    <string name="notif_engine_stopped_title">位置模拟已停止</string>
+    <string name="notif_engine_idle_text">引擎仍在后台待命，点按可继续操作</string>
+
+    <!-- 底部导航 -->
+
+    <!-- 状态 -->
+    <string name="status_running">模拟运行中</string>
+    <string name="status_stopped">已停止</string>
+    <string name="status_module_active">模块已激活</string>
+    <string name="status_module_inactive">模块未激活</string>
+    <string name="status_connecting">正在连接…</string>
+    <string name="label_lat">纬度</string>
+    <string name="label_lon">经度</string>
+    <string name="label_alt">高度</string>
+    <string name="label_speed">速度</string>
+    <string name="label_bearing">方位</string>
+    <string name="label_heading">朝向</string>
+    <string name="label_steps">步数</string>
+    <string name="label_progress">进度</string>
+    <string name="label_mode">模式</string>
+    <string name="status_satellites">卫星 %1$d/%2$d</string>
+    <string name="status_cells">基站 %1$d</string>
+    <string name="status_wifi">WIFI %1$d</string>
+    <string name="mode_static">静止</string>
+    <string name="mode_joystick">摇杆</string>
+    <string name="mode_route">路线</string>
+    <string name="hint_activate_title">模块尚未激活</string>
+    <string name="hint_activate_body">请在 LSPosed 中启用 ImmoralLocation，勾选需要模拟位置的应用（或系统框架），然后重启目标应用或设备。未激活时界面可以正常预览和配置，但不会修改任何应用的位置。</string>
+    <string name="hint_activate_short">未检测到框架响应，点此查看激活方法</string>
+    <string name="command_not_delivered">命令未送达：%1$s（1 秒内无响应，模块可能未激活）</string>
+
+    <!-- 通用动作 -->
+    <string name="action_cancel">取消</string>
+    <string name="action_confirm">确定</string>
+    <string name="action_save">保存</string>
+    <string name="action_delete">删除</string>
+    <string name="action_rename">重命名</string>
+    <string name="action_add">添加</string>
+    <string name="action_close">关闭</string>
+    <string name="action_start">开始模拟</string>
+    <string name="action_stop">停止模拟</string>
+    <string name="action_ok">知道了</string>
+
+    <!-- 地图 -->
+    <string name="map_back_to_position">回到当前位置</string>
+    <string name="map_tap_hint">点击地图快速切换位置 · 长按添加收藏</string>
+    <string name="map_route_hint">路线模式：点击地图追加路线点</string>
+    <string name="map_add_favorite_title">添加收藏</string>
+    <string name="map_add_to_route">添加到路线</string>
+    <string name="map_route_append">已追加路线点</string>
+    <string name="map_loading_tiles">地图瓦片加载中…</string>
+    <string name="map_position_moved">已切换位置</string>
+
+    <!-- 摇杆 -->
+    <string name="joystick_title">摇杆控制</string>
+    <string name="joystick_pad_hint">拖动圆点控制移动方向，松手自动回中</string>
+    <string name="joystick_follow_heading">跟随手机朝向</string>
+    <string name="joystick_follow_heading_desc">开启后摇杆方向随手机转动，关闭后使用固定方向</string>
+    <string name="joystick_fixed_bearing">固定方向</string>
+    <string name="joystick_fixed_bearing_value">固定方向 %1$d°</string>
+    <string name="joystick_overlay_title">悬浮摇杆</string>
+    <string name="joystick_overlay_desc">在其他应用上层显示悬浮摇杆，方便在导航/运动类应用中使用（需要悬浮窗权限）</string>
+    <string name="joystick_strength">力度</string>
+    <string name="joystick_direction">方向</string>
+    <string name="joystick_idle">待机中</string>
+    <string name="speed_walk">步行</string>
+    <string name="speed_run">跑步</string>
+    <string name="speed_bike">骑车</string>
+    <string name="speed_drive">驾车</string>
+    <string name="speed_plane">飞机</string>
+    <string name="speed_custom">自定义</string>
+    <string name="speed_custom_value">自定义速度 %.1f m/s</string>
+    <string name="compass_heading">手机朝向 %1$d°</string>
+    <string name="overlay_permission_needed">需要开启悬浮窗权限</string>
+    <string name="overlay_started">悬浮摇杆已开启</string>
+    <string name="overlay_stopped">悬浮摇杆已关闭</string>
+
+    <!-- 路线 -->
+    <string name="route_title">路线模拟</string>
+    <string name="route_empty">还没有路线点。可以在地图上长按「添加到路线」，或用下面的按钮添加。</string>
+    <string name="route_add_current">以当前位置为起点</string>
+    <string name="route_append_current">追加当前位置</string>
+    <string name="route_append_short">追加</string>
+    <string name="route_import_gpx">导入 GPX</string>
+    <string name="route_export_gpx">导出 GPX</string>
+    <string name="route_clear">清空路线</string>
+    <string name="route_clear_title">清空路线</string>
+    <string name="route_clear_body">确定要删除所有路线点吗？</string>
+    <string name="route_repeat">循环播放</string>
+    <string name="route_speed">路线速度</string>
+    <string name="route_play">播放</string>
+    <string name="route_pause">暂停</string>
+    <string name="route_finish">结束</string>
+    <string name="route_points_count">%1$d 个路线点</string>
+    <string name="route_total_distance">总距离 %1$s</string>
+    <string name="route_point_index">第 %1$d 点</string>
+    <string name="route_move_up">上移</string>
+    <string name="route_move_down">下移</string>
+    <string name="route_gpx_empty">GPX 文件里没有可用的轨迹点</string>
+    <string name="route_gpx_imported">已导入 %1$d 个点</string>
+    <string name="route_gpx_exported">GPX 已导出</string>
+    <string name="route_gpx_failed">GPX 操作失败：%1$s</string>
+    <string name="route_state_idle">未开始</string>
+    <string name="route_state_playing">播放中</string>
+    <string name="route_state_paused">已暂停</string>
+    <string name="route_state_finished">已结束</string>
+
+    <!-- 收藏 -->
+    <string name="favorites_title">收藏地点</string>
+    <string name="favorites_count">共 %1$d 个收藏</string>
+    <string name="favorites_hint">点击条目一键回到该位置 · 右侧可重命名或删除</string>
+    <string name="favorites_empty">还没有收藏。长按地图、或点击下方按钮把当前位置存为收藏，之后可以一键回到这里。</string>
+    <string name="favorites_add_current">收藏当前位置</string>
+    <string name="favorites_distance">距离 %1$s</string>
+    <string name="favorites_rename_title">重命名收藏</string>
+    <string name="favorites_delete_title">删除收藏</string>
+    <string name="favorites_delete_body">确定删除「%1$s」吗？</string>
+    <string name="favorites_name_hint">地点名称</string>
+    <string name="favorites_name_default">收藏地点 %1$d</string>
+    <string name="favorites_jumped">已跳转到「%1$s」</string>
+    <string name="favorites_saved">已收藏当前位置</string>
+    <string name="favorites_invalid_position">当前位置无效，请先在地图上选择一个位置</string>
+
+    <!-- 设置 -->
+    <string name="settings_general">通用</string>
+    <string name="settings_interval">位置更新频率</string>
+    <string name="settings_interval_value">%1$d 毫秒</string>
+    <string name="settings_jitter">抖动</string>
+    <string name="settings_gps_jitter">GPS 抖动</string>
+    <string name="settings_alt_jitter">高度抖动</string>
+    <string name="settings_jitter_value">%1$.1f 米</string>
+    <string name="settings_simulation">模拟项目</string>
+    <string name="settings_cell">基站模拟</string>
+    <string name="settings_wifi">WIFI 模拟</string>
+    <string name="settings_gps_signal">GPS 信号模拟</string>
+    <string name="settings_step">步频模拟</string>
+    <string name="settings_step_cadence">步频</string>
+    <string name="settings_step_cadence_value">%1$d 步/分</string>
+    <string name="settings_independent">独立模拟</string>
+    <string name="settings_independent_desc">只对勾选的应用生效，其余应用保持真实位置</string>
+    <string name="settings_pick_apps">选择应用</string>
+    <string name="settings_apps_selected">已选择 %1$d 个应用</string>
+    <string name="settings_apps_none">未选择任何应用</string>
+    <string name="settings_apps_search">搜索应用</string>
+    <string name="settings_tile">地图瓦片地址</string>
+    <string name="settings_tile_desc">支持 {z}/{x}/{y} 占位符，国内建议使用可访问的镜像源</string>
+    <string name="settings_tile_reset">恢复默认瓦片地址</string>
+    <string name="settings_module">模块</string>
+    <string name="settings_module_help">查看激活方法</string>
+    <string name="settings_module_status">当前状态：%1$s</string>
+    <string name="settings_about">关于</string>
+    <string name="settings_version">版本 %1$s</string>
+    <string name="settings_reset">恢复默认设置</string>
+    <string name="settings_reset_title">恢复默认设置</string>
+    <string name="settings_reset_body">所有模拟参数将回到默认值（收藏与路线不受影响）。</string>
+    <string name="settings_app_picker_title">选择需要模拟的应用</string>
+    <string name="settings_app_picker_empty">没有找到可显示的应用</string>
+    <string name="settings_loading_apps">正在读取应用列表…</string>
+    <string name="settings_engine_version">引擎版本 %1$s</string>
+    <string name="settings_engine_version_unknown">未知</string>
+    <string name="settings_active_packages">已生效应用 %1$d 个</string>
+
+    <!-- 单位 -->
+    <string name="unit_speed">%1$.1f m/s</string>
+    <string name="unit_meters">%1$.0f 米</string>
+    <string name="unit_kilometers">%1$.2f 公里</string>
+    <string name="unit_degrees">%1$.0f°</string>
+    <string name="unit_percent">%1$.0f%%</string>
+
+    <!-- 单行状态 pill -->
+    <string name="pill_running">运行中</string>
+    <string name="pill_stopped">已停止</string>
+    <string name="pill_line">%1$s · %2$s · %3$s</string>
+    <string name="pill_coords">%1$s, %2$s</string>
+    <string name="pill_steps">步数 %1$d</string>
+    <string name="sheet_status_title">当前状态</string>
+    <string name="sheet_status_details">详细信息</string>
+    <string name="action_copy_coords">复制坐标</string>
+    <string name="action_copied">坐标已复制</string>
+    <string name="action_copy_failed">无法复制坐标</string>
+    <string name="pill_long_press_hint">长按可复制坐标</string>
+    <string name="label_kmh">≈ %1$.1f km/h</string>
+    <string name="label_accuracy">精度 %1$s</string>
+
+    <!-- 地图上的摇杆 -->
+    <string name="joystick_expand">展开摇杆</string>
+    <string name="joystick_collapse">收起摇杆</string>
+    <string name="joystick_drag_hint">拖动小球可移动摇杆位置</string>
+    <string name="compass_chip">朝向 %1$d°</string>
+    <string name="compass_chip_fixed">固定 %1$d°</string>
+    <string name="sheet_heading_title">方向设置</string>
+    <string name="sheet_heading_desc">跟随手机朝向时，摇杆前方始终是手机正面方向；固定方向时使用下方角度。</string>
+    <string name="speed_custom_mps">自定义 %.1f m/s</string>
+    <string name="speed_chip">%1$s %2$s</string>
+
+    <!-- 工具面板 -->
+    <string name="action_tools">工具</string>
+    <string name="tools_title">工具</string>
+    <string name="tools_jump_title">跳转到坐标</string>
+    <string name="tools_jump_hint">39.9087,116.3975 或 39.9087 116.3975</string>
+    <string name="tools_jump_action">跳转</string>
+    <string name="tools_jump_invalid">无法解析这个坐标</string>
+    <string name="tools_recent">最近使用</string>
+    <string name="tools_recent_empty">还没有记录</string>
+    <string name="tools_tab_favorites">收藏</string>
+    <string name="tools_tab_route">路线</string>
+    <string name="tools_tab_settings">设置</string>
+
+    <!-- 悬浮摇杆引导 -->
+    <string name="overlay_prompt_title">切换到其他 App 时保持摇杆</string>
+    <string name="overlay_prompt_body">开启悬浮摇杆后，离开本应用也能继续控制移动，适合在导航、运动类应用里使用。之后可以随时在工具 › 设置里关闭。</string>
+    <string name="overlay_prompt_enable">开启</string>
+    <string name="overlay_prompt_later">稍后再说</string>
+
+    <!-- 地图 -->
+    <string name="coach_mark_tip">点击地图可快速切换位置，长按可收藏或加入路线</string>
+    <string name="tile_preset_amap_short">高德</string>
+    <string name="tile_preset_tencent_short">腾讯</string>
+    <string name="tile_preset_tianditu_short">天地图</string>
+    <string name="tile_preset_osm_short">OSM</string>
+    <string name="tile_preset_custom_short">自定义</string>
+    <string name="action_dark_map">深色地图</string>
+    <string name="settings_tile_preset">快速预设</string>
+    <string name="tile_preset_osm">OSM 标准</string>
+    <string name="tile_preset_osm_de">OSM 镜像</string>
+    <string name="tile_preset_amap">高德（非官方）</string>
+    <string name="tile_preset_tencent">腾讯（非官方）</string>
+    <string name="tile_preset_tianditu">天地图（官方）</string>
+    <string name="tile_preset_custom">自定义模板</string>
+    <string name="tile_preset_needs_key">天地图需要在设置里填写 Key 才能使用</string>
+    <string name="tile_preset_gcj_note">中国图源使用 GCJ-02 坐标，已自动换算，标记与点击位置不会偏移。</string>
+    <string name="settings_tianditu_key">天地图 Key（可选）</string>
+    <string name="settings_tianditu_key_desc">在 tianditu.gov.cn 免费申请，填写后可切换天地图底图并使用天地图地名搜索。</string>
+
+    <!-- 搜索 -->
+    <string name="search_hint">搜索地点或输入坐标</string>
+    <string name="search_title">搜索</string>
+    <string name="search_results">搜索结果</string>
+    <string name="searching">正在搜索…</string>
+    <string name="search_no_results">没有找到匹配的地点</string>
+    <string name="search_failed">搜索失败：%1$s</string>
+    <string name="search_network_error">网络不可用，请检查网络后重试</string>
+    <string name="search_coord_jumped">已跳转到坐标</string>
+    <string name="search_bad_coord">无法识别这个坐标，格式如 39.9087,116.3975</string>
+    <string name="search_via_amap">高德 POI 搜索</string>
+    <string name="search_via_tianditu">天地图地名搜索</string>
+    <string name="search_via_nominatim">OpenStreetMap 搜索</string>
+
+    <!-- ===== Material You 地图外壳（ui-maps 独占） ===== -->
+    <string name="map_search_placeholder">搜索地点、坐标或地址</string>
+    <string name="map_layer">图层</string>
+    <string name="map_joystick">摇杆</string>
+    <string name="action_clear">清除</string>
+    <string name="action_retry">重试</string>
+    <string name="action_pause_short">暂停</string>
+    <string name="action_start_short">开始</string>
+    <string name="action_route_short">路线</string>
+
+    <!-- 底部卡片 peek 行 -->
+    <string name="peek_running">模拟中</string>
+    <string name="peek_idle">未开始</string>
+
+    <!-- 落针卡片 -->
+    <string name="place_card_title">放置的位置</string>
+    <string name="place_action_move_short">去这里</string>
+    <string name="place_action_navigate_short">导航</string>
+    <string name="place_action_route_short">路线</string>
+    <string name="place_action_save_short">收藏</string>
+    <string name="tap_chip_title">已移动到这里</string>
+    <string name="tap_chip_undo">撤销</string>
+    <string name="place_card_distance">距当前位置 %1$s</string>
+    <string name="place_action_move">设为当前位置</string>
+    <string name="place_action_route">加入路线</string>
+    <string name="place_action_save">收藏</string>
+    <string name="place_action_navigate">导航到这里</string>
+
+    <!-- 工具面板 -->
+    <string name="tools_section_simulation">模拟项目</string>
+    <string name="tools_section_shortcuts">快捷入口</string>
+    <string name="tools_all_settings">全部设置</string>
+    <string name="tools_all_settings_desc">更新频率、抖动、瓦片地址、模块信息</string>
+    <string name="layers_subtitle">底图图源</string>
+    <string name="layers_desc">切换底图来源；中国图源使用 GCJ-02，标记与点击位置已自动换算。</string>
+    <string name="overlay_running">悬浮摇杆已开启</string>
+    <string name="overlay_idle">在其他应用上层显示摇杆</string>
+    <string name="favorites_empty_short">还没有收藏，长按地图即可保存一个地点</string>
+    <string name="favorites_deleted">已删除收藏</string>
+    <string name="favorites_manage">管理</string>
+
+    <!-- 摇杆方向说明（关键修复） -->
+    <string name="joystick_up_is_north">上 = 北</string>
+    <string name="joystick_up_is_heading">上 = 朝向 %1$d°</string>
+    <string name="joystick_follow_heading_on">跟随手机朝向 · 摇杆上=朝向</string>
+    <string name="joystick_follow_heading_off">上 = 正北（推荐）</string>
+
+    <!-- 路线面板 -->
+    <string name="route_empty_short">还没有路线</string>
+    <string name="route_marker_start">起点</string>
+    <string name="route_marker_end">终点</string>
+    <string name="action_collapse_sheet">收起路线面板</string>
+    <string name="route_import_hint">从 GPX 文件读取路径点</string>
+    <string name="route_export_hint">把当前路径点导出为 GPX</string>
+</resources>

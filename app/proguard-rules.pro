@@ -1,0 +1,8 @@
+-keep class com.immoral.location.hook.** { *; }
+-keep class de.robv.android.xposed.** { *; }
+-keepclassmembers class * implements android.os.Parcelable { *; }
+-dontwarn de.robv.android.xposed.**
+-dontwarn org.osmdroid.**
+-dontwarn org.slf4j.**
+-dontwarn org.apache.**
+-keep class org.osmdroid.** { *; }

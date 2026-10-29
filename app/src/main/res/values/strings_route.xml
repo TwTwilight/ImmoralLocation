@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  路径规划 (route planner) strings.
+
+  Owned by `route-planner`. Keys are prefixed `rp_` on purpose: the legacy 路线 panel already owns
+  every `route_*` key in strings.xml (`ui-maps` scope), and redefining one of those here would be a
+  duplicate-resource build error. Do not add keys to this file from another workstream.
+-->
+<resources>
+
+    <!-- Sheet header -->
+    <string name="rp_title">路径规划</string>
+    <string name="rp_subtitle">选择起终点与途经点，按道路规划路线</string>
+
+    <!-- Fields -->
+    <string name="rp_origin">起点</string>
+    <string name="rp_destination">终点</string>
+    <string name="rp_waypoint">途经点 %1$d</string>
+    <string name="rp_add_waypoint">添加途经点</string>
+    <string name="rp_remove_waypoint">删除途经点 %1$d</string>
+    <string name="rp_move_up">上移 %1$d</string>
+    <string name="rp_move_down">下移 %1$d</string>
+    <string name="rp_current_location">当前位置</string>
+    <string name="rp_use_current">设为当前位置</string>
+    <string name="rp_swap">交换起点和终点</string>
+    <string name="rp_tap_to_search">点击搜索地点</string>
+    <string name="rp_waypoints_none">无途经点</string>
+
+    <!-- Travel modes -->
+    <string name="rp_mode_walk">步行</string>
+    <string name="rp_mode_bike">骑行</string>
+    <string name="rp_mode_drive">驾车</string>
+
+    <!-- Actions -->
+    <string name="rp_plan">规划路线</string>
+    <string name="rp_replan">重新规划</string>
+    <string name="rp_planning">正在规划路线…</string>
+    <string name="rp_start">开始模拟</string>
+    <string name="rp_save">保存路线</string>
+    <string name="rp_clear">清除</string>
+    <string name="rp_clear_route">清除路线</string>
+
+    <!-- Result card -->
+    <string name="rp_no_route_yet">选择终点后即可规划路线</string>
+    <string name="rp_distance">距离</string>
+    <string name="rp_duration">预计时长</string>
+    <string name="rp_waypoint_total">途经点</string>
+    <string name="rp_source">数据来源</string>
+    <string name="rp_source_none">—</string>
+    <string name="rp_source_amap">高德路径</string>
+    <string name="rp_source_osrm">OSRM 道路路径</string>
+    <string name="rp_source_straight">直线连接</string>
+    <string name="rp_degraded">未取得道路路径，使用直线连接</string>
+    <string name="rp_degraded_detail">未取得道路路径（%1$s），使用直线连接</string>
+
+    <!-- Notices (non-blocking; shown with the app snackbar, never a Toast) -->
+    <string name="rp_error_missing">请先选择起点和终点</string>
+    <string name="rp_error_same_point">起点与终点相同，无法规划路线</string>
+    <string name="rp_error_amap_unauth">高德身份被拒绝</string>
+    <string name="rp_error_amap">高德路径服务不可用</string>
+    <string name="rp_error_osrm">OSRM 服务不可用</string>
+    <string name="rp_started">已开始沿路线模拟</string>
+    <string name="rp_saved">路线已保存</string>
+    <string name="rp_cleared">已清除路线</string>
+    <string name="rp_removed_waypoint">已删除途经点 %1$d</string>
+
+    <!-- Saved routes / recent places -->
+    <string name="rp_saved_routes">已保存路线</string>
+    <string name="rp_saved_routes_empty">还没有保存的路线</string>
+    <string name="rp_delete_saved">删除路线 %1$s</string>
+    <string name="rp_recent_places">最近使用</string>
+    <string name="rp_recent_empty">还没有最近使用的地点</string>
+
+    <!-- Search screen -->
+    <string name="rp_search_title">选择地点</string>
+    <string name="rp_search_for">为「%1$s」选择地点</string>
+    <string name="rp_search_hint">搜索地点、坐标或地址</string>
+    <string name="rp_searching">搜索中…</string>
+    <string name="rp_search_empty">没有找到匹配的地点</string>
+    <string name="rp_search_back">返回路径规划</string>
+    <string name="rp_search_clear">清除搜索内容</string>
+
+    <!-- Formatting -->
+    <string name="rp_fmt_meters">%1$d 米</string>
+    <string name="rp_fmt_kilometers">%1$s 公里</string>
+    <string name="rp_fmt_minutes">%1$d 分钟</string>
+    <string name="rp_fmt_seconds">%1$d 秒</string>
+    <string name="rp_fmt_minutes_seconds">%1$d 分 %2$d 秒</string>
+    <string name="rp_fmt_hours_minutes">%1$d 小时 %2$d 分</string>
+    <string name="rp_fmt_hours">%1$d 小时</string>
+    <string name="rp_fmt_count">%1$d 个</string>
+
+</resources>
