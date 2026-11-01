@@ -65,3 +65,6 @@ keystore/
 # Kotlin incremental build state
 .kotlin/
 
+
+# Agent scratch directory (plans/probes from parallel workers), never shipped
+.agents/
