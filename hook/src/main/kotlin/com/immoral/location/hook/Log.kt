@@ -31,7 +31,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * [extrasEnabled] is a **separate, stricter** switch for the `immoral.*` keys inside a fabricated
  * `android.location.Location`'s extras: those are readable by *any* app that receives a fix, so
- * they stay off unless `debug.immoral.extras=1` — in every build, independently of the log level.
+ * they stay off unless `persist.immoral.extras=1` — in every build, independently of the log level.
  * See `docs/STEALTH.md`.
  */
 object Log {
@@ -40,8 +40,16 @@ object Log {
     /** `setprop debug.immoral.log 1` -> emit the detail level (install banner + per-call lines). */
     private const val PROP_VERBOSE = "debug.immoral.log"
 
-    /** `setprop debug.immoral.extras 0|1` -> force the `immoral.*` location extras off/on. */
-    private const val PROP_EXTRAS = "debug.immoral.extras"
+    /**
+     * `setprop persist.immoral.extras 1` -> the `immoral.*` extras are attached to fabricated fixes.
+     *
+     * `persist.*` rather than `debug.*` on purpose: the flag is memoised once per process (the module
+     * loads at boot), and `debug.*` properties do not survive a reboot — so a `debug.*` switch set
+     * before the activation reboot would be gone exactly when it is read. The old `persist.immoral.extras`
+     * name is still honoured for an already-running process.
+     */
+    private const val PROP_EXTRAS = "persist.immoral.extras"
+    private const val PROP_EXTRAS_ADB = "persist.immoral.extras"
 
     @Volatile
     private var detailMemo: Boolean? = null
@@ -104,7 +112,7 @@ object Log {
      * **Defaults to OFF, in every build.** Any app that receives a fix can read those keys
      * (`location.extras`) without any permission, and they name the module plus its per-feature
      * switches — the worst leak this module has. The e2e harness owns the switch: `e2e/install.ps1`
-     * sets `debug.immoral.extras=1` before a matrix run and clears it afterwards
+     * sets `persist.immoral.extras=1` before a matrix run and clears it afterwards
      * (`docs/STEALTH.md` S1, `docs/E2E.md`).
      *
      * Emits exactly one rate-limited line naming the active mode, so a log from a future run can
@@ -112,7 +120,7 @@ object Log {
      */
     fun extrasEnabled(): Boolean {
         extrasMemo?.let { return it }
-        val enabled = flagOf(PROP_EXTRAS) ?: false
+        val enabled = flagOf(PROP_EXTRAS) ?: flagOf(PROP_EXTRAS_ADB) ?: false
         extrasMemo = enabled
         rate(
             "extras.mode",
@@ -183,3 +191,4 @@ object Log {
         }
     }
 }
+

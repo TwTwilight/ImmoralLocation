@@ -37,3 +37,4 @@
 release 构建默认丢掉 `assets/cfg`：实测**地图渲染与保留时逐屏一致**（四臂 A/B，含一次黑屏回归），
 其余高德 资产是硬依赖，不能一起删。原因、数字与证据边界见
 [`docs/ROUND-NOTES.md` §7](docs/ROUND-NOTES.md) 与 [`docs/STEALTH.md` §4.1](docs/STEALTH.md)。
+

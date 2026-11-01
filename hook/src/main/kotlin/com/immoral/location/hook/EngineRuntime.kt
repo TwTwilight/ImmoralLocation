@@ -545,25 +545,21 @@ object EngineRuntime {
         val context = systemContext()
         if (context == null) {
             // Retried on the next tick: this is the boot race that used to be permanent.
-            Log.rate(
-                "cells.write.nocontext",
-                30_000L,
-                "cells channel: no Context yet on this thread, publish deferred (retrying every tick)",
-            )
+            logPublishStall("no Context on this thread yet")
             return
         }
         val wrote = try {
             android.provider.Settings.Global.putString(context.contentResolver, CELLS_KEY, payload)
             true
         } catch (t: Throwable) {
-            Log.rate(
-                "cells.write.err",
-                30_000L,
-                "cannot publish the cells setting: " + t.javaClass.simpleName + ": " + t.message,
-            )
+            logPublishStall(t.javaClass.simpleName + ": " + t.message)
             false
         }
         if (!wrote) return
+        if (cellsPublishStalls > 0) {
+            Log.i("cells channel recovered after " + cellsPublishStalls + " failed publish attempt(s)")
+            cellsPublishStalls = 0
+        }
         lastCellsEncoded = dedupKey
         if (payload == null) {
             Log.rate("cells.cleared", 10_000L, "cells channel cleared: " + CELLS_KEY + " row removed")
@@ -581,6 +577,23 @@ object EngineRuntime {
         )
         verifyCellsSetting(payload)
     }
+
+    /**
+     * Rate limited (60 s) but **never silent**: a boot where the Context never resolves must leave a
+     * line behind, because that is the first thing to check if `6-cells` regresses. The count is
+     * cumulative since the last successful write and only grows while publishes keep failing.
+     */
+    private fun logPublishStall(reason: String) {
+        cellsPublishStalls++
+        Log.rate(
+            "cells.publish.stall",
+            60_000L,
+            "cells channel: publish NOT landing (" + reason + "); " + cellsPublishStalls +
+                " failed attempt(s) so far, " + CELLS_KEY + " still holds the previous value — retrying every tick",
+        )
+    }
+
+    private var cellsPublishStalls = 0
 
     /**
      * Reads the setting back once after a change.
