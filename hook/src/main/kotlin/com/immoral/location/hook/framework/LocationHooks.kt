@@ -630,10 +630,17 @@ object LocationHooks {
 
     private fun rememberReal(result: Any?) {
         if (result == null || Fakes.isFabricated(result)) return
+        val active = EngineRuntime.activeSnap()
         val locations = if (Refl.isInstanceOf(result, LR_NAME)) Fakes.locationsOfResult(result)
         else listOfNotNull(result as? Location)
         for (location in locations) {
             val provider = location.provider ?: continue
+            // A Parcelable round-trip drops object identity, and production builds omit the
+            // `immoral.*` extras - so our own fabricated fix can come back looking genuine. If it is
+            // remembered as "the real one", independent mode then publishes it straight back into the
+            // provider cache and every non-whitelisted read keeps seeing the simulated point
+            // (measured 2026-11-02: cache stayed fake after the mode switch although the restore ran).
+            if (active != null && coordinatesMatchSnap(location, active)) continue
             realLast[provider] = location
         }
     }
