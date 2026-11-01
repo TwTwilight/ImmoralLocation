@@ -454,3 +454,22 @@ per-package evidence = [getLastLocation->real, dropped-for-verifier, substituted
 | 11b-favorite-return | 点击收藏后位置仍是 31.230416 | 点击未生效；应轮询到位置变化（≤8 s），失败时报"点击无效"而不是距离 |
 
 已交给 harness 负责人按此顺序修。**注意：这五项均不能靠改判据变绿**，只能修测量/顺序。
+
+## 18. 全量矩阵复测（2026-11-02 07:20）：**13 PASS / 2 FAIL**（原 10/5）
+
+| 检查 | 修前 | 修后 | 判定 |
+|---|---|---|---|
+| 3-joystick | `ratio 0.5` | `effective 3.3 m/s, moved 3.55 m, ratio 1, oracle=engine-tick, ticks 2/2 moving` | FAIL → **PASS** |
+| 5-route | tick oracle 静默 | `advanced 5.38m; tkAdvance=null tkPause=0m tkResume=3.23m; tickBase=1050` | FAIL → **PASS**（null 现在会自己说话） |
+| 10-independent | `outside=31.23492 d=690m`（其实是 POINT_C） | `outside=30.27636,120.17625 d=163535m；inside=31.23492 d=0m` | FAIL → **PASS** |
+| 11b-favorite-return | `dumpsys d=932m`（与测量误差无法区分） | `tap had no effect: closest fix stayed 932m away after 10.1s` | FAIL → FAIL，**但已能自我诊断** |
+| 6-cells | `ci 未变化` | 同上 + `polled 4.9s` | FAIL → FAIL（拿到决策所需数字） |
+
+`10-independent` 的顺序守卫（在发出 C 之前取 `$outsideCutoff`）证明之前那次 `31.23492` 是**相位污染**而不是泄漏：
+现在 outside 读数是手机真实位置（离模拟点 163.5 km），inside 读数是模拟点。
+
+**剩下两条是产品陈述，不再是测量噪音**
+1. **`11b-favorite-return`**：点击收藏行没有任何效果（10.1 s 后仍在 932 m 外）。代码连线是对的
+   （`onSelectFavorite = controller::jumpToFavorite` → `setPosition(place.point)`），所以要么是行的点击区、
+   要么是"关闭 sheet 与 setPosition 的先后"，要么是 engine 命令没送达——已交给 UI 侧现场手测分辨。
+2. **`6-cells`**：12 s 轮询后仍不变才算产品问题；`polled N s` 已进 detail。

@@ -980,6 +980,40 @@ detail 里直接写 `per-package evidence=[…]`，读报告的人不用再猜�
 **当天的构建状态**：`:app:compileDebugKotlin` 因 `SettingsScreen.kt` 的 `MaterialTheme` 冲突导入与
 `Unresolved reference 'height'` 而失败（ui-polish 在改），因此本轮只单独安装 `verifier-debug.apk`
 （`.\gradlew.bat :verifier:assembleDebug` 成功），**未重装 app、未重启、未重新激活**；
-verifier **不在** LSPosed 作用域内（框架-only 的前提）。
+verifier **不在** LSPosed 作用域内（框架-only 的前提）。**07:2x 该文件已由 ui-polish 修好**，构建恢复绿色。
+
+## 14. 全量 `-SkipUi` 回归：10 PASS/5 FAIL → **13 PASS/2 FAIL**（qa-e2e，2026-11-02 07:3x）
+
+报告：`e2e/out/report.json`（before：`e2e/out/report-full-r9.json`），日志 `e2e/out/full-after.log`。
+五条失败全部按"改判据、不放松断言"的原则处理，before/after 逐行对照：
+
+| 检查 | before | after | 结论 |
+|---|---|---|---|
+| `3-joystick` | `moved 1.77 m in 1.07s = 3.3 m/s … ratio 0.5` | `effective 3.3 m/s … ratio 1, oracle=engine-tick, ticks 2/2 moving` | FAIL→**PASS** |
+| `5-route` | `advanced 3.54m in 6.81s (verifier)`，tick 判据沉默 | `advanced 5.38m …; tkAdvance=null tkPause=0m tkResume=3.23m; tickBase=1050` | FAIL→**PASS** |
+| `10-independent` | `outside=31.23492 … d=690m`（那是 POINT_C） | `outside=30.27636,120.17625 d=163535m`（真位置）；`inside=31.23492 d=0m` | FAIL→**PASS** |
+| `11b-favorite-return` | `dumpsys: 31.230416 (d=932m)`（读不出是测量问题还是产品问题） | `tap had no effect: closest fix stayed 932m away after 10.1s` | FAIL→**FAIL，但自解释**：收藏行点击对引擎无效（真实缺陷） |
+| `6-cells` | `A ci=…46625 -> C ci=…46625` | 同上，附 `polled 4.9s for the change` | FAIL→**FAIL**，等 Lead 决定延长轮询还是修通道 |
+
+### 14.1 五处改动的要点（都在 `e2e/run_matrix.ps1`）
+
+1. **`3-joystick` 用移动 tick 的中位速度**（`$eff = MedianSpeed ?: Rate`，与 `4-speed-levels` 同一条路径）。
+   `Meters/Seconds` 会把拖拽前后的空转 tick 算进分母，比值被稀释一半 —— 这一条现在把 `MedianSpeed /
+   TickMoving / TickTotal` 一起写进 detail 与 metrics。
+2. **`5-route` 的 tick 判据自报**：detail 里直接写 `tkAdvance=…` 或 `tkAdvance=null`，并记录 `tickBase`；
+   `Get-EngineTicks -TailLines` 400 → 1500，长检查不会把自己的 tick 滚出窗口。
+3. **`6-cells` 改为轮询**（最长 8 s，等注册小区的 `ci/tac` 真的变化），detail 报 `polled N s`。
+4. **`10-independent` 加时序护栏**：`$outsideCutoff = Get-VerifyMark` 在**发出 C 之前**取，
+   只接受 `ts <= cutoff` 的样本；若值恰为 POINT_C，detail 明确写"stale cache from the whitelisted phase"并照旧 FAIL。
+5. **`11b-favorite-return` 改为轮询 10 s**：没动就报 `tap had no effect: closest fix stayed N m away after T s`，
+   而不是抛一个看不懂的距离。
+
+### 14.2 两条仍需产品侧处理
+
+- **`11b-favorite-return`**：点击收藏行后引擎不动（932 m/10.1 s）⇒ 收藏/快速返回的动作没接到引擎；
+  这是用户可见缺陷，不再是 harness 问题。
+- **`6-cells`**：轮询 4.9 s（含移动）后 `ci/tac` 仍未变。要么把窗口拉到 ~12 s，要么看通道
+  （`cells published …` / `cells.read.direct`，见 §9.7 的三步排查）。
+
 
 
