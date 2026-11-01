@@ -214,10 +214,13 @@ object LocationHooks {
         }
 
         // Last known location for the app-facing API (independent mode decides per caller uid).
+        // Structural match, not a name list: measured 2026-11-02, a non-whitelisted verifier still read
+        // the simulated point through `source=last:passive` while no `last:` line ever appeared in our
+        // log - the name-list hook never fired. Anything returning a Location and taking the provider
+        // String is a last-location getter.
         val lastMethods = Refl.methodsWhere(cls) { m ->
-            m.returnType == Location::class.java && (
-                m.name == "getLastLocation" || m.name == "getLastKnownLocation" || m.name == "getLastLocationSafe"
-                )
+            m.returnType == Location::class.java && m.parameterTypes.isNotEmpty() &&
+                m.parameterTypes[0] == String::class.java
         }
         for (m in lastMethods) {
             val ok = Refl.hook(m, lastLocationHook("LMS#" + m.name), "LocationManagerService#${m.name}")
@@ -231,10 +234,8 @@ object LocationHooks {
         try {
             for (inner in cls.declaredClasses) {
                 val innerMethods = Refl.methodsWhere(inner) { m ->
-                    m.returnType == Location::class.java && (
-                        m.name == "getLastLocation" || m.name == "getLastKnownLocation" ||
-                            m.name == "getLastLocationSafe"
-                        )
+                    m.returnType == Location::class.java && m.parameterTypes.isNotEmpty() &&
+                        m.parameterTypes[0] == String::class.java
                 }
                 for (m in innerMethods) {
                     val ok = Refl.hook(
@@ -1006,3 +1007,4 @@ object LocationHooks {
         else -> value
     }
 }
+
