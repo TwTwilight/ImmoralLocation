@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon foreground for ImmoralLocation.
+
+  Material 3 reading: a chunky location pin (cut-out aperture) sitting inside a
+  tilted orbit, with a small tertiary-toned satellite on the ring — "the position
+  you are shown is not where you are". Everything stays inside the 66dp safe
+  circle, so launcher masks (circle, squircle, rounded square) never clip it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- orbit ring, tilted -16deg around the pin -->
+    <group
+        android:pivotX="54"
+        android:pivotY="50"
+        android:rotation="-16">
+        <path
+            android:fillColor="#00000000"
+            android:pathData="M25,50a29,14.6 0 1 0 58,0a29,14.6 0 1 0 -58,0Z"
+            android:strokeColor="#73E9E2FF"
+            android:strokeWidth="4.4" />
+    </group>
+
+    <!-- satellite riding the ring (MD3 tertiary pastel) -->
+    <path
+        android:fillColor="#FFFFD9E4"
+        android:pathData="M72.43,36.989a5.4,5.4 0 1 0 10.8,0a5.4,5.4 0 1 0 -10.8,0Z" />
+
+    <!-- pin with aperture; the inner contour is wound the other way round so the
+         hole survives both evenOdd (API 24+) and the legacy nonZero rasterizer -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,27.4C44.28,27.4 36.4,35.28 36.4,45C36.4,58.2 54,77.683 54,77.683C54,77.683 71.6,58.2 71.6,45C71.6,35.28 63.72,27.4 54,27.4Z M60.6,45a6.6,6.6 0 1 1 -13.2,0a6.6,6.6 0 1 1 13.2,0Z" />
+</vector>

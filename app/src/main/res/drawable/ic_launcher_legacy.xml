@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Legacy launcher icon (API 21-25), where there is no adaptive-icon mask and no
+  VectorDrawable gradient support: same mark on a solid rounded-square plate.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FF5B3EC8"
+        android:pathData="M25,0h58a25,25 0 0 1 25,25v58a25,25 0 0 1 -25,25h-58a25,25 0 0 1 -25,-25v-58a25,25 0 0 1 25,-25Z" />
+
+    <group
+        android:pivotX="54"
+        android:pivotY="50"
+        android:rotation="-16">
+        <path
+            android:fillColor="#00000000"
+            android:pathData="M25,50a29,14.6 0 1 0 58,0a29,14.6 0 1 0 -58,0Z"
+            android:strokeColor="#73E9E2FF"
+            android:strokeWidth="4.4" />
+    </group>
+
+    <path
+        android:fillColor="#FFFFD9E4"
+        android:pathData="M72.43,36.989a5.4,5.4 0 1 0 10.8,0a5.4,5.4 0 1 0 -10.8,0Z" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,27.4C44.28,27.4 36.4,35.28 36.4,45C36.4,58.2 54,77.683 54,77.683C54,77.683 71.6,58.2 71.6,45C71.6,35.28 63.72,27.4 54,27.4Z M60.6,45a6.6,6.6 0 1 1 -13.2,0a6.6,6.6 0 1 1 13.2,0Z" />
+</vector>

@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar / notification small icon: monochrome silhouette, same pin geometry
+     as the launcher foreground so both read as the same mark. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -7,5 +9,5 @@
     android:tint="#FFFFFFFF">
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M12,2C8.13,2 5,5.13 5,9c0,5.25 7,13 7,13s7,-7.75 7,-13C19,5.13 15.87,2 12,2zM12,11.5a2.5,2.5 0,1 1,0 -5a2.5,2.5 0,0 1,0 5z" />
+        android:pathData="M12,6.3C9.85,6.3 8.1,8.05 8.1,10.2C8.1,13.13 12,17.44 12,17.44C12,17.44 15.9,13.13 15.9,10.2C15.9,8.05 14.15,6.3 12,6.3Z M13.45,10.2a1.45,1.45 0 1 1 -2.9,0a1.45,1.45 0 1 1 2.9,0Z" />
 </vector>
