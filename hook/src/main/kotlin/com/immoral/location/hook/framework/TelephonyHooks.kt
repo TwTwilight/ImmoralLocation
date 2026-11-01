@@ -27,7 +27,7 @@ object TelephonyHooks {
 
     fun install(loader: ClassLoader?) {
         // Unconditional: proves install() is reached at all, before any hook/type matching runs.
-        Log.i("framework/telephony: install() reached in " + (runCatching { com.immoral.location.hook.ModuleInfo.selfProcessName() }.getOrDefault("?"))
+        Log.i("framework/telephony: install() reached (uid=" + android.os.Process.myUid() + ")")
         if (!installed.compareAndSet(false, true)) return
         for (className in arrayOf(PHONE_INTERFACE, TELEPHONY_REGISTRY)) {
             try {
