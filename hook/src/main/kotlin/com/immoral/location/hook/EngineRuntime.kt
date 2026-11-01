@@ -444,15 +444,17 @@ object EngineRuntime {
     /**
      * A `Context` usable from the engine thread, resolved once and cached.
      *
-     * This is what silently killed the cells channel: `ActivityThread.currentActivityThread()` is a
-     * **ThreadLocal**, so on the engine's own `HandlerThread` it answers `null`, the reflective
-     * `getSystemContext()` call then threw `NullPointerException`, and the old code logged that
-     * exactly once with `Log.once` while `Settings.Global` kept whatever a previous boot had left
-     * behind. The phone process therefore served one frozen cell set for the whole session — the
-     * "position moves, cells don't" defect (`6-cells`).
+     * This is what silently killed the cells channel. `ActivityThread.currentActivityThread()` is
+     * still `null` while the process is attaching (the engine thread publishes within milliseconds of
+     * `boot()`), so the reflective call fell through to `getSystemContext().invoke(null)` on an
+     * **instance** method — a `NullPointerException`. The old code reported that exactly once with
+     * `Log.once` and had already committed the dedup key, while `Settings.Global` kept whatever a
+     * previous boot had left behind; the phone process therefore served one frozen cell set for the
+     * whole session — the "position moves, cells don't" defect (`6-cells`).
      *
-     * Order: the (cheap, thread-correct) direct attempt, then — once — a hop to the **main looper**,
-     * where `currentActivityThread()` is always set. Nothing here may throw into the ticker.
+     * Order: a direct attempt on the calling thread (self-healing, works as soon as the activity
+     * thread is up), then — once — a hop to the **main looper**, which is where `ActivityThread` is
+     * guaranteed to be visible. Nothing here may throw into the ticker.
      */
     @Volatile
     private var cachedContext: android.content.Context? = null

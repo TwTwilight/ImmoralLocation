@@ -16,11 +16,13 @@
 //     and there is nothing to rewrite — measured on device as `counter delta=0 over 0 samples`
 //     while the engine counter was climbing. Rewriting alone can therefore never satisfy
 //     步频模拟 on a stationary device; the counter has to be fabricated. We build one
-//     `sensors_event_t` carrying the step-counter handle and hand it to the *original*
+//     `sensors_event_t` carrying a step-counter handle and hand it to the *original*
 //     `sendEvents` for the same connection; SensorService's own per-connection filter drops it
 //     for every app that did not register that sensor, so no other sensor stream is affected.
-//     The handle is not assumed: Java resolves it (`Sensor.getHandle()`) and pushes it with
-//     `nativeSetStepSensor`; a handle learned from a real step event is used as a fallback.
+//     The handles are not assumed: Java pushes *every* `TYPE_STEP_COUNTER` handle it can see with
+//     `nativeSetStepSensors`, and the first real step event observed here is treated as the
+//     authoritative handle for this system (this device exposes a non-wakeup and a wake-up step
+//     counter, and injecting only the default one was measured to reach no app at all).
 //
 // Failure policy: every path is guarded and degrades to "no synthetic steps" (the rewrite path is
 // untouched) — nothing here may throw into, or crash, system_server.
@@ -70,10 +72,21 @@ std::atomic<bool> installed{false};
 std::string lastError;
 
 // --- fabrication state -------------------------------------------------------------------------
-// Handle of `TYPE_STEP_COUNTER` in the HAL's numbering, or -1 when unknown. Pushed by Java
-// (`SensorBoot` resolves it through the system context's SensorManager) or learned from a real
-// event for that sensor, whichever happens first.
-std::atomic<int32_t> stepCounterHandle{-1};
+// Candidate HAL handles of `TYPE_STEP_COUNTER`, filled from two independent sources:
+//   * Java (`SensorBoot` -> `nativeSetStepSensors`), which asks the system context's SensorManager
+//     for *every* sensor of that type — this device exposes both a non-wakeup (`0xbf`) and a
+//     wake-up (`0xc0`) step counter, and `getDefaultSensor` only ever returns one of them;
+//   * observation: the first real step event that passes through `sendEvents` carries the exact
+//     handle the apps in this system registered, which is authoritative.
+// All candidates are tried on every cadence tick; `SensorService`'s per-connection filter keeps
+// whichever one the receiving app actually registered. Measured on device (2026-11-02): injecting
+// only the `getDefaultSensor` handle produced 27 injections and zero app-visible events, which is
+// why the candidate set exists.
+constexpr int kMaxStepHandles = 6;
+std::atomic<int32_t> stepHandles[kMaxStepHandles];
+std::atomic<int32_t> stepHandleCount{0};
+std::atomic<int32_t> observedStepHandle{-1};
+std::atomic<int32_t> injectedHandleLast{0};
 
 // Timestamp of the last fabricated event (CLOCK_BOOTTIME ns); throttles fabrication to the
 // configured cadence so a 100 Hz sendEvents stream cannot turn into 100 steps per second.
@@ -88,6 +101,40 @@ int64_t nowBoottimeNanos() {
     return static_cast<int64_t>(ts.tv_sec) * 1000000000LL + static_cast<int64_t>(ts.tv_nsec);
 }
 
+/** Adds a candidate handle (idempotent, bounded, lock-free enough: no allocation, no blocking). */
+void addStepHandle(int32_t handle) {
+    if (handle < 0) return;
+    const int32_t n = stepHandleCount.load(std::memory_order_acquire);
+    for (int32_t i = 0; i < n; ++i) {
+        if (stepHandles[i].load(std::memory_order_relaxed) == handle) return;
+    }
+    if (n >= kMaxStepHandles) return;
+    stepHandles[n].store(handle, std::memory_order_relaxed);
+    // Publish only after the slot is written; readers may see the new count one call early at worst.
+    stepHandleCount.store(n + 1, std::memory_order_release);
+}
+
+/**
+ * Learns the real step-counter handle from the HAL's own events.
+ *
+ * Runs **before** the `steps > 0` gate in [rewriteSteps] on purpose: at the moment the first real
+ * step event arrives the engine may not have counted anything yet, and that event is exactly the
+ * piece of information that tells us which handle the apps in this system are registered for.
+ */
+void observeStepHandles(const SensorEvent *events, size_t count) {
+    if (events == nullptr || count == 0) return;
+    for (size_t i = 0; i < count; ++i) {
+        if (events[i].type != ASENSOR_TYPE_STEP_COUNTER) continue;
+        const int32_t handle = events[i].sensor;
+        int32_t previous = observedStepHandle.load(std::memory_order_relaxed);
+        if (previous == handle) continue;
+        observedStepHandle.store(handle, std::memory_order_relaxed);
+        addStepHandle(handle);
+        logi("observed a real step_counter event on handle %d (now %d candidate handle(s))", handle,
+             static_cast<int>(stepHandleCount.load(std::memory_order_acquire)));
+    }
+}
+
 /**
  * Rewrites step-related events in place.
  *
@@ -97,6 +144,7 @@ int64_t nowBoottimeNanos() {
  * passed through untouched so third-party apps keep working normally.
  */
 void rewriteSteps(SensorEvent *events, size_t count) {
+    observeStepHandles(events, count);
     StepState &state = stepState();
     if (!state.enabled.load(std::memory_order_relaxed)) return;
 
@@ -113,11 +161,6 @@ void rewriteSteps(SensorEvent *events, size_t count) {
                 // Android 12+ delivers the step COUNTER as an integer in the union (the Java
                 // side reads it as a whole number), so write 64 bits instead of a float.
                 memcpy(event.data, &stepsI64, sizeof(stepsI64));
-                // Remember the handle: it is the only way to fabricate an event for an app that
-                // never receives one (see injectStepEvent).
-                if (stepCounterHandle.load(std::memory_order_relaxed) < 0) {
-                    stepCounterHandle.store(event.sensor, std::memory_order_relaxed);
-                }
                 stats.counterRewrites.fetch_add(1, std::memory_order_relaxed);
                 break;
             case ASENSOR_TYPE_STEP_DETECTOR:
@@ -132,12 +175,20 @@ void rewriteSteps(SensorEvent *events, size_t count) {
 }
 
 /**
- * Fabricates one step-counter event and hands it to the original `sendEvents` for this connection.
+ * Fabricates step-counter events and hands them to the original `sendEvents` for **this** connection.
  *
- * Only runs when the batch contains **no** step-counter event (otherwise `rewriteSteps` already
- * did the right thing) and at most once per `60s / cadenceBpm`. The event carries the HAL handle of
- * the step counter, so the connection's own filter decides whether the app sees it — an app that
- * did not register `TYPE_STEP_COUNTER` never gets it, and no other sensor is affected.
+ * `self` is the connection whose `sendEvents` invocation we are inside, so the event goes to exactly
+ * the connection that is being served — not to some other app's. `SensorService`'s own per-connection
+ * filter then keeps the event only if the receiving app registered *that* handle, so an app without
+ * `TYPE_STEP_COUNTER` never sees it and no other sensor stream is affected.
+ *
+ * One event per candidate handle per cadence tick: this device exposes a non-wakeup (`0xbf`) and a
+ * wake-up (`0xc0`) step counter, and `getDefaultSensor` returns only one of them. Injecting the
+ * single default handle was measured to produce 27 injections and zero app-visible events, hence the
+ * candidate set (see [addStepHandles] / `nativeSetStepSensors`).
+ *
+ * Skipped entirely when the batch already contains a step-counter event: then [rewriteSteps] has
+ * already replaced its value and the HAL's own event wins.
  */
 void injectStepEvent(void *self, const SensorEvent *batch, size_t count, SensorEvent *scratch,
                      const void *wpConnection) {
@@ -145,8 +196,8 @@ void injectStepEvent(void *self, const SensorEvent *batch, size_t count, SensorE
     StepState &state = stepState();
     if (!state.enabled.load(std::memory_order_relaxed)) return;
 
-    const int32_t handle = stepCounterHandle.load(std::memory_order_relaxed);
-    if (handle < 0) return;
+    const int32_t handleCount = stepHandleCount.load(std::memory_order_acquire);
+    if (handleCount <= 0) return;
 
     const double steps = state.steps.load(std::memory_order_relaxed);
     if (steps <= 0.0) return;
@@ -169,26 +220,34 @@ void injectStepEvent(void *self, const SensorEvent *batch, size_t count, SensorE
     }
     if (!lastInjectNanos.compare_exchange_strong(last, now)) return;
 
-    SensorEvent event{};
-    // `version` is documented as `sizeof(struct ASensorEvent)` in the NDK header, which is what a
-    // HAL fills in; it is not a protocol version. `flags`/`reserved*` stay 0: this event is not
-    // offloaded and carries no wake-up marker of its own.
-    event.version = static_cast<int32_t>(sizeof(SensorEvent));
-    event.sensor = handle;
-    event.type = ASENSOR_TYPE_STEP_COUNTER;
-    event.timestamp = now;
     const int64_t stepsI64 = static_cast<int64_t>(steps);
-    memcpy(event.data, &stepsI64, sizeof(stepsI64));
-
     SensorEvent localScratch{};
     SensorEvent *scratchToUse = scratch != nullptr ? scratch : &localScratch;
-    // The original (not the hook): no recursion, and the real batch was already delivered.
-    orig_sendEvents(self, &event, 1, scratchToUse, wpConnection);
+    int32_t lastHandle = -1;
+    for (int32_t i = 0; i < handleCount && i < kMaxStepHandles; ++i) {
+        const int32_t handle = stepHandles[i].load(std::memory_order_relaxed);
+        if (handle < 0) continue;
+        SensorEvent event{};
+        // `version` is documented as `sizeof(struct ASensorEvent)` in the NDK header, which is what
+        // a HAL fills in; it is not a protocol version. `flags`/`reserved*` stay 0: this event is
+        // not offloaded and carries no wake-up marker of its own.
+        event.version = static_cast<int32_t>(sizeof(SensorEvent));
+        event.sensor = handle;
+        event.type = ASENSOR_TYPE_STEP_COUNTER;
+        event.timestamp = now;
+        memcpy(event.data, &stepsI64, sizeof(stepsI64));
+        // The original (not the hook): no recursion, and the real batch was already delivered.
+        orig_sendEvents(self, &event, 1, scratchToUse, wpConnection);
+        lastHandle = handle;
+        injectedEvents.fetch_add(1, std::memory_order_relaxed);
+    }
+    injectedHandleLast.store(lastHandle, std::memory_order_relaxed);
 
-    const int64_t total = injectedEvents.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (total == 1 || total % 60 == 0) {
-        logi("injected step event #%lld value=%lld handle=%d cadence=%d",
-             static_cast<long long>(total), static_cast<long long>(stepsI64), handle, cadence);
+    const int64_t total = injectedEvents.load(std::memory_order_relaxed);
+    if (total <= static_cast<int64_t>(handleCount) || total % 120 == 0) {
+        logi("injected step event value=%lld handles=%d last=%d cadence=%d total=%lld",
+             static_cast<long long>(stepsI64), static_cast<int>(handleCount), lastHandle, cadence,
+             static_cast<long long>(total));
     }
 }
 
@@ -277,16 +336,37 @@ bool installSensorHooks() {
 
 bool hooksInstalled() { return installed.load(std::memory_order_acquire); }
 
-/** Handle of `TYPE_STEP_COUNTER` used for fabrication; `-1` clears it. */
-void setStepSensorHandle(int32_t handle) {
-    stepCounterHandle.store(handle, std::memory_order_relaxed);
+/**
+ * Replaces the candidate `TYPE_STEP_COUNTER` handles with [handles] (from Java).
+ *
+ * The handle observed from a real HAL step event is kept on top: it is the authoritative one for the
+ * apps in this system, while Java's `getSensorList` is the only source that can name the *other*
+ * variant (non-wakeup vs wake-up) before any step has ever happened.
+ */
+void setStepSensorHandles(const int32_t *handles, int32_t count) {
+    stepHandleCount.store(0, std::memory_order_release);
+    for (int32_t i = 0; i < count && i < kMaxStepHandles; ++i) addStepHandle(handles[i]);
+    const int32_t observed = observedStepHandle.load(std::memory_order_relaxed);
+    if (observed >= 0) addStepHandle(observed);
 }
 
 /** One-line state of the fabrication half, for the Java seam diagnostic. */
 std::string stepSeamSummary() {
-    char buf[192];
-    snprintf(buf, sizeof(buf), "handle=%d injected=%lld skipped=%lld enabled=%d steps=%.0f cadence=%d",
-             stepCounterHandle.load(std::memory_order_relaxed),
+    char buf[256];
+    const int32_t n = stepHandleCount.load(std::memory_order_acquire);
+    char handles[64] = {0};
+    size_t used = 0;
+    for (int32_t i = 0; i < n && i < kMaxStepHandles; ++i) {
+        const int written = snprintf(handles + used, sizeof(handles) - used, "%s%d", i == 0 ? "" : ",",
+                                    stepHandles[i].load(std::memory_order_relaxed));
+        if (written <= 0) break;
+        used += static_cast<size_t>(written);
+        if (used >= sizeof(handles) - 1) break;
+    }
+    snprintf(buf, sizeof(buf),
+             "handles=[%s] observed=%d last=%d injected=%lld skipped=%lld enabled=%d steps=%.0f cadence=%d",
+             handles, observedStepHandle.load(std::memory_order_relaxed),
+             injectedHandleLast.load(std::memory_order_relaxed),
              static_cast<long long>(injectedEvents.load(std::memory_order_relaxed)),
              static_cast<long long>(injectedSkipped.load(std::memory_order_relaxed)),
              stepState().enabled.load(std::memory_order_relaxed) ? 1 : 0,
@@ -299,13 +379,31 @@ std::string stepSeamSummary() {
 
 // --- JNI surface of the step seam ---------------------------------------------------------------
 // Deliberately defined here instead of jni_bridge.cpp: this file owns the fabrication state, so the
-// sensor handle and the counters never have to be exported through another translation unit.
+// sensor handles and the counters never have to be exported through another translation unit.
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_immoral_location_hook_NativeBridge_nativeSetStepSensor(JNIEnv *, jclass, jint handle) {
-    il::setStepSensorHandle(static_cast<int32_t>(handle));
-    il::logi("step seam: step-counter handle set to %d (fabrication %s)", static_cast<int>(handle),
-             handle >= 0 ? "armed" : "disarmed");
+Java_com_immoral_location_hook_NativeBridge_nativeSetStepSensors(JNIEnv *env, jclass, jintArray handles) {
+    if (handles == nullptr) {
+        il::setStepSensorHandles(nullptr, 0);
+        il::logi("step seam: no step-counter handles; fabrication disarmed");
+        return;
+    }
+    const jsize length = env->GetArrayLength(handles);
+    jint values[il::kMaxStepHandles];
+    const jsize capped = length < il::kMaxStepHandles ? length : il::kMaxStepHandles;
+    if (capped <= 0) {
+        il::logi("step seam: empty step-counter handle array; fabrication disarmed");
+        return;
+    }
+    // `GetIntArrayRegion` returns void in this JNI header; a failure surfaces as a pending exception.
+    env->GetIntArrayRegion(handles, 0, capped, values);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        il::logi("step seam: cannot read the step-counter handle array");
+        return;
+    }
+    il::setStepSensorHandles(values, static_cast<int32_t>(capped));
+    il::logi("step seam: %d step-counter handle(s) from Java, fabrication armed", static_cast<int>(capped));
 }
 
 extern "C" JNIEXPORT jstring JNICALL

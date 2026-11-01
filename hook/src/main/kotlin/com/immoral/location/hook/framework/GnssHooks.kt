@@ -81,6 +81,19 @@ object GnssHooks {
     @Volatile
     private var lastMutatedStatus: Any? = null
 
+    /** Cache for [statusFromSatellites]: (satellite set, status) so a stationary engine builds once. */
+    @Volatile
+    private var lastBuiltStatus: Pair<List<Satellite>, Any>? = null
+
+    // `GnssStatus` per-satellite flag bits (AOSP: high bits = PRN, low bits = flags).
+    private const val FLAG_HAS_EPHEMERIS = 0x01
+    private const val FLAG_HAS_ALMANAC = 0x02
+    private const val FLAG_USED_IN_FIX = 0x04
+
+    /** `GnssStatus`'s "unknown" carrier frequency / baseband C/N0 sentinels. */
+    private const val CARRIER_FREQUENCY_UNKNOWN = -1.0f
+    private const val BASEBAND_CN0_UNKNOWN = -1.0f
+
     private var resolved = 0
     private var missed = 0
 
@@ -258,7 +271,8 @@ object GnssHooks {
                         val snap = EngineRuntime.activeSnap() ?: return
                         if (!snap.config.gpsSignalSimulation) return
                         if (list === statusListeners) {
-                            (Fakes.gnssStatus(snap.satellites) ?: lastMutatedStatus)?.let { status ->
+                            (statusFromSatellites(snap.satellites)
+                                ?: Fakes.gnssStatus(snap.satellites) ?: lastMutatedStatus)?.let { status ->
                                 pushStatus(instance, status, snap.satellites)
                             }
                         } else if (snap.nmeaLines.isNotEmpty()) {
@@ -334,7 +348,8 @@ object GnssHooks {
                                     // view); the framework-built one is a fallback for ROMs where
                                     // construction cannot round-trip — it still carries the tail of
                                     // the real constellation.
-                                    (Fakes.gnssStatus(snap.satellites) ?: lastMutatedStatus)?.let { status ->
+                                    (statusFromSatellites(snap.satellites)
+                                        ?: Fakes.gnssStatus(snap.satellites) ?: lastMutatedStatus)?.let { status ->
                                         pushStatus(listener, status, snap.satellites)
                                         Log.rate("gnss.push.immediate", 30_000L, "gnss: pushed a status to a freshly registered listener")
                                     }
@@ -480,7 +495,7 @@ object GnssHooks {
                 return
             }
             // No real sky view to mutate (indoors: 0 sats) - construct our own and hand it over.
-            val status = Fakes.gnssStatus(snap.satellites)
+            val status = statusFromSatellites(snap.satellites) ?: Fakes.gnssStatus(snap.satellites)
             if (status == null) {
                 Log.rate(
                     "gnss.construct.fail",
@@ -501,6 +516,113 @@ object GnssHooks {
         }
     }
 
+    // ------------------------------------------------------------------ status construction
+
+    /**
+     * Builds a `GnssStatus` that carries **exactly** [satellites] (8..14), instead of handing the
+     * app a real-status object.
+     *
+     * Why this is needed even though [Fakes.mutateStatus] works: `Fakes.gnssStatus()` cannot
+     * construct a status on this ROM (`GnssStatus.Builder` lost its setters, the private ctor does
+     * not round-trip), so [push] fell back to the mutated *real* status — which on device carried
+     * **53** satellites, i.e. our 13 values plus 40 genuine ones with `cn0=0`. Two measured
+     * consequences:
+     *
+     *  * the verifier's one-line-per-status JSON became 4 601 B and logcat cut it at 4 101 B, so
+     *    the acceptance harness could not parse any sample (`9-gnss`: `samples=0`) — see
+     *    `docs/ROUND-NOTES.md` §8.6;
+     *  * the app could see the *real* constellation shape in the tail (a detection surface).
+     *
+     * The route here needs no field access at all: write the `Parcel` layout that
+     * `GnssStatus.CREATOR` reads (count, then the parallel arrays) and let the framework's **own**
+     * creator build the object. Whatever the ROM's internal representation is, the object then is a
+     * ROM-native one, so `writeToParcel` to the app is guaranteed consistent. The result is
+     * validated by read-back (count, svid, C/N0, usedInFix) and dropped on any mismatch, so a wrong
+     * guess degrades to the previous behaviour instead of pushing garbage.
+     */
+    private fun statusFromSatellites(satellites: List<Satellite>): Any? {
+        if (satellites.isEmpty()) return null
+        val cached = lastBuiltStatus
+        if (cached != null && cached.first == satellites) return cached.second
+        val cls = findFrameworkClass(GNSS_STATUS_NAME, null) ?: return null
+        val creator = try {
+            cls.getField("CREATOR").get(null)
+        } catch (_: Throwable) {
+            null
+        } ?: return null
+        val n = satellites.size
+        val createFromParcel = Refl.methodOf(creator.javaClass, "createFromParcel", 1) ?: return null
+        // Two candidate PRN-flag encodings: AOSP packs `svid << 8 | flags`, some builds add the
+        // constellation in bits 4..7. Whichever the read-back accepts wins; both failing = no status.
+        for (variant in 0..1) {
+            val parcel = android.os.Parcel.obtain()
+            try {
+                parcel.writeInt(n)
+                parcel.writeIntArray(IntArray(n) { i -> svidWithFlags(satellites[i], variant) })
+                parcel.writeFloatArray(FloatArray(n) { satellites[it].cn0DbHz })
+                parcel.writeFloatArray(FloatArray(n) { satellites[it].elevationDeg })
+                parcel.writeFloatArray(FloatArray(n) { satellites[it].azimuthDeg })
+                parcel.writeFloatArray(FloatArray(n) { CARRIER_FREQUENCY_UNKNOWN })
+                parcel.writeFloatArray(FloatArray(n) { BASEBAND_CN0_UNKNOWN })
+                parcel.setDataPosition(0)
+                val status = Refl.invoke(createFromParcel, creator, parcel)
+                if (status != null && statusMatches(status, satellites)) {
+                    lastBuiltStatus = satellites to status
+                    Log.rate(
+                        "gnss.parcel.built",
+                        60_000L,
+                        "gnss: built a synthesized status via Parcel+CREATOR (variant " + variant +
+                            ", sats=" + n + ", readback=" + Fakes.readbackStatus(status) + ")",
+                    )
+                    return status
+                }
+            } catch (t: Throwable) {
+                Log.once(
+                    "gnss.parcel.err" + variant,
+                    "gnss: Parcel+CREATOR variant $variant failed: ${t.javaClass.simpleName}",
+                )
+            } finally {
+                runCatching { parcel.recycle() }
+            }
+        }
+        Log.once(
+            "gnss.parcel.none",
+            "gnss: Parcel+CREATOR construction not usable on this build; falling back to the " +
+                "framework-built (mutated) status",
+        )
+        return null
+    }
+
+    /** `mSvidWithFlags` entry: PRN in the high bits, flags (and optionally constellation) low. */
+    private fun svidWithFlags(satellite: Satellite, variant: Int): Int {
+        var flags = FLAG_HAS_EPHEMERIS or FLAG_HAS_ALMANAC
+        if (satellite.usedInFix) flags = flags or FLAG_USED_IN_FIX
+        val low = if (variant == 0) flags else flags or (satellite.constellation shl 4)
+        return (satellite.svid shl 8) or low
+    }
+
+    /** Read-back validation for [statusFromSatellites]; false ⇒ never deliver that object. */
+    private fun statusMatches(status: Any, satellites: List<Satellite>): Boolean {
+        val cls = status.javaClass
+        val count = (Refl.invoke(Refl.methodOf(cls, "getSatelliteCount", 0), status) as? Int) ?: return false
+        if (count != satellites.size) return false
+        val svid = (Refl.invoke(Refl.methodOf(cls, "getSvid", 1), status, 0) as? Int) ?: return false
+        if (svid != satellites[0].svid) return false
+        val cn0 = (Refl.invoke(Refl.methodOf(cls, "getCn0DbHz", 1), status, 0) as? Float) ?: return false
+        if (kotlin.math.abs(cn0 - satellites[0].cn0DbHz) > 0.01f) return false
+        val usedIndex = satellites.indexOfFirst { it.usedInFix }
+        if (!satellites.any { it.usedInFix }) return false
+        val usedMethod = Refl.methodOf(cls, "usedInFix", 1) ?: Refl.methodOf(cls, "getUsedInFix", 1)
+        val used = (Refl.invoke(usedMethod, status, usedIndex) as? Boolean) ?: return false
+        val notUsedIndex = satellites.indexOfFirst { !it.usedInFix }
+        if (notUsedIndex >= 0) {
+            // A status where every entry reports usedInFix would satisfy the app but is not what we
+            // synthesized; guard it so a wrong encoding cannot silently pass.
+            if (Refl.invoke(usedMethod, status, notUsedIndex) as? Boolean == true) return false
+        }
+        return used
+    }
+
     private fun remember(list: CopyOnWriteArrayList<WeakReference<Any>>, listener: Any) {
         list.removeAll { it.get() == null }
         if (list.any { it.get() === listener }) return
@@ -514,7 +636,15 @@ object GnssHooks {
         if (!snap.running) return
         if (!snap.config.gpsSignalSimulation) return
         val status = statusListeners.let { list ->
-            if (list.isEmpty()) null else (Fakes.gnssStatus(snap.satellites) ?: lastMutatedStatus)
+            if (list.isEmpty()) {
+                null
+            } else {
+                // Own synthesized status first (8..14 satellites, no real-constellation tail), then
+                // the legacy construction path, and only then the mutated real one.
+                statusFromSatellites(snap.satellites)
+                    ?: Fakes.gnssStatus(snap.satellites)
+                    ?: lastMutatedStatus
+            }
         }
         val now = System.currentTimeMillis()
         if (snap.satellites.isEmpty()) {

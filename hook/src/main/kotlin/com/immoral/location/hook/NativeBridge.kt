@@ -119,23 +119,28 @@ object NativeBridge {
     }
 
     /**
-     * Tells the native layer the HAL handle of `TYPE_STEP_COUNTER`, which is what makes
+     * Tells the native layer the HAL handles of `TYPE_STEP_COUNTER`, which is what makes
      * **fabrication** possible (see `native/src/sensor_hook.cpp`).
      *
      * Rewriting alone cannot satisfy 步频模拟 on a stationary device: `TYPE_STEP_COUNTER` reports
      * on change, so a phone on a desk produces no event at all and there is nothing to rewrite.
-     * With the handle, the native hook can hand one fabricated event to `SensorService`'s own
-     * per-connection `sendEvents`, which delivers it only to apps that registered that sensor.
+     * With the handles, the native hook can hand fabricated events to `SensorService`'s own
+     * per-connection `sendEvents`, which delivers one only to apps that registered that sensor.
      *
-     * Best effort: a `-1` handle simply disarms fabrication.
+     * **All** handles of the type are pushed, not just `getDefaultSensor`'s: this device exposes a
+     * non-wakeup (`0xbf`) and a wake-up (`0xc0`) step counter, and measured on 2026-11-02 injecting
+     * only the default handle produced 27 injections and zero app-visible events — the app was
+     * registered for the other variant and `SensorEventConnection`'s handle filter dropped ours.
+     *
+     * Best effort: an empty array simply disarms fabrication.
      */
-    fun setStepSensorHandle(handle: Int) {
+    fun setStepSensorHandles(handles: IntArray) {
         if (!hooked) return
-        runCatching { nativeSetStepSensor(handle) }
-            .onFailure { Log.once("native.step.handle", "nativeSetStepSensor failed: ${it.javaClass.simpleName}") }
+        runCatching { nativeSetStepSensors(handles) }
+            .onFailure { Log.once("native.step.handles", "nativeSetStepSensors failed: ${it.javaClass.simpleName}") }
     }
 
-    /** Fabrication counters (`handle=… injected=… skipped=…`), for the acceptance-run seam line. */
+    /** Fabrication counters (`handles=… observed=… injected=…`), for the acceptance-run seam line. */
     fun stepSeam(): String =
         runCatching { if (hooked) nativeStepSeam() else "not hooked" }.getOrDefault("n/a")
 
@@ -205,7 +210,7 @@ object NativeBridge {
 
     private external fun nativeSetStepState(steps: Long, cadenceBpm: Int, enabled: Boolean)
 
-    private external fun nativeSetStepSensor(handle: Int)
+    private external fun nativeSetStepSensors(handles: IntArray)
 
     private external fun nativeStepSeam(): String
 

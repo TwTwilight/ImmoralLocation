@@ -40,8 +40,8 @@ object SensorBoot {
     private var loggedHandle = false
     private var lastHandleCheckMs = 0L
 
-    /** `getHandle()` of `TYPE_STEP_COUNTER`, or -1 while unknown. */
-    private var stepCounterHandle = -1
+    /** Handles of every `TYPE_STEP_COUNTER` variant (non-wakeup and wake-up). */
+    private var stepCounterHandles: IntArray = IntArray(0)
 
     /** Registers the diagnostic tick listener (idempotent). */
     fun install() {
@@ -55,69 +55,83 @@ object SensorBoot {
     }
 
     /**
-     * Resolves the HAL handle of `TYPE_STEP_COUNTER` from the **system context** and arms the
-     * native fabrication path with it.
+     * Resolves the HAL handles of `TYPE_STEP_COUNTER` from the **system context** and arms the
+     * native fabrication path with them.
      *
-     * Why the handle is needed at all: `SensorService` filters every outgoing batch per connection
+     * Why the handles are needed at all: `SensorService` filters every outgoing batch per connection
      * by sensor handle, so a fabricated event is only delivered to an app that registered *that*
-     * sensor. Resolved lazily (on the first tick with 步频模拟 on) rather than at install time,
-     * because at `handleLoadPackage` the `ActivityThread`/`SensorManager` of `system_server` may
-     * not be ready yet — and a `SensorManager` connection is only worth creating when the feature
-     * is actually used.
+     * sensor. Measured on device (2026-11-02): pushing only `getDefaultSensor`'s handle (`0xbf`,
+     * non-wakeup) produced 27 injections and **zero** app-visible events, while this device also
+     * exposes a wake-up step counter (`0xc0`) — so *every* handle of the type is pushed and the
+     * connection's own filter decides. `getSensorList` is the only source that can name both before
+     * any step has ever happened; the native side additionally learns the authoritative handle from
+     * the first real step event it sees.
      *
-     * The handle is **re-checked** every [HANDLE_RECHECK_MS] and re-pushed when it changes, and it is
-     * disarmed (`-1`) when the sensor disappears: `sensorservice` can be restarted (HAL death,
-     * `killall sensorservice`) and the numbering is then rebuilt, so a cached handle could name a
-     * *different* sensor in `sendEvents`. A stale handle is the one failure mode that could touch
-     * another sensor's stream, so it is not left to chance. A transient reflection failure keeps the
-     * previous handle instead of disarming, because that would silently stop the feature.
+     * Resolved lazily (on the first tick with 步频模拟 on) rather than at install time, because at
+     * `handleLoadPackage` the `ActivityThread`/`SensorManager` of `system_server` may not be ready
+     * yet — and a `SensorManager` connection is only worth creating when the feature is used.
+     *
+     * The handles are **re-checked** every [HANDLE_RECHECK_MS] and re-pushed when they change, and
+     * fabrication is disarmed (empty array) when the sensor disappears: `sensorservice` can be
+     * restarted (HAL death, `killall sensorservice`) and the numbering is then rebuilt, so a cached
+     * handle could name a *different* sensor in `sendEvents`. A stale handle is the one failure mode
+     * that could touch another sensor's stream, so it is not left to chance. A transient reflection
+     * failure keeps the previous handles instead of disarming, because that would silently stop the
+     * feature.
      */
-    private fun syncStepSensorHandle() {
+    private fun syncStepSensorHandles() {
         if (!NativeBridge.isHooked) return
         val now = System.currentTimeMillis()
-        if (stepCounterHandle >= 0 && now - lastHandleCheckMs < HANDLE_RECHECK_MS) return
+        if (stepCounterHandles.isNotEmpty() && now - lastHandleCheckMs < HANDLE_RECHECK_MS) return
         lastHandleCheckMs = now
-        val handle = when (val resolved = resolveStepHandle()) {
-            HANDLE_UNKNOWN -> return
-            else -> resolved
-        }
-        if (handle == stepCounterHandle) return
-        stepCounterHandle = handle
-        NativeBridge.setStepSensorHandle(handle)
-        if (handle >= 0) {
-            if (!loggedHandle) {
-                Log.i("steps seam: TYPE_STEP_COUNTER handle=$handle pushed to the native layer")
+        val handles = resolveStepHandles() ?: return
+        if (handles.contentEquals(stepCounterHandles)) return
+        val previous = stepCounterHandles
+        stepCounterHandles = handles
+        NativeBridge.setStepSensorHandles(handles)
+        when {
+            handles.isEmpty() ->
+                Log.w("steps seam: no TYPE_STEP_COUNTER sensor visible any more — fabrication disarmed")
+            previous.isEmpty() -> {
                 loggedHandle = true
-            } else {
-                Log.w("steps seam: step-counter handle changed to $handle (re-armed)")
+                Log.i("steps seam: TYPE_STEP_COUNTER handles=${handles.joinToString(",")} pushed to the native layer")
             }
-        } else {
-            Log.w("steps seam: no TYPE_STEP_COUNTER sensor visible any more — fabrication disarmed")
+            else -> Log.w(
+                "steps seam: step-counter handles changed " +
+                    "${previous.joinToString(",")} -> ${handles.joinToString(",")} (re-armed)",
+            )
         }
     }
 
     /**
-     * `> 0` = handle, `-1` = the sensor is gone (disarm), [HANDLE_UNKNOWN] = could not look it up
-     * (keep whatever we had; the next tick retries).
+     * All handles of `TYPE_STEP_COUNTER`, or `null` when the lookup itself failed (keep whatever we
+     * had and retry on the next tick). An empty array means "the sensor is gone" (disarm).
      */
-    private fun resolveStepHandle(): Int = try {
+    private fun resolveStepHandles(): IntArray? = try {
         val threadClass = Class.forName("android.app.ActivityThread")
         val current = threadClass.getMethod("currentActivityThread").invoke(null)
         val context = threadClass.getMethod("getSystemContext").invoke(current) as android.content.Context
         val manager = context.getSystemService(android.content.Context.SENSOR_SERVICE)
             as? android.hardware.SensorManager
-        val sensor = manager?.getDefaultSensor(android.hardware.Sensor.TYPE_STEP_COUNTER)
-        if (sensor == null) {
-            -1
+        if (manager == null) {
+            null
         } else {
             // `Sensor#getHandle()` is a public method at runtime but hidden from the SDK stubs, so it
             // has to be resolved reflectively (the same reason [Refl] exists).
-            Class.forName("android.hardware.Sensor").getMethod("getHandle").invoke(sensor) as? Int
-                ?: HANDLE_UNKNOWN
+            val getHandle = Class.forName("android.hardware.Sensor").getMethod("getHandle")
+            val handles = LinkedHashSet<Int>(4)
+            @Suppress("DEPRECATION")
+            for (sensor in manager.getSensorList(android.hardware.Sensor.TYPE_STEP_COUNTER).orEmpty()) {
+                (getHandle.invoke(sensor) as? Int)?.let { handles.add(it) }
+            }
+            manager.getDefaultSensor(android.hardware.Sensor.TYPE_STEP_COUNTER)?.let { sensor ->
+                (getHandle.invoke(sensor) as? Int)?.let { handles.add(it) }
+            }
+            handles.toIntArray()
         }
     } catch (t: Throwable) {
-        Log.once("steps.seam.context", "cannot resolve the step-counter handle yet: ${t.javaClass.simpleName}")
-        HANDLE_UNKNOWN
+        Log.once("steps.seam.context", "cannot resolve the step-counter handles yet: ${t.javaClass.simpleName}")
+        null
     }
 
     /**
@@ -132,7 +146,7 @@ object SensorBoot {
                 lastSteps = -1L
                 return
             }
-            syncStepSensorHandle()
+            syncStepSensorHandles()
             val now = System.currentTimeMillis()
             if (now - lastReportMs < REPORT_INTERVAL_MS) return
             lastReportMs = now
@@ -161,9 +175,6 @@ object SensorBoot {
 
     private const val REPORT_INTERVAL_MS = 5_000L
 
-    /** How often the step-counter handle is re-validated against the live `SensorManager`. */
+    /** How often the step-counter handles are re-validated against the live `SensorManager`. */
     private const val HANDLE_RECHECK_MS = 30_000L
-
-    /** "Could not look the handle up" — keep the previous one (see [resolveStepHandle]). */
-    private const val HANDLE_UNKNOWN = -2
 }
