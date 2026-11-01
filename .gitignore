@@ -21,14 +21,15 @@ Thumbs.db
 artifacts/
 *.log
 
-# Device harness: PowerShell / Python probes and the verifier app stay on this box, unpublished
-e2e/out/
-# The acceptance harness itself IS versioned: CI runs e2e/lint.ps1 and the matrix documents every
+# Device harness, probes and the verifier app stay on the box that owns the phone. They are never
+# part of the repository: they need a real device, a rooted ROM and an LSPosed install, so they are
+# dead weight for anyone reading the source, and CI does not run them.
+e2e/
 hook/harness/
 verifier/
 *.ps1
-*.ps1
-!e2e/**/*.ps1
+*.psm1
+*.sh
 *.py
 
 # Reverse-engineering / acceptance material: kept on disk, never published.
