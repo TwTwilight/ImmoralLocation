@@ -83,6 +83,17 @@ class JoystickOverlay(
         height = view.collapsedSizePx
         x = view.marginPx
         y = (windowBounds.height() * 6 / 10).coerceAtLeast(0)
+        // Fix A for the measured ~212 px frame-vs-canvas offset: let the window span the cutout and
+        // stop it from fitting system insets, so the platform's window rect and the view's canvas
+        // are the same rectangle (otherwise the bubble is drawn ~one status-bar above its own hit
+        // region and no tap can land on it).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            fitInsetsTypes = 0
+        }
     }
 
     var isShowing: Boolean = false
