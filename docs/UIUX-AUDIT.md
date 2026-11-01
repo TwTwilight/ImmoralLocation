@@ -121,3 +121,19 @@
    退到桌面后显示且上述两点仍可点。
 
 **结论性经验**：`e2e.tool.overlay` 是本轮唯一新增标签；`strings.xml` 新增 `settings_independent_enable`。
+
+## 10. 悬浮窗（第六轮）验收：四项全 PASS（2026-11-02 06:45）
+
+根因不是 z-order、也不是"不可点标志"，而是**窗口矩形与画布没对齐**（插入条只应用在一侧）。
+修法：`layoutInDisplayCutoutMode = SHORT_EDGES` + `fitInsetsTypes = 0`（API 30+），
+**没有**采用 212 px 补偿这种 hack。
+
+| # | 检查 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 本 app 前台时隐藏 | **PASS**：工具页开关 ON 且无气泡遮挡；`stage=shown → hidden/suspended` 相隔 57 ms | `_overlay-inapp2.png` |
+| 2 | 退到桌面后显示 | **PASS**：`stage=shown`/`resumed` | `_overlay-homeA.png` |
+| 3 | 点球心展开 | **PASS**：按窗口坐标 (959,1517) 点按弹出表盘（刻度环 / N / 摇杆把 / 上=北 / ✕） | `_overlay-frame-tap.png` |
+| 4 | 点 ✕ 关闭且开关置 off | **PASS**：`stage=hidden`，回到工具页该行显示 Switch OFF | `_overlay-switch-off.png` |
+
+额外：拖动表盘只移动摇杆把、松手回中，**下层没有任何响应**（`topResumedActivity` 仍是桌面）；
+旧的"点穿到 app 里误点收藏"在该场景下已结构性不可能（前台时窗口直接被移除）。
