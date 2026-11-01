@@ -88,3 +88,17 @@
 见 `docs/ACCEPTANCE.md` §11：之前那次 PASS 是 `samples=0` 的空判定；qa-e2e 已让 harness 在"零样本"时
 报 WARN inconclusive 而不是 PASS。有流时非白名单 app 仍收到假点 ⇒ 真实漏洞，下一轮定位 verifier 实际
 收到 gps 投递的那条 seam（很可能是 `getCurrentLocation` 或另一条 registration/lambda 路径）。
+
+## 8. 第四轮验收（2026-11-02 04:53，全部由 Lead 读图核对）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| S4 浅色三底图 | FIXED | `_audit-s4-park.png`（绿地）/ `_audit-s4-water.png`（水面）/ `_audit-s4-roads.png`（密集路网+路名） |
+| S4 深色 | FIXED | `_audit-s4-dark-park.png`：深色下反相（深芯 + 浅色环 + 更强光晕），成为画面里最亮且有边界的对象 |
+| S8 主体不被面板挡（peek） | FIXED | 标记中心 y≈668 px，面板顶 y≈1400 px，可视带中心 700 px（`setSubjectOffsetY(sheetPx/2)` 在两个 detent 都生效） |
+| S9 徽标节奏 | FIXED | `_audit-planner-badges.png`：规划页 A/B 徽标 28→24 dp，与地图徽标、位置点同尺寸 |
+| 交通方式行歧义 | FIXED | 第六格前加 1 dp 分隔线；六个格子仍各 153 px，`14b-speed-row` 的六等宽断言不受影响 |
+
+设计决策记录（第六格为什么不移进 `工具`）：整行是 app 唯一的"一键切速"，`e2e.speed.custom` 必须在
+`e2e.speed.*` 行内（`14b` 断言六个等宽格子），移走属于 harness 变更而非纯 UI 变更；因此选择
+"分隔线 + 非同级视觉处理"。
