@@ -87,6 +87,13 @@ android {
      */
     androidResources {
         localeFilters += listOf("zh", "en")
+
+        // A/B probing of 高德-only asset packs (包体积 experiment, see docs/ROUND-NOTES.md §7):
+        //   .\gradlew.bat :app:assembleRelease -PimmoralDropAssets=cfg
+        // Values are aapt2 `--ignore-assets` patterns (matched against asset path segments).
+        // Empty by default, so a normal build ships whatever the SDK brings.
+        ignoreAssetsPatterns += ((findProperty("immoralDropAssets") as String?) ?: "")
+            .split(',').map { it.trim() }.filter { it.isNotEmpty() }
     }
 
     signingConfigs {
@@ -129,13 +136,11 @@ android {
             "META-INF/DEPENDENCIES",
             "META-INF/LICENSE*",
             "META-INF/NOTICE*",
+            // Build-time only: per-library version markers AGP writes into AARs (~40 files) and the
+            // kotlinx-coroutines debug agent. Nothing reads them at runtime.
+            "META-INF/*.version",
+            "DebugProbesKt.bin",
         )
-        // A/B probing of 高德-only asset packs (包体积 experiment, see docs/ROUND-NOTES.md §7):
-        //   .\gradlew.bat :app:assembleRelease -PimmoralDropAssets=cfg/**,ae/**
-        // Empty by default, so a normal build ships whatever the SDK brings.
-        resources.excludes += ((findProperty("immoralDropAssets") as String?) ?: "")
-            .split(',').map { it.trim() }.filter { it.isNotEmpty() }
-
         // Keep native libraries extractable: LSPosed must be able to System.load() our
         // libimmoralhook.so from inside system_server, which requires a real file under
         // <apk dir>/lib/<abi>/ rather than a page-aligned library inside the APK.
