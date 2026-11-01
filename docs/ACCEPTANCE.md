@@ -358,3 +358,23 @@ last-location 处理之后，非白名单 app 从"收到假点"变成了"什么�
 
 方法学提醒：`e2e_bcast.sh` 有时返回 `Broadcast completed: result=0`（没有接收者应答），此时引擎配置
 **并未生效**——手动探针必须先确认 `config applied` 或 tick 日志里的模式，否则会得出错误结论（本轮踩过）。
+
+### 14.1 追加实测（2026-11-02 05:20，干净 boot）
+
+`-Only 1` 仍然 **PASS**（`providers=passive,gps,network,fused mock=False`）⇒ 普通模式没有被我上一轮的改动影响。
+
+`-Only 10` 现在是 **FAIL（samples=2, fake=True）**，但日志显示按包过滤确实在工作：
+
+```
+independent: substituted the last real gps fix for com.google.android.gms / com.xiaomi.metoknlp / com.xiaomi.location.fused
+independent: dropped delivery to com.xiaomi.aicr / com.xiaomi.metoknlp / com.xiaomi.location.fused
+independent: provider last-known restored to the real fix on fused
+```
+
+**泄漏只剩"未解析包名"这一条**：日志里没有任何 `com.immoral.location.verifier` 的记录，说明 verifier 的
+投递走的是 `packageName == null` 分支，而该分支目前只在"看起来是我们的假点"时才丢弃；
+`immoral.*` extras 默认关闭后，平台重建 Location 会丢掉所有标记，坐标兜底的 150 m 容差在
+"缓存重放 + 平台重建"叠加时不再可靠。
+
+下一轮的最小改法：独立模式下 `packageName == null` **无条件丢弃**任何**非** `realLast` 值
+（即只放行与最近真实 fix 一致的对象），并把 `fused/gps/network/passive` 四个缓存源都当作候选真实值。
