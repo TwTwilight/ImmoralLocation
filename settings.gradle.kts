@@ -22,3 +22,7 @@ rootProject.name = "ImmoralLocation"
 include(":core")
 include(":hook")
 include(":app")
+// The acceptance verifier: an ordinary app that proves injection from the receiving side. It is part
+// of the repository because every number in docs/ACCEPTANCE.md comes from it.
+include(":verifier")
+
