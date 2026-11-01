@@ -317,3 +317,24 @@ independent: provider last-known restored to the real fix on fused
 ⇒ 结论：`10-independent` = **FAIL，真实投递过滤漏洞**。下一步要定位 verifier 收到 gps 投递的那条 seam
 （很可能是 `getCurrentLocation` 或 Android 15 的另一条 registration/lambda 路径），而不是继续改
 `deliverOnLocationChanged` 分支。**在修好并给出"非空判定下的 fake=False"之前，不得把它写成 PASS。**
+
+## 13. 独立模拟的设计重构方案（下一轮执行，2026-11-02 04:45）
+
+现状（都已实测）：把 `LocationManagerService` / 内部类的"返回 Location 且首参为 String"的方法全部按
+last-location 处理之后，非白名单 app 从"收到假点"变成了"什么都收不到"——方向安全了，但语义仍然不对：
+**独立模拟的正确语义是"非白名单 app 拿到真实位置"，不是"拿不到位置"**。
+
+根因是架构性的：我们现在在**报告路径**把 provider 的 Location 替换成假点（为了高德早期稳定和
+`dumpsys` 可观测），于是平台缓存里只有假点；一旦要在非白名单路径还回真实值，就只能依赖
+`rememberReal` 抓到的历史真实值——而它经常是空的。
+
+重构方案（下一轮做，按此执行）：
+1. **不再改写报告路径**（`reportReplaceHook` 只记 `rememberReal`，不替换）。
+2. 假点只从**投递/查询 seam** 注入：per-registration 投递、`getLastLocation*`、`getCurrentLocation`。
+   白名单 → 假点；非白名单 → 原值（平台自己的真实缓存），不需要 `realLast`。
+3. `dumpsys` 的可观测性改用引擎自己的证据行（`cells published` / tick 日志），不再依赖平台缓存被改写。
+4. 验收：`10-independent` 必须同时满足 —— 非白名单拿到**真实坐标**（且与模拟点距离 > 1 km），
+   白名单拿到模拟坐标；两者都要有**非空样本**，否则报 `inconclusive` 而不是 PASS。
+
+风险：高德早期（t+0~t+12s）读取 `getLastKnownLocation` 的实现依赖报告路径改写。重构时必须用
+`e2e/amap_verify.ps1` 重跑 10 分钟稳定性，确认没有回到"半分钟后跳回真实位置"的老问题。
