@@ -4,22 +4,21 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
@@ -65,8 +64,10 @@ import com.immoral.location.ui.theme.tabular
  *    user (and the acceptance harness) reads "how many" before scrolling anything;
  *  * one tonal row per place, with the name as the row title and the coordinates at `labelSmall`
  *    + `tnum` under it (spec §2: coordinates are never the headline);
- *  * one persistent primary action at the bottom, which is also the empty-state call to action, so
- *    the button never jumps between states.
+ *  * one primary action per state, placed after the content, so an empty list and a one-row list
+ *    both end where the content ends instead of floating under a screen-high blank area (the sheet
+ *    wraps its content up to 92 % and only then scrolls — a 4-row list used to open at full height
+ *    with ~1000 px of nothing below it).
  */
 @Composable
 fun FavoritesScreen(
@@ -81,15 +82,21 @@ fun FavoritesScreen(
     var renaming by remember { mutableStateOf<FavoritePlace?>(null) }
     var deleting by remember { mutableStateOf<FavoritePlace?>(null) }
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
-            // 92 % keeps the map visible behind the sheet: this is a list you consult, not a
-            // separate screen, and the old full-height surface hid where the places actually are.
-            .fillMaxHeight(0.92f)
             .testTag("e2e.favorites"),
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        // `maxHeight` is the sheet's own available height, so 92 % of it is the cap that keeps the
+        // map visible behind the sheet while still leaving room for a long list.
+        val cap = maxHeight * 0.92f
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = cap)
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 8.dp),
+        ) {
             Column(modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp)) {
                 Text(
                     text = stringResource(R.string.favorites_sheet_title),
@@ -103,11 +110,11 @@ fun FavoritesScreen(
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Medium,
                 )
-                Spacer(modifier = Modifier.height(6.dp))
-                // The long "how it works" line is only shown when there is something to explain:
-                // in the empty state the copy belongs to the empty state's own body, and printing it
+                // The long "how it works" line is only shown when there is something to explain: in
+                // the empty state the copy belongs to the empty state's own body, and printing it
                 // twice (header + body) is exactly the kind of duplication that reads as unfinished.
                 if (favorites.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = stringResource(R.string.favorites_hint),
                         style = MaterialTheme.typography.bodySmall,
@@ -115,17 +122,15 @@ fun FavoritesScreen(
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(14.dp))
 
             if (favorites.isEmpty()) {
-                EmptyState(modifier = Modifier.weight(1f))
+                EmptyState()
             } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    items(favorites, key = { it.id }) { place ->
+                    favorites.forEach { place ->
                         FavoriteRow(
                             place = place,
                             currentPosition = currentPosition,
@@ -141,7 +146,7 @@ fun FavoritesScreen(
                 onClick = onAddCurrent,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+                    .padding(horizontal = 16.dp)
                     .height(52.dp),
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -228,16 +233,18 @@ private fun FavoriteRow(
             modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Neutral tile + `tertiary` glyph: "saved place" stays the product's tertiary accent
+            // (it is the colour of the pin on the map) without a saturated pink blob per row.
             Box(
                 modifier = Modifier
                     .size(40.dp)
-                    .background(MaterialTheme.colorScheme.tertiaryContainer, CircleShape),
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Place,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    tint = MaterialTheme.colorScheme.tertiary,
                     modifier = Modifier.size(20.dp),
                 )
             }
@@ -290,14 +297,13 @@ private fun EmptyState(modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 32.dp),
+            .padding(start = 32.dp, end = 32.dp, top = 40.dp, bottom = 36.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
     ) {
         Box(
             modifier = Modifier
                 .size(72.dp)
-                .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f), CircleShape),
+                .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
