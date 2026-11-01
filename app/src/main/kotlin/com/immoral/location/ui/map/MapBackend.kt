@@ -87,6 +87,16 @@ interface MapBackend {
     /** Instant recentre (first layout only). */
     fun jumpTo(point: GeoPoint)
 
+    /**
+     * Biases the camera so the simulated subject sits in the band of map that is actually visible.
+     *
+     * The bottom sheet covers the lower part of the map, so a subject at the geometric centre of the
+     * view is hidden behind the sheet (audit R6: "the subject must be visible"). The value is how
+     * many pixels *above* the view's centre the subject should be drawn; 0 restores the plain
+     * centre. Hosts remember it and re-apply it on every [jumpTo] / [animateTo].
+     */
+    fun setSubjectOffsetY(offsetPx: Int) = Unit
+
     fun setDarkFilter(enabled: Boolean)
 
     fun onResume()

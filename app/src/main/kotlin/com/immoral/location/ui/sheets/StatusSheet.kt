@@ -38,6 +38,7 @@ import com.immoral.location.core.model.MoveMode
 import com.immoral.location.core.model.SimulationConfig
 import com.immoral.location.data.PreviewCounts
 import com.immoral.location.ui.components.Fmt
+import com.immoral.location.ui.components.SheetTitle
 import com.immoral.location.ui.theme.Dimens
 import com.immoral.location.ui.theme.tabular
 import java.util.Locale
@@ -81,10 +82,7 @@ fun StatusSheetContent(
                     ),
             )
             Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = stringResource(R.string.sheet_status_title),
-                style = MaterialTheme.typography.titleLarge,
-            )
+            SheetTitle(stringResource(R.string.sheet_status_title))
             Spacer(modifier = Modifier.weight(1f))
             Text(
                 text = stringResource(

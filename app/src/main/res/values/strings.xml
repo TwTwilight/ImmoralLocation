@@ -72,6 +72,7 @@
     <string name="joystick_fixed_bearing">固定方向</string>
     <string name="joystick_fixed_bearing_value">固定方向 %1$d°</string>
     <string name="joystick_overlay_title">悬浮摇杆</string>
+    <string name="joystick_hide">收起摇杆</string>
     <string name="joystick_overlay_desc">在其他应用上层显示悬浮摇杆，方便在导航/运动类应用中使用（需要悬浮窗权限）</string>
     <string name="joystick_strength">力度</string>
     <string name="joystick_direction">方向</string>

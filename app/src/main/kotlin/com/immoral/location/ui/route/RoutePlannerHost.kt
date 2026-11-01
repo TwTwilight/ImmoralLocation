@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -11,15 +12,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -27,11 +32,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -61,7 +64,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -76,6 +79,11 @@ import com.immoral.location.core.route.RouteResult
 import com.immoral.location.core.route.RouteSource
 import com.immoral.location.core.route.SavedRoute
 import com.immoral.location.data.RecentPlace
+import com.immoral.location.ui.components.SheetHint
+import com.immoral.location.ui.components.SheetLabel
+import com.immoral.location.ui.components.SheetSupporting
+import com.immoral.location.ui.components.SheetTitle
+import com.immoral.location.ui.components.SheetValue
 import com.immoral.location.ui.theme.CardShape
 import kotlinx.coroutines.delay
 
@@ -103,8 +111,7 @@ private fun plannerBorderColor(): Color =
 /**
  * Height of every action control in the planner (primary, tonal, icon).
  *
- * Matches the peek card's action row so the sheet and the planner read as one control system;
- * the icon button gets the same square box so the three actions share one baseline.
+ * Matches the peek card's action row so the sheet and the planner read as one control system.
  */
 private val ActionHeight = 48.dp
 
@@ -135,45 +142,59 @@ private fun PlannerCard(
 }
 
 /**
- * 路径规划 sheet content — the Google-Maps-style planner.
+ * 路径规划 sheet content — the Google-Maps-style planner, second pass.
  *
- * Rendered as the **full-detent content** of the map shell's `ModalBottomSheet`: no scaffold, no
- * `ModalBottomSheet` of its own and no system-bar insets (the host already removed the gesture bar
- * and applies the horizontal padding), so the only padding added here is 24dp of bottom breathing
- * room.
+ * ## What the audit changed (and why)
  *
- * Three states, all driven by [RoutePlannerController]:
- *  1. **empty** — only the origin/destination fields, with the live position as a ready-to-use origin;
- *  2. **planning** — progress bar + disabled primary action;
- *  3. **planned** — result card (distance, ETA, waypoint count, data source) + actions.
+ * * **The sheet hugs its content.** Before this pass the planner was laid out inside a
+ *   `fillMaxSize` surface while the host sheet was expanded to the full detent, so an empty or
+ *   half-filled planner left ~800 px of dead container below its actions. The page now reports its
+ *   own measured height through [onContentHeightChange] and the host sizes the FULL detent to that
+ *   height (capped by the screen), so the sheet grows as the plan does.
+ * * **Progressive disclosure.** Disabled primaries were the bulk of the frame (开始模拟 / 规划路线 /
+ *   保存路线, all greyed). Each state now renders only what is currently possible: nothing while
+ *   there is no destination (a plain hint instead), 规划路线 once a route is requestable, and
+ *   开始模拟 + 重新规划 / 保存路线 / 清除 once a plan exists. Nothing is ever rendered disabled.
+ * * **Travel mode belongs to the route**, so the segment sits directly under the 起点/终点 card,
+ *   above the add-waypoint affordances, under its own `出行方式` label.
+ * * **Every action carries a visible label** and shares the 48 dp rhythm (交换 / 设为当前位置 used to
+ *   be unlabelled icon buttons).
+ * * **One way out.** The header keeps no ✕: the sheet's own top chevron (the collapsed status row
+ *   above this content) is the single dismiss affordance.
+ * * **One type scale.** Title / label / value / supporting come from `SheetText`, not from a local
+ *   invention per row.
  *
  * A network failure never blocks the flow: the geometry degrades to a straight line and the reason
- * is shown as a non-blocking line inside the result card.
+ * is shown inside the result card.
  *
  * @param controller State owner; created once by `AppController`.
- * @param onDismiss Closes the sheet (called by the header's close button).
+ * @param onDismiss Kept for the host contract; the sheet's own chevron is the visible way out.
+ * @param onContentHeightChange Reports this page's measured height so the sheet can hug it.
  */
 @Composable
 fun RoutePlannerHost(
     controller: RoutePlannerController,
     onDismiss: () -> Unit,
+    onContentHeightChange: (Int) -> Unit = {},
 ) {
     val searchTarget by controller.searchTarget.collectAsStateWithLifecycle()
 
     Surface(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .testTag("e2e.route.planner"),
-        // Transparent on purpose: the host sheet already paints its own M3 sheet container
-        // (`surfaceContainerLow` in light, `surfaceContainer` in dark). Painting `surface` here
-        // would lay a second, whiter panel over the sheet and is exactly what made the planner read
-        // as a different design stacked inside the sheet.
+        // Transparent on purpose: the host sheet already paints its own M3 sheet container. Painting
+        // `surface` here would lay a second, whiter panel over the sheet.
         color = Color.Transparent,
     ) {
         if (searchTarget != null) {
             RouteSearchPage(controller = controller)
         } else {
-            RoutePlanPage(controller = controller, onDismiss = onDismiss)
+            RoutePlanPage(
+                controller = controller,
+                onDismiss = onDismiss,
+                onContentHeightChange = onContentHeightChange,
+            )
         }
     }
 }
@@ -184,6 +205,7 @@ fun RoutePlannerHost(
 private fun RoutePlanPage(
     controller: RoutePlannerController,
     onDismiss: () -> Unit,
+    onContentHeightChange: (Int) -> Unit,
 ) {
     val origin by controller.origin.collectAsStateWithLifecycle()
     val destination by controller.destination.collectAsStateWithLifecycle()
@@ -194,113 +216,109 @@ private fun RoutePlanPage(
     val notice by controller.notice.collectAsStateWithLifecycle()
     val savedRoutes by controller.savedRoutes.collectAsStateWithLifecycle()
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        SheetHeader(
-            title = stringResource(R.string.rp_title),
-            subtitle = stringResource(R.string.rp_subtitle),
-            onDismiss = onDismiss,
-        )
-        LazyColumn(
-            // The list owns the flexible height between the header and the action bar: content
-            // hugs the top (no band between the mode segment and the summary), long content
-            // scrolls, and the action bar below is a fixed, always-reachable control row — so the
-            // leftover height reads as "content area above an action bar", not as a hole.
+    val requestUsable = controller.currentRequest()?.isUsable == true
+    val planned = result?.isUsable == true
+
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        // `maxHeight` is what the sheet currently offers. Capping the page at it and reporting the
+        // *measured* height back means: short content → the sheet shrinks to it, long content → the
+        // sheet keeps its height and this column scrolls.
+        val cap = maxHeight
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
-            contentPadding = PaddingValues(bottom = 8.dp),
+                .heightIn(max = cap)
+                .verticalScroll(rememberScrollState())
+                .onSizeChanged { onContentHeightChange(it.height) }
+                .testTag("e2e.route.page")
+                .padding(bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
-                StopsCard(
-                    controller = controller,
-                    origin = origin,
-                    destination = destination,
-                    waypoints = waypoints,
-                )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                SheetTitle(stringResource(R.string.rp_title))
+                Spacer(modifier = Modifier.height(2.dp))
+                SheetSupporting(stringResource(R.string.rp_subtitle))
             }
-            item { AddStopRow(controller = controller) }
-            item { TravelModeRow(profile = profile, onSelect = controller::setProfile) }
 
-            if (planning) {
-                item {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("e2e.route.planning"),
-                    ) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = stringResource(R.string.rp_planning),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+            StopsCard(
+                controller = controller,
+                origin = origin,
+                destination = destination,
+                waypoints = waypoints,
+            )
+
+            // Travel mode is a property of *this route*, so it sits between the stops and the
+            // waypoint affordances instead of floating below them as an unrelated tab bar.
+            Column(modifier = Modifier.fillMaxWidth()) {
+                SheetLabel(stringResource(R.string.rp_mode_label))
+                Spacer(modifier = Modifier.height(6.dp))
+                TravelModeRow(profile = profile, onSelect = controller::setProfile)
+            }
+
+            when {
+                // Planning: progress only. Rendering the actions disabled here is exactly the
+                // "disabled noise" the audit flagged.
+                planning -> PlanningRow()
+
+                planned -> {
+                    ResultCard(result = result, notice = notice, planning = false)
+                    PlannedActions(controller = controller)
                 }
-            }
 
-            item {
-                ResultCard(
-                    result = result,
-                    notice = notice,
-                    planning = planning,
+                // A destination exists but no plan yet: exactly one action is possible.
+                requestUsable -> PlanAction(controller = controller)
+
+                // Nothing to plan yet: a hint, not a control (it used to be a filled card, which
+                // read as a disabled button).
+                else -> SheetHint(
+                    text = stringResource(R.string.rp_no_route_yet),
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
 
             if (savedRoutes.isNotEmpty()) {
-                item {
-                    Text(
-                        text = stringResource(R.string.rp_saved_routes),
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 8.dp, start = 4.dp),
-                    )
-                }
-                items(savedRoutes, key = { it.id }) { route ->
-                    SavedRouteRow(
-                        route = route,
-                        onLoad = { controller.loadSaved(route) },
-                        onDelete = { controller.deleteSaved(route) },
-                    )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    SheetLabel(stringResource(R.string.rp_saved_routes))
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        savedRoutes.forEach { route ->
+                            SavedRouteRow(
+                                route = route,
+                                onLoad = { controller.loadSaved(route) },
+                                onDelete = { controller.deleteSaved(route) },
+                            )
+                        }
+                    }
                 }
             }
         }
-        // Fixed action bar: the flexible height is the content area above it, so the leftover
-        // reads as deliberate separation rather than a gap between two floating blocks.
-        HorizontalDivider(
-            color = plannerBorderColor(),
-            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
-        )
-        ActionsRow(controller = controller, result = result, planning = planning)
-        Spacer(modifier = Modifier.height(8.dp))
     }
 }
 
 @Composable
-private fun SheetHeader(title: String, subtitle: String, onDismiss: () -> Unit) {
-    Row(
+private fun PlanningRow() {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .testTag("e2e.route.planning"),
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = title, style = MaterialTheme.typography.titleLarge)
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        IconButton(onClick = onDismiss) {
-            Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.action_close))
-        }
+        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = stringResource(R.string.rp_planning),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
+/**
+ * The 起点 / 途经点 / 终点 card.
+ *
+ * All stop *editing* lives inside this card (add / swap / use-current), because those actions belong
+ * to the object they modify — as a separate row below the card they read as a toolbar for something
+ * else. Each one carries a visible label.
+ */
 @Composable
 private fun StopsCard(
     controller: RoutePlannerController,
@@ -379,6 +397,48 @@ private fun StopsCard(
                 testTag = "e2e.route.dest",
                 onClick = { controller.openSearch(RouteFieldTarget(RouteFieldKind.DESTINATION)) },
             )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 12.dp), color = plannerDividerColor())
+            StopEditRow(controller = controller)
+        }
+    }
+}
+
+/** ＋添加途经点 · 交换 · 设为当前位置 — the stop-editing actions, all labelled, all 48 dp. */
+@Composable
+private fun StopEditRow(controller: RoutePlannerController) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        AssistChip(
+            onClick = { controller.openSearch(RouteFieldTarget(RouteFieldKind.WAYPOINT, -1)) },
+            label = { Text(stringResource(R.string.rp_add_waypoint), maxLines = 1) },
+            leadingIcon = {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            },
+            modifier = Modifier
+                .height(32.dp)
+                .testTag("e2e.route.addwaypoint"),
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        TextButton(
+            onClick = controller::swapEnds,
+            modifier = Modifier
+                .heightIn(min = ActionHeight)
+                .testTag("e2e.route.swap"),
+        ) {
+            Text(stringResource(R.string.rp_swap_short), maxLines = 1)
+        }
+        TextButton(
+            onClick = controller::resetOrigin,
+            modifier = Modifier
+                .heightIn(min = ActionHeight)
+                .testTag("e2e.route.use_current"),
+        ) {
+            Text(stringResource(R.string.rp_use_current_short), maxLines = 1)
         }
     }
 }
@@ -420,23 +480,14 @@ private fun StopField(
             .fillMaxWidth()
             .testTag(testTag)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         badge()
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            SheetLabel(label)
+            SheetValue(text = value)
         }
         if (trailing != null) {
             trailing()
@@ -445,34 +496,7 @@ private fun StopField(
                 Icons.Filled.Place,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
-            )
-        }
-    }
-}
-
-@Composable
-private fun AddStopRow(controller: RoutePlannerController) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        AssistChip(
-            onClick = {
-                controller.openSearch(RouteFieldTarget(RouteFieldKind.WAYPOINT, -1))
-            },
-            label = { Text(stringResource(R.string.rp_add_waypoint)) },
-            leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
-            modifier = Modifier.testTag("e2e.route.addwaypoint"),
-        )
-        Spacer(modifier = Modifier.weight(1f))
-        IconButton(onClick = controller::swapEnds) {
-            Icon(Icons.Filled.SwapVert, contentDescription = stringResource(R.string.rp_swap))
-        }
-        IconButton(onClick = controller::resetOrigin) {
-            Icon(
-                Icons.Filled.MyLocation,
-                contentDescription = stringResource(R.string.rp_use_current),
+                modifier = Modifier.size(20.dp),
             )
         }
     }
@@ -495,8 +519,6 @@ private fun TravelModeRow(
                 selected = profile == mode,
                 onClick = { onSelect(mode) },
                 shape = SegmentedButtonDefaults.itemShape(index = index, count = modes.size),
-                // Same 48 dp control height as the actions below, so the whole planner shares the
-                // peek card's control rhythm instead of mixing 40 dp segments with 48 dp buttons.
                 modifier = Modifier
                     .height(ActionHeight)
                     .testTag(tag),
@@ -513,25 +535,14 @@ private fun ResultCard(
     notice: String?,
     planning: Boolean,
 ) {
+    if (result == null || !result.isUsable) return
     PlannerCard(
         focal = true,
         modifier = Modifier.testTag("e2e.route.result"),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            if (result == null || !result.isUsable) {
-                // Neutral empty state only. A red "请先选择起点和终点" here would scold the user for
-                // something they are still doing (the origin is usually already filled in); the
-                // actionable message appears through [notice] when 开始模拟 is actually pressed.
-                Text(
-                    text = stringResource(R.string.rp_no_route_yet),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                return@Column
-            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 StatColumn(
@@ -548,12 +559,10 @@ private fun ResultCard(
                     value = RoutePlannerStrings.countLabel(result.waypointCount),
                 )
             }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = stringResource(R.string.rp_source) + " · " +
+            Spacer(modifier = Modifier.height(10.dp))
+            SheetSupporting(
+                stringResource(R.string.rp_source) + " · " +
                     stringResource(RoutePlannerStrings.sourceRes(result.source)),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (result.source == RouteSource.STRAIGHT_LINE) {
                 Spacer(modifier = Modifier.height(6.dp))
@@ -565,11 +574,7 @@ private fun ResultCard(
                 )
             } else if (planning) {
                 Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = stringResource(R.string.rp_planning),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                SheetSupporting(stringResource(R.string.rp_planning))
             }
         }
     }
@@ -578,65 +583,49 @@ private fun ResultCard(
 @Composable
 private fun StatColumn(label: String, value: String, emphasized: Boolean = false) {
     Column {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
+        SheetLabel(label)
+        SheetValue(
             text = value,
-            style = if (emphasized) {
-                MaterialTheme.typography.titleLarge
+            color = if (emphasized) {
+                MaterialTheme.colorScheme.primary
             } else {
-                MaterialTheme.typography.titleMedium
+                MaterialTheme.colorScheme.onSurface
             },
-            color = if (emphasized) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
         )
     }
 }
 
+/** Planned: 开始模拟 is the one action; editing actions sit on a second line, all labelled. */
 @Composable
-private fun ActionsRow(
-    controller: RoutePlannerController,
-    result: RouteResult?,
-    planning: Boolean,
-) {
-    val request = controller.currentRequest()
-    val canStart = !planning && result?.isUsable == true
-    val canEdit = !planning && request?.isUsable == true
+private fun PlannedActions(controller: RoutePlannerController) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(
             onClick = controller::start,
-            enabled = canStart,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(ActionHeight)
                 .testTag("e2e.route.start"),
         ) {
-            Icon(Icons.Filled.PlayArrow, contentDescription = null)
-            Spacer(modifier = Modifier.size(6.dp))
-            Text(stringResource(R.string.rp_start))
+            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(stringResource(R.string.rp_start), maxLines = 1)
         }
-        // Two equal tonal actions plus a destructive icon action. Three equal-weight *labelled*
-        // buttons over-constrain a 360dp-wide sheet (「规划路线」 used to render as 「规划路」), so
-        // 清除 is an icon button here — deliberately distinct because it destroys the plan.
         Row(
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             FilledTonalButton(
                 onClick = controller::plan,
-                enabled = canEdit,
                 modifier = Modifier
                     .weight(1.2f)
                     .height(ActionHeight)
                     .testTag("e2e.route.plan"),
             ) {
-                Text(stringResource(R.string.rp_plan), maxLines = 1)
+                Text(stringResource(R.string.rp_replan), maxLines = 1)
             }
             FilledTonalButton(
                 onClick = controller::save,
-                enabled = canEdit,
                 modifier = Modifier
                     .weight(1f)
                     .height(ActionHeight)
@@ -656,6 +645,38 @@ private fun ActionsRow(
                     tint = MaterialTheme.colorScheme.error,
                 )
             }
+        }
+    }
+}
+
+/** Requestable but not planned: exactly one primary action. */
+@Composable
+private fun PlanAction(controller: RoutePlannerController) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Button(
+            onClick = controller::plan,
+            modifier = Modifier
+                .weight(1f)
+                .height(ActionHeight)
+                .testTag("e2e.route.plan"),
+        ) {
+            Text(stringResource(R.string.rp_plan), maxLines = 1)
+        }
+        IconButton(
+            onClick = controller::clear,
+            modifier = Modifier
+                .size(ActionHeight)
+                .testTag("e2e.route.clear"),
+        ) {
+            Icon(
+                Icons.Filled.Delete,
+                contentDescription = stringResource(R.string.rp_clear_route),
+                tint = MaterialTheme.colorScheme.error,
+            )
         }
     }
 }
@@ -685,11 +706,7 @@ private fun SavedRouteRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    text = stringResource(RoutePlannerStrings.labelRes(route.profile)),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                SheetLabel(stringResource(RoutePlannerStrings.labelRes(route.profile)))
             }
             IconButton(onClick = onDelete) {
                 Icon(
@@ -742,14 +759,13 @@ private fun RouteSearchPage(controller: RoutePlannerController) {
                     contentDescription = stringResource(R.string.rp_search_back),
                 )
             }
-            Text(
+            SheetTitle(
                 text = when (target?.kind) {
                     RouteFieldKind.ORIGIN -> stringResource(R.string.rp_origin)
                     RouteFieldKind.DESTINATION -> stringResource(R.string.rp_destination)
                     RouteFieldKind.WAYPOINT -> stringResource(R.string.rp_add_waypoint)
                     null -> stringResource(R.string.rp_search_title)
                 },
-                style = MaterialTheme.typography.titleMedium,
             )
         }
         OutlinedTextField(
@@ -855,10 +871,8 @@ private fun RouteSearchPage(controller: RoutePlannerController) {
 
 @Composable
 private fun SectionLabel(text: String) {
-    Text(
+    SheetLabel(
         text = text,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 4.dp, top = 12.dp, bottom = 4.dp),
     )
 }

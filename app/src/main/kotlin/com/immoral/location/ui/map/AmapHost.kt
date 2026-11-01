@@ -306,6 +306,23 @@ class AmapHost(
         map.moveCamera(CameraUpdateFactory.newLatLngZoom(toMap(point), DEFAULT_ZOOM))
     }
 
+    /** Pixels the subject is drawn above the view centre (see [MapBackend.setSubjectOffsetY]). */
+    private var subjectOffsetY = 0
+
+    override fun setSubjectOffsetY(offsetPx: Int) {
+        if (offsetPx == subjectOffsetY) return
+        subjectOffsetY = offsetPx
+        try {
+            // AMap draws the map centre at (width/2, height/2) by default; moving that anchor up
+            // lifts the subject into the band of map the sheet leaves visible.
+            val w = mapView.width.takeIf { it > 0 } ?: return
+            val h = mapView.height.takeIf { it > 0 } ?: return
+            map.setPointToCenter(w / 2, h / 2 - offsetPx)
+        } catch (t: Throwable) {
+            // ignore
+        }
+    }
+
     override fun setDarkFilter(enabled: Boolean) {
         // 高德 has a real night style — much better than filtering raster tiles.
         map.mapType = if (enabled) AMap.MAP_TYPE_NIGHT else AMap.MAP_TYPE_NORMAL

@@ -92,20 +92,50 @@ internal object MarkerArt {
     // --------------------------------------------------------------- markers
 
     /**
-     * Current position: 22dp `primary` dot, 3dp `surface` ring, soft shadow.
-     * Spec §3, row 1.
+     * Current position: the most important object on the map (audit S4).
+     *
+     * Was: a flat 22 dp dot with a 3 dp ring and a 20 % shadow — on a busy street network it read as
+     * another POI glyph. Is now: a 24 dp `primary` core, a **3.5 dp `surface` casing plus a 1 dp
+     * dark hairline** outside it (a contrasting double ring, so the marker keeps an edge over white
+     * roads, green parks and blue water alike), and a soft `primary` halo that makes it read as the
+     * anchor of the frame. The accuracy circle drawn by the map host sits under all of it.
      */
     fun currentPosition(palette: MapPalette, density: Float): MarkerBitmap {
-        val box = 40f
+        val box = 80f
         val (bmp, canvas) = bitmap(box, box, density)
         val c = box / 2f * density
-        val dotR = 11f * density
-        val ring = 3f * density
-        canvas.drawCircle(c, c + 1.5f * density, dotR + ring * 0.5f, shadow(density))
-        canvas.drawCircle(c, c, dotR, fill(ring(palette)))
-        canvas.drawCircle(c, c, dotR - ring, fill(palette.primary))
-        // A 1dp inner highlight keeps the dot from looking like a flat sticker on busy tiles.
-        canvas.drawCircle(c, c, dotR - ring, stroke(alpha(0xFFFFFF, 0.22f), 1f * density))
+        val dotR = 12f * density
+        val ring = 3.5f * density
+        // Soft halo: a three-stop radial gradient rather than a flat disc, so the marker glows into
+        // the map instead of stamping a translucent circle onto it.
+        val haloRadius = 34f * density
+        val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                c,
+                c,
+                haloRadius,
+                intArrayOf(
+                    alpha(palette.primary, 0.30f),
+                    alpha(palette.primary, 0.12f),
+                    alpha(palette.primary, 0f),
+                ),
+                floatArrayOf(0f, 0.45f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+        }
+        canvas.drawCircle(c, c, haloRadius, halo)
+        canvas.drawCircle(c, c + 2f * density, dotR + ring, shadow(density))
+        // Contrasting double ring: light casing with a dark hairline outside it.
+        canvas.drawCircle(
+            c,
+            c,
+            dotR + ring + 0.5f * density,
+            stroke(alpha(0xFF000000.toInt(), 0.35f), 1f * density),
+        )
+        canvas.drawCircle(c, c, dotR + ring, fill(ring(palette)))
+        canvas.drawCircle(c, c, dotR, fill(palette.primary))
+        // 1 dp top-light highlight keeps the core from looking like a flat sticker.
+        canvas.drawCircle(c, c, dotR - 0.5f * density, stroke(0x38FFFFFF, 1f * density))
         return MarkerBitmap(bmp, MarkerGeometry.CENTER, MarkerGeometry.CENTER)
     }
 

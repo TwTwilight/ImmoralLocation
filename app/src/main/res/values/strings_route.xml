@@ -27,9 +27,14 @@
     <string name="rp_waypoints_none">无途经点</string>
 
     <!-- Travel modes -->
+    <string name="rp_mode_label">出行方式</string>
     <string name="rp_mode_walk">步行</string>
     <string name="rp_mode_bike">骑行</string>
     <string name="rp_mode_drive">驾车</string>
+
+    <!-- Visible labels of the stop-editing actions (they used to be unlabelled icon buttons) -->
+    <string name="rp_swap_short">交换</string>
+    <string name="rp_use_current_short">设为当前位置</string>
 
     <!-- Actions -->
     <string name="rp_plan">规划路线</string>

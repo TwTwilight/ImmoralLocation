@@ -38,5 +38,8 @@ class DesignTokenTest {
         assertEquals(20f, Dimens.sheetPadding.value, eps)
         assertEquals(16f, Dimens.aboveSheet.value, eps)
         assertEquals(44f, Dimens.transportCell.value, eps)
+        // The right-edge plate is one 48 dp button plus 8 dp of plate on each side. It must wrap its
+        // content: the first capture of the audit round showed it stretched to the map width.
+        assertEquals(64f, Dimens.fabGroupWidth.value, eps)
     }
 }
