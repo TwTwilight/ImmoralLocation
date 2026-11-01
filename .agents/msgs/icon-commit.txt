@@ -1,0 +1,27 @@
+feat(icon): MD3 adaptive launcher icon - pin in orbit, themed + legacy layers
+
+The old mark was a Google-blue square with the stock Material pin, drawn as one
+flat vector in drawable/ic_launcher.xml. Replace it with a Material 3 style icon:
+a chunky pin (aperture cut-out) sitting inside a tilted orbit that carries a
+pastel satellite, on an MD3 tonal ramp (#A08BF2 top-left -> #3A1F8C bottom-right,
+plus a soft top-left glow).
+
+Layers:
+- drawable/ic_launcher_background  adaptive background, vector gradient
+- drawable/ic_launcher_foreground  ring + satellite + pin, whole mark inside the
+                                   66dp safe circle so every launcher mask
+                                   (circle, squircle, rounded square) keeps it
+- drawable/ic_launcher_monochrome  Android 13 themed icon silhouette
+- drawable/ic_launcher_legacy      pre-26 plate: no vector gradients below API 24,
+                                   so the same mark on a solid rounded square
+- mipmap-anydpi (legacy), -v26 (adaptive), -v33 (adaptive + monochrome), each with
+  a round variant; the manifest now points at @mipmap/ic_launcher and declares
+  android:roundIcon.
+
+The aperture contour is wound opposite to the pin outline, so the hole survives
+both the evenOdd filler (API 24+) and the legacy nonZero one. drawable/ic_launcher
+.xml is gone; ic_notification.xml keeps the same pin geometry as a 24dp silhouette.
+
+Verified on 23049RAD8C (Android 15): :app:processDebugResources and
+:app:assembleDebug pass offline, and the installed APK renders the new adaptive
+icon under the HyperOS squircle mask.

@@ -1,6 +1,6 @@
 package com.immoral.location.ui.route
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,7 +34,6 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -77,7 +76,63 @@ import com.immoral.location.core.route.RouteResult
 import com.immoral.location.core.route.RouteSource
 import com.immoral.location.core.route.SavedRoute
 import com.immoral.location.data.RecentPlace
+import com.immoral.location.ui.theme.CardShape
 import kotlinx.coroutines.delay
+
+/**
+ * Surface roles used *inside* the bottom sheet.
+ *
+ * The sheet is `sheetContainer()` — `surfaceContainerLow` in light, `surfaceContainer` in dark — so
+ * an inner card has to sit one step up the M3 tonal ramp (`surfaceContainerHigh`) or it reads as a
+ * near-white hole in a tonal sheet. Elevation stays 0 and the boundary is the same 1 dp
+ * `outlineVariant` hairline the map chrome uses, which is what makes the planner and the rest of
+ * the app look like one design instead of two stacked ones.
+ */
+@Composable
+private fun plannerCardColor(): Color = MaterialTheme.colorScheme.surfaceContainerHigh
+
+/** The focal card (route summary): one step above [plannerCardColor] so the result stands out. */
+@Composable
+private fun plannerFocalColor(): Color = MaterialTheme.colorScheme.surfaceContainerHighest
+
+/** Faint hairline matching the map chrome's card outline. */
+@Composable
+private fun plannerBorderColor(): Color =
+    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+
+/**
+ * Height of every action control in the planner (primary, tonal, icon).
+ *
+ * Matches the peek card's action row so the sheet and the planner read as one control system;
+ * the icon button gets the same square box so the three actions share one baseline.
+ */
+private val ActionHeight = 48.dp
+
+/** Hairline used *between rows inside* a card: fainter than the card boundary. */
+@Composable
+private fun plannerDividerColor(): Color =
+    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+
+/**
+ * A card inside the sheet: tonal container, 20 dp radius, 1 dp hairline, no elevation.
+ *
+ * @param focal `true` for the route summary, which gets the highest container role.
+ */
+@Composable
+private fun PlannerCard(
+    modifier: Modifier = Modifier,
+    focal: Boolean = false,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = CardShape,
+        color = if (focal) plannerFocalColor() else plannerCardColor(),
+        border = BorderStroke(1.dp, plannerBorderColor()),
+    ) {
+        Column(content = content)
+    }
+}
 
 /**
  * 路径规划 sheet content — the Google-Maps-style planner.
@@ -109,7 +164,11 @@ fun RoutePlannerHost(
         modifier = Modifier
             .fillMaxSize()
             .testTag("e2e.route.planner"),
-        color = MaterialTheme.colorScheme.surface,
+        // Transparent on purpose: the host sheet already paints its own M3 sheet container
+        // (`surfaceContainerLow` in light, `surfaceContainer` in dark). Painting `surface` here
+        // would lay a second, whiter panel over the sheet and is exactly what made the planner read
+        // as a different design stacked inside the sheet.
+        color = Color.Transparent,
     ) {
         if (searchTarget != null) {
             RouteSearchPage(controller = controller)
@@ -138,13 +197,14 @@ private fun RoutePlanPage(
     Column(modifier = Modifier.fillMaxSize()) {
         SheetHeader(
             title = stringResource(R.string.rp_title),
-            subtitle = stringResource(R.string.rp_plan),
+            subtitle = stringResource(R.string.rp_subtitle),
             onDismiss = onDismiss,
         )
         LazyColumn(
-            // `weight(1f)` (not fillMaxSize) so the list gets exactly the height left between the
-            // header and the pinned action bar, whatever the sheet detent gives us; it scrolls
-            // instead of being clipped. The action bar owns the bottom spacing.
+            // The list owns the flexible height between the header and the action bar: content
+            // hugs the top (no band between the mode segment and the summary), long content
+            // scrolls, and the action bar below is a fixed, always-reachable control row — so the
+            // leftover height reads as "content area above an action bar", not as a hole.
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
@@ -180,6 +240,14 @@ private fun RoutePlanPage(
                 }
             }
 
+            item {
+                ResultCard(
+                    result = result,
+                    notice = notice,
+                    planning = planning,
+                )
+            }
+
             if (savedRoutes.isNotEmpty()) {
                 item {
                     Text(
@@ -198,43 +266,14 @@ private fun RoutePlanPage(
                 }
             }
         }
-        // Route summary + primary actions are pinned to the bottom of the sheet instead of
-        // scrolling with the content. That is what keeps 开始模拟 reachable and, with the summary
-        // anchored down there, any leftover height reads as the normal air above a bottom bar
-        // rather than as a hole between a floating hint and the actions.
-        PinnedBottom(
-            controller = controller,
-            result = result,
-            notice = notice,
-            planning = planning,
+        // Fixed action bar: the flexible height is the content area above it, so the leftover
+        // reads as deliberate separation rather than a gap between two floating blocks.
+        HorizontalDivider(
+            color = plannerBorderColor(),
+            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
         )
-    }
-}
-
-/** Bottom cluster of the planner: hairline divider + result card + [ActionsRow]. */
-@Composable
-private fun PinnedBottom(
-    controller: RoutePlannerController,
-    result: RouteResult?,
-    notice: String?,
-    planning: Boolean,
-) {
-    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp, bottom = 8.dp),
-        ) {
-            HorizontalDivider(modifier = Modifier.padding(bottom = 8.dp))
-            ResultCard(
-                controller = controller,
-                result = result,
-                notice = notice,
-                planning = planning,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            ActionsRow(controller = controller, result = result, planning = planning)
-        }
+        ActionsRow(controller = controller, result = result, planning = planning)
+        Spacer(modifier = Modifier.height(8.dp))
     }
 }
 
@@ -269,7 +308,7 @@ private fun StopsCard(
     destination: RoutePlace?,
     waypoints: List<RoutePlace>,
 ) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+    PlannerCard {
         Column(modifier = Modifier.padding(vertical = 4.dp)) {
             StopField(
                 badge = { StopBadge(label = "A", container = MaterialTheme.colorScheme.primaryContainer) },
@@ -278,7 +317,7 @@ private fun StopsCard(
                 testTag = "e2e.route.origin",
                 onClick = { controller.openSearch(RouteFieldTarget(RouteFieldKind.ORIGIN)) },
             )
-            HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+            HorizontalDivider(modifier = Modifier.padding(start = 56.dp), color = plannerDividerColor())
             waypoints.forEachIndexed { index, waypoint ->
                 StopField(
                     badge = {
@@ -325,7 +364,7 @@ private fun StopsCard(
                         }
                     },
                 )
-                HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+                HorizontalDivider(modifier = Modifier.padding(start = 56.dp), color = plannerDividerColor())
             }
             StopField(
                 badge = {
@@ -456,7 +495,11 @@ private fun TravelModeRow(
                 selected = profile == mode,
                 onClick = { onSelect(mode) },
                 shape = SegmentedButtonDefaults.itemShape(index = index, count = modes.size),
-                modifier = Modifier.testTag(tag),
+                // Same 48 dp control height as the actions below, so the whole planner shares the
+                // peek card's control rhythm instead of mixing 40 dp segments with 48 dp buttons.
+                modifier = Modifier
+                    .height(ActionHeight)
+                    .testTag(tag),
                 icon = {},
                 label = { Text(stringResource(RoutePlannerStrings.labelRes(mode)), maxLines = 1) },
             )
@@ -466,32 +509,24 @@ private fun TravelModeRow(
 
 @Composable
 private fun ResultCard(
-    controller: RoutePlannerController,
     result: RouteResult?,
     notice: String?,
     planning: Boolean,
 ) {
-    val request = controller.currentRequest()
-    ElevatedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("e2e.route.result"),
+    PlannerCard(
+        focal = true,
+        modifier = Modifier.testTag("e2e.route.result"),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             if (result == null || !result.isUsable) {
+                // Neutral empty state only. A red "请先选择起点和终点" here would scold the user for
+                // something they are still doing (the origin is usually already filled in); the
+                // actionable message appears through [notice] when 开始模拟 is actually pressed.
                 Text(
                     text = stringResource(R.string.rp_no_route_yet),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (request == null) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = stringResource(R.string.rp_error_missing),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
                 return@Column
             }
             Row(
@@ -575,6 +610,7 @@ private fun ActionsRow(
             enabled = canStart,
             modifier = Modifier
                 .fillMaxWidth()
+                .height(ActionHeight)
                 .testTag("e2e.route.start"),
         ) {
             Icon(Icons.Filled.PlayArrow, contentDescription = null)
@@ -593,6 +629,7 @@ private fun ActionsRow(
                 enabled = canEdit,
                 modifier = Modifier
                     .weight(1.2f)
+                    .height(ActionHeight)
                     .testTag("e2e.route.plan"),
             ) {
                 Text(stringResource(R.string.rp_plan), maxLines = 1)
@@ -602,13 +639,16 @@ private fun ActionsRow(
                 enabled = canEdit,
                 modifier = Modifier
                     .weight(1f)
+                    .height(ActionHeight)
                     .testTag("e2e.route.save"),
             ) {
                 Text(stringResource(R.string.rp_save), maxLines = 1)
             }
             IconButton(
                 onClick = controller::clear,
-                modifier = Modifier.testTag("e2e.route.clear"),
+                modifier = Modifier
+                    .size(ActionHeight)
+                    .testTag("e2e.route.clear"),
             ) {
                 Icon(
                     Icons.Filled.Delete,
@@ -628,7 +668,8 @@ private fun SavedRouteRow(
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = plannerCardColor(),
+        border = BorderStroke(1.dp, plannerBorderColor()),
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onLoad),

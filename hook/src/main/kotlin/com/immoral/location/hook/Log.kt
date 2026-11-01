@@ -26,8 +26,8 @@ import java.util.concurrent.ConcurrentHashMap
  *  * **errors** ([e]) — always emitted, deduplicated by the callers, so a broken hook stays
  *    diagnosable on a production install.
  *
- * A release build is therefore silent in logcat unless the property is set, and quietness never
- * changes behaviour: this object only decides whether text is written.
+ * Logs are therefore ON in every build by default - logcat is an adb/root-only surface, so a silent build
+ * costs more in support than it buys in stealth (owner decision). `debug.immoral.log=0` silences it; this object only decides whether text is written.
  *
  * [extrasEnabled] is a **separate, stricter** switch for the `immoral.*` keys inside a fabricated
  * `android.location.Location`'s extras: those are readable by *any* app that receives a fix, so
@@ -104,7 +104,7 @@ object Log {
 
     /** Install banner + per-call detail. See the class doc for the policy. */
     val detail: Boolean
-        get() = detailMemo ?: (flagOf(PROP_VERBOSE) ?: debugBuild).also { detailMemo = it }
+        get() = detailMemo ?: (flagOf(PROP_VERBOSE) ?: true).also { detailMemo = it } // logs are ON by default (owner decision 2026-11-02): logcat is an adb/root-only surface, and a silent build is much harder to support. Set debug.immoral.log=0 to quiet it.
 
     /**
      * Whether fabricated Locations carry the `immoral.*` state-bus extras.
@@ -191,4 +191,6 @@ object Log {
         }
     }
 }
+
+
 
