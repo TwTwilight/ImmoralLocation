@@ -49,12 +49,11 @@ web/
 *.md
 !/README.md
 
-# Native layer build outputs (libimmoralhook.so is committed prebuilt in hook/src/main/jniLibs)
+# Native layer build outputs (libimmoralhook.so is committed prebuilt in hook/src/main/jniLibs;
+# ShadowHook comes from the xmake package repo now, so there is no vendored third_party/ tree left)
 native/.xmake/
 native/build/
 native/out/
-native/third_party/shadowhook/arm64-v8a/
-native/third_party/shadowhook/armeabi-v7a/
 
 # Signing material never leaves the machine: CI gets it from repository secrets
 keystore/
@@ -63,18 +62,4 @@ keystore/
 
 # Kotlin incremental build state
 .kotlin/
-
-# Vendored ShadowHook: only the C/C++ sources and the licence are needed to build libimmoralhook.so
-/native/third_party/android-inline-hook/app/
-/native/third_party/android-inline-hook/systest/
-/native/third_party/android-inline-hook/doc/
-/native/third_party/android-inline-hook/.github/
-/native/third_party/android-inline-hook/gradle/
-/native/third_party/android-inline-hook/gradlew
-/native/third_party/android-inline-hook/gradlew.bat
-/native/third_party/android-inline-hook/gradle.properties
-/native/third_party/android-inline-hook/build.gradle
-/native/third_party/android-inline-hook/settings.gradle
-/native/third_party/android-inline-hook/checkstyle.xml
-/native/third_party/android-inline-hook/.clang-format
 
