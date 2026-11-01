@@ -777,6 +777,37 @@ object LocationHooks {
                             return
                         }
                         Log.rate("indep.pass." + packageName, 60_000L, "independent: real fix passed through to $packageName")
+                        // "Pass through" is not automatically a *real* fix: the report path rewrites the
+                        // provider's own stored location, so the value arriving here can already be our
+                        // fake. Measured 2026-11-02: a non-whitelisted verifier received
+                        // `passive lat=31.234916` — the simulated point — through exactly this branch.
+                        // Substitute the last genuine fix captured for this provider, else drop.
+                        if (Fakes.containsFabricated(carrier) || coordinatesMatchSnap(carrier, snap)) {
+                            val provider = (carrier as? Location)?.provider ?: "gps"
+                            val real = realLast[providerFor(provider)] ?: realLast[provider]
+                            if (real != null) {
+                                for (i in param.args.indices) {
+                                    when (val a = param.args[i]) {
+                                        is Location -> param.args[i] = real
+                                        else -> if (Refl.isInstanceOf(a, LR_NAME)) {
+                                            Fakes.locationResult(listOf(real))?.let { param.args[i] = it }
+                                        }
+                                    }
+                                }
+                                Log.rate(
+                                    "indep.subst." + packageName,
+                                    30_000L,
+                                    "independent: substituted the last real $provider fix for $packageName",
+                                )
+                            } else {
+                                dropDelivery(param)
+                                Log.rate(
+                                    "indep.drop.noreal." + packageName,
+                                    30_000L,
+                                    "independent: dropped our fix for $packageName (no real fix captured yet)",
+                                )
+                            }
+                        }
                         return
                     } else {
                         Log.rate("indep.allow." + packageName, 60_000L, "independent: filter pass for $packageName")
