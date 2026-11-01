@@ -416,3 +416,29 @@ per-package evidence = [log:getLastLocation->real, log:dropped-for-verifier, log
 不再被改写/注入假点，假点只在"知道接收者是谁"的 seam 注入（per-registration 投递、last-location 查询、
 `getCurrentLocation`）。随后必须用 `e2e/amap_verify.ps1` 重跑 10 分钟稳定性，确认没有回到
 "半分钟后跳回真实位置"的老问题。
+
+## 16. 独立模拟：根因找到，`10-independent` 首次真正 PASS（2026-11-02 07:03）
+
+前五次尝试都在"过滤/缓存/matcher"上打转，真正的原因在**记忆层**：
+
+> 假点经过 Parcelable 往返后**丢失对象身份**（`fabricatedResults` 是 IdentityHashMap），
+> 而生产构建又默认不写 `immoral.*` extras ⇒ 我们自己造的点回到 `rememberReal` 时"看起来是真的"，
+> 被当成真实 fix 存进 `realLast`。独立模式随后把它 `publishRealToManager` **写回 provider 缓存**，
+> 于是任何非白名单读缓存都拿到模拟点。日志里 `cache-genuine` 是真的（我们确实写回过），
+> 只是写回的值本身是假的。
+
+**修法（一行判定）**：`rememberReal` 跳过任何与引擎当前坐标相距 150 m 以内的值。
+
+**设备证据**（`e2e/out/report-10-j.json`）：
+```
+lastKnown outside(非白名单) = 30.27635,120.17621  d = 163539 m   ← 真实位置，离模拟点 163 km
+lastKnown inside(白名单)    = 31.23492,121.4737   d = 0 m        ← 正是模拟点
+stream outside fake=False
+per-package evidence = [getLastLocation->real, dropped-for-verifier, substituted-real, cache-genuine]
+```
+
+这是本轮功能上最重要的一条：**独立模拟第一次在"非空样本"下通过**，而且不再可能靠"零样本"空过。
+
+回归（同 build）：`1` PASS、`3` PASS（3.3 m/s 方位 0°）、`8` PASS（`delta=33`，seam 4 / verifier 1）、
+`9` PASS（58 颗合成星）；`6-cells` 在本轮合并运行里出现一次 `ci` 未变化，单独运行（`report-final-r7.json`）
+为 PASS，属已知的 publish 时序抖动，下一轮用同样方式复核。
