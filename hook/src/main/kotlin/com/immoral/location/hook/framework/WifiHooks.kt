@@ -227,26 +227,36 @@ object WifiHooks {
         if (!hookedClasses.add(cls.name + "#scanResults")) return
         var hooked = 0
         // Vendor builds rename this method (HyperOS exposes no `getScanResults*` on
-        // WifiServiceImpl at all), so match structurally: anything that returns a List and whose
-        // name talks about scans is a scan-result getter.
+        // WifiServiceImpl at all) **and** modern AIDL returns a `ParceledListSlice`, which is not a
+        // `java.util.List` — matching only List-returning methods is why every class reported
+        // "no matching method" while apps kept receiving real APs. Match by name *and* by both
+        // return shapes.
         for (m in Refl.methodsWhere(cls) { m ->
-            List::class.java.isAssignableFrom(m.returnType) &&
-                (m.name.lowercase().contains("scanresult") || m.name.lowercase().contains("scanlist"))
+            val ret = m.returnType.name
+            val listLike = List::class.java.isAssignableFrom(m.returnType) ||
+                ret.contains("ParceledListSlice") || ret.endsWith("Slice")
+            val named = m.name.lowercase().contains("scanresult") || m.name.lowercase().contains("scanlist")
+            listLike && named
         }) {
             val ok = Refl.hook(m, withholdScanResults("$label#${m.name}"), "$label#${m.name}")
             if (ok) {
                 hooked++
                 resolved++
+                Log.hook(true, "$label#${m.name} -> ${m.returnType.name}")
             } else {
                 missed++
             }
         }
         if (hooked == 0) {
-            // One-shot inventory so the next run says exactly what this ROM calls it.
-            val listMethods = Refl.methodsWhere(cls) { m ->
-                List::class.java.isAssignableFrom(m.returnType) && m.name.contains("et")
-            }.map { it.name }.distinct().sorted().joinToString(", ")
-            Log.hook(false, "$label#scanResults*", "no matching method on ${cls.name}; List-returning candidates: $listMethods")
+            // One-shot inventory so the next run says exactly what this ROM calls it, including the
+            // return type (a `ParceledListSlice` return is the usual reason a List-only match fails).
+            val candidates = Refl.methodsWhere(cls) { m -> m.name.lowercase().contains("scan") }
+                .map { it.name + ":" + it.returnType.simpleName }
+                .distinct()
+                .sorted()
+                .take(40)
+                .joinToString(", ")
+            Log.hook(false, "$label#scanResults*", "no matching method on ${cls.name}; scan* candidates: $candidates")
             missed++
         } else {
             Log.hook(true, "$label#scanResults* (${hooked} methods on ${cls.name})")
@@ -294,15 +304,48 @@ object WifiHooks {
                     if (snap.accessPoints.isEmpty()) return
                     val results = Fakes.scanResults(snap.accessPoints)
                     if (results.isEmpty()) return
-                    param.result = results
+                    val value = asReturnShape(param, results)
+                    if (value === UNBUILDABLE) return
+                    param.result = value
                     Log.rate("wifi.replaced", 20_000L, "$label -> ${results.size} synthetic APs for uid $caller")
                     return
                 }
-                param.result = emptyList<Any>()
+                val value = asReturnShape(param, emptyList())
+                if (value === UNBUILDABLE) return
+                param.result = value
                 Log.rate("wifi.withheld", 20_000L, "$label -> 0 APs withheld from uid $caller (wifiSim=false)")
             } catch (t: Throwable) {
                 Log.rate("wifi.replace", 15_000L, "wifi replace failed: ${t.javaClass.simpleName}")
             }
         }
+    }
+
+    /** Sentinel: the return type is a container we cannot synthesise, so the call is left untouched. */
+    private val UNBUILDABLE = Any()
+
+    /**
+     * Wrap [items] in whatever the hooked method returns: a plain `List` (older AOSP / vendor) or a
+     * `ParceledListSlice` (modern AIDL — and **not** a `java.util.List`, which is why the original
+     * List-only matcher hooked nothing on this ROM).
+     */
+    private fun asReturnShape(param: XC_MethodHook.MethodHookParam, items: List<Any>): Any? {
+        val type = (param.method as? java.lang.reflect.Method)?.returnType ?: return items
+        if (List::class.java.isAssignableFrom(type)) return items
+        val name = type.name
+        if (!(name.contains("ParceledListSlice") || name.endsWith("Slice"))) return items
+        try {
+            return type.getConstructor(List::class.java).newInstance(items)
+        } catch (_: Throwable) {
+        }
+        try {
+            return type.getConstructor(Collection::class.java).newInstance(items)
+        } catch (_: Throwable) {
+        }
+        Log.rate(
+            "wifi.slice.unavailable",
+            60_000L,
+            "cannot build an empty ${type.name} — leaving this call untouched (fail open, logged once)",
+        )
+        return UNBUILDABLE
     }
 }

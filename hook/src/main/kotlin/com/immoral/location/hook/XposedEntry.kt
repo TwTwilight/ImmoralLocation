@@ -64,8 +64,9 @@ class XposedEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 return
             }
             // com.android.phone hosts the cell-info API (PhoneInterfaceManager): framework hooks only,
-            // it is a platform process serving cell state to every app.
-            if (pkg == "com.android.phone") {
+            // it is a platform process serving cell state to every app. LSPosed can report this
+            // process under its process name rather than its package name, so match both.
+            if (pkg == "com.android.phone" || reported.startsWith("com.android.phone")) {
                 try {
                     com.immoral.location.hook.framework.TelephonyHooks.install(lpparam.classLoader)
                 } catch (t: Throwable) {
