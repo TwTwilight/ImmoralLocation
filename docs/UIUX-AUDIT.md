@@ -64,3 +64,27 @@
 - S5：交通方式第六格图标 `Tune` → `Speed`。
 - S6：统一动作层级（filled / tonal / errorContainer-icon），全 app 无灰色主按钮。
 - S7：摘要行 `● 状态 · 模式 速度 · 精度`，箭头内联。
+
+## 6. 第三轮验收（2026-11-02 04:35，自查后）
+
+已用截图逐条复核（我自己读图，不采信汇报）：
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| S1 一物一职 | FIXED | `v2-shell-light.png`：♡ 为唯一开关，`收藏 1 ›` 是导航链接 |
+| S2 工具入口 | FIXED | 同图：`工具` 药丸与搜索条同高同容器、带标签 |
+| S3 FAB 分组 | FIXED | 同图：竖排 64 dp 窄板，右对齐 16 dp（首版误做成整屏宽，已修并加 token 断言） |
+| S4 主体可见 | FIXED（浅色） | 同图：24 dp 芯 + 白环 + 深色细描边 + 光晕，压绿地/路网仍清晰；深色见 `v2-shell-dark.png`（可读但偏亮，下一步微调） |
+| S5 第六格图标 | FIXED | 同图：速度表图标，不再与图层混淆 |
+| S6 动作层级 | FIXED | 同图：filled 开始 / tonal 路线 / icon ♡，无灰色主按钮 |
+| S7 摘要行 | FIXED | 同图：`● 未开始 · 步行 1.4 m/s ›` |
+| R6 主体不被面板挡 | FIXED | `v2-shell-light.png` 与 `v2-planner.png`：点在面板上方可视带内 |
+| P1–P7 规划页 | FIXED | `new-route.png`（03:39）：贴合内容、无禁用主按钮、出行方式在起终点下方、交换/设为当前位置有标签、单一出口、提示为普通文字、字号三档统一 |
+
+仍 OPEN：S8（已修，需在 peek 高度复核）、S9（徽标与图钉节奏）、S4 深色微调、S4 三底图三连（水域/密集路网未拍）、规划页"带点版"截图。
+
+## 7. 功能：`10-independent` 更正为 FAIL
+
+见 `docs/ACCEPTANCE.md` §11：之前那次 PASS 是 `samples=0` 的空判定；qa-e2e 已让 harness 在"零样本"时
+报 WARN inconclusive 而不是 PASS。有流时非白名单 app 仍收到假点 ⇒ 真实漏洞，下一轮定位 verifier 实际
+收到 gps 投递的那条 seam（很可能是 `getCurrentLocation` 或另一条 registration/lambda 路径）。
