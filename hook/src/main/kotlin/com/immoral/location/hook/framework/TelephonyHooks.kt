@@ -26,6 +26,8 @@ object TelephonyHooks {
     private var missed = 0
 
     fun install(loader: ClassLoader?) {
+        // Unconditional: proves install() is reached at all, before any hook/type matching runs.
+        Log.i("framework/telephony: install() reached in " + (runCatching { com.immoral.location.hook.ModuleInfo.selfProcessName() }.getOrDefault("?"))
         if (!installed.compareAndSet(false, true)) return
         for (className in arrayOf(PHONE_INTERFACE, TELEPHONY_REGISTRY)) {
             try {
@@ -127,3 +129,4 @@ object TelephonyHooks {
         return UNBUILDABLE
     }
 }
+
