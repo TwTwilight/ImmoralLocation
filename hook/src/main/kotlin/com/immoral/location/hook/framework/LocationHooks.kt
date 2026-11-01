@@ -785,7 +785,7 @@ object LocationHooks {
                         // Substitute the last genuine fix captured for this provider, else drop.
                         if (Fakes.containsFabricated(carrier) || coordinatesMatchSnap(carrier, snap)) {
                             val provider = (carrier as? Location)?.provider ?: "gps"
-                            val real = realLast[providerFor(provider)] ?: realLast[provider]
+                            val real = anyRealFix(provider)
                             if (real != null) {
                                 for (i in param.args.indices) {
                                     when (val a = param.args[i]) {
@@ -940,6 +940,18 @@ object LocationHooks {
     }
 
     /** Replaces the return value of `getLastLocation`-style methods. */
+    /**
+     * Last genuine fix for [key], falling back to any other provider.
+     *
+     * Provider names do not line up across seams: reports arrive as `gps`/`network`/`fused`, while an
+     * app frequently reads `passive`, and an exact-key lookup then returned null - which the
+     * non-whitelisted branch turned into "no location at all" (measured 2026-11-02 as a blackout in
+     * `10-independent`). A real fix from any provider is a far better answer than none.
+     */
+    private fun anyRealFix(key: String): Location? =
+        realLast[providerFor(key)] ?: realLast[key]
+            ?: realLast["fused"] ?: realLast["gps"] ?: realLast["network"]
+            ?: realLast.values.firstOrNull()
     private fun lastLocationHook(label: String): XC_MethodHook = object : XC_MethodHook() {
         override fun beforeHookedMethod(param: MethodHookParam) {
             try {
@@ -948,7 +960,7 @@ object LocationHooks {
                     // Independent mode: this caller must never see the fabricated fix. Hand back the
                     // real last fix we observed (null = unknown, which is legal for this API).
                     val key = providerArgument(param) ?: providerOfManager(param.thisObject) ?: "gps"
-                    val real = realLast[providerFor(key)] ?: realLast[key]
+                    val real = anyRealFix(key)
                     param.result = real
                     Log.rate(
                         "indep.last." + key,
@@ -1007,4 +1019,5 @@ object LocationHooks {
         else -> value
     }
 }
+
 

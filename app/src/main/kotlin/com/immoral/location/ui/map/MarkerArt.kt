@@ -109,6 +109,12 @@ internal object MarkerArt {
         // Soft halo: a three-stop radial gradient rather than a flat disc, so the marker glows into
         // the map instead of stamping a translucent circle onto it.
         val haloRadius = 34f * density
+        // Dark mode inverts the pair: primary is a pale lavender there, so a primary core inside a
+        // light onSurface casing merged into one pale blob on dark tiles (v2-shell-dark.png). Dark
+        // core (primaryContainer) + light casing keeps the same identity and restores the edge.
+        val core = if (palette.dark) palette.primaryContainer else palette.primary
+        val haloAlpha = if (palette.dark) 0.45f else 0.30f
+        val haloMid = if (palette.dark) 0.20f else 0.12f
         val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             shader = RadialGradient(
                 c,
@@ -133,7 +139,7 @@ internal object MarkerArt {
             stroke(alpha(0xFF000000.toInt(), 0.35f), 1f * density),
         )
         canvas.drawCircle(c, c, dotR + ring, fill(ring(palette)))
-        canvas.drawCircle(c, c, dotR, fill(palette.primary))
+        canvas.drawCircle(c, c, dotR, fill(core))
         // 1 dp top-light highlight keeps the core from looking like a flat sticker.
         canvas.drawCircle(c, c, dotR - 0.5f * density, stroke(0x38FFFFFF, 1f * density))
         return MarkerBitmap(bmp, MarkerGeometry.CENTER, MarkerGeometry.CENTER)
