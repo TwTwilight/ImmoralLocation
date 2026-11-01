@@ -102,3 +102,22 @@
 设计决策记录（第六格为什么不移进 `工具`）：整行是 app 唯一的"一键切速"，`e2e.speed.custom` 必须在
 `e2e.speed.*` 行内（`14b` 断言六个等宽格子），移走属于 harness 变更而非纯 UI 变更；因此选择
 "分隔线 + 非同级视觉处理"。
+
+## 9. 第五轮自查：工具/图层/设置/收藏(深色)/悬浮摇杆（2026-11-02 05:55）
+
+| 面 | 缺陷 | 规则 | 处理 | 证据 |
+|---|---|---|---|---|
+| 工具 sheet | 悬浮摇杆是"可点行"而没有 Switch，而它上面五行都是 Switch 行；权限状态只写在副标题 | R5 | 改成 `ToolSwitchRow`（新标签 `e2e.tool.overlay`），权限缺失时副标题变红且开关可点进授权 | `_audit-tools-perm.png`、`_audit-tools-bottom.png` |
+| 图层 sheet | 无 | — | **判定良好**：选中态一眼可辨；天地图禁用行是灰信息行不是红字；不额外加缩略图（一次性选择不值得五张位图） | `_audit-layers.png` |
+| 设置 | 1) 选择应用行的箭头是 `titleLarge` 的字面 `›`；2) 保存/恢复默认是裸 TextButton 且宽度不等；3) 卡片标题与开关行都叫"独立模拟" | R5/R3 | 箭头改 `KeyboardArrowRight` 20 dp；恢复默认=文字 48 dp + 保存=tonal 48 dp；开关行改"启用独立模拟" | `_audit-settings.png`、`_audit-settings-2.png` |
+| 收藏（深色） | 无 | — | **判定良好**：0/1/多三种状态、贴合高度、深色对比都成立 | `_fav-dark-0/1/many.png` |
+| 摇杆悬浮窗 | A) 悬浮球正好压住我们工具面板里"悬浮摇杆"的开关——挡住的正是关闭它自己的控件；B) 命中区与绘制位置不一致（三次点按全部穿透到下层 app，误选速度档、误点收藏） | R3/R4 | 见下 | `_overlay-collapsed.png`、`_overlay-expanded.png` |
+
+**悬浮窗修法（已批准，待验证）**
+1. 本 app 处于前台时**隐藏悬浮窗**（这也直接消掉 A）；
+2. 窗口几何改用 `Gravity.TOP|END` + `y`、去掉 `FLAG_LAYOUT_NO_LIMITS`、加 `FLAG_NOT_TOUCH_MODAL`；
+   坐标取 `WindowMetrics.currentWindowBounds`（`displayMetrics` 不含 insets，是最可能的 ~130 px 偏移来源）。
+3. 验收四条（缺一不可）：点球心能展开且**不**穿透到 app；点 ✕ 能关闭且开关变 off；前台时不显示；
+   退到桌面后显示且上述两点仍可点。
+
+**结论性经验**：`e2e.tool.overlay` 是本轮唯一新增标签；`strings.xml` 新增 `settings_independent_enable`。

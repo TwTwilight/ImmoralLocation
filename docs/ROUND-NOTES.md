@@ -906,3 +906,50 @@ java.lang.NullPointerException: pkg name: com.android.apex.cts.shim does not hav
 （`({(0:N0}s elapsed)`），会让 `install.ps1` / `activate_module.ps1` 直接以
 `Error formatting a string` 退出而不是等待；已修正。另：`Test-PackageInstalled` 在 PM 刚刚恢复、
 `pm list packages` 返回不完整时会把已安装的包判成未安装，现已加 `pm path` 兜底。
+
+## 13. `10-independent` 为什么在室内无法用"位置流"判定（qa-e2e，2026-11-02 05:3x）
+
+产品的行为已经变了：独立模拟下模块**不再改写 provider 缓存**，按包过滤已被证明在工作
+（`independent: dropped delivery to com.xiaomi.aicr/metoknlp/fused`、`substituted the last real gps fix for …`），
+未解析身份的接收方只会拿到"看起来像真的"值。于是**位置流**这条路在室内是**结构性地不可判**：
+
+1. 手机放在桌上没有新的平台定位；
+2. `gpsSignalSimulation=false` 时 GNSS 真值闸门**故意扣留**真实卫星（这是设计，不是 bug）；
+3. 独立模拟也不再往这条路径注入假值。
+
+⇒ 白名单外窗口里 **0 条样本**既可能是"没有泄漏"，也可能是"没有东西可观察"。
+**结论：`10-independent` 不能用流样本判定 PASS**——这正是 2026-11-02 两次运行得出相反结论的原因
+（单独跑 `samples=0` 记 PASS，和别的检查一起跑则有样本并看到假值记 FAIL）。
+
+### 13.1 现在的判据（不可空转）
+
+同一条 check 里加**第二信号**：模块日志里的按包过滤证据，且在**切到白名单之前**采集，
+避免白名单阶段的 `filter pass` 行污染：
+
+```
+independent: getLastLocation(gps) for a non-whitelisted caller -> real fix | no location
+independent: dropped delivery to <pkg>
+independent: substituted the last real gps fix for <pkg>
+independent: provider last-known restored to the real fix on <provider>
+```
+
+- 任一出现 ⇒ `logEvidence=true`（这是"缓存保持真实 / 投递被拦"的正面证据，室内可测）；
+- `logEvidence` 与 `outsideFake=false` 同时成立才算 PASS；
+- **两者都没有**（无样本且无日志证据）⇒ 记 **WARN "inconclusive"**，永远不记 PASS。
+
+指标里逐项落 `logEvidence` / `lastKnownGenuine` / `droppedForVerifier` / `substituted` / `cacheGenuine`，
+detail 里直接写 `per-package evidence=[…]`，读报告的人不用再猜。
+
+### 13.2 还缺什么（需要一次产品侧小改）
+
+`getLastLocation(...) -> …` 这条最直接的证据**要有人真的调用 `getLastKnownLocation`** 才会出现。
+当前 **verifier 没有这个探针**（`verifier/src/main/kotlin/.../VerifierActivity.kt` 只发流式 `VERIFY`）。
+两条路：
+
+1. 给 verifier 加一个 `--es lastknown true` 探针（约 15 行，`verifier/**` 属于 qa 的写域），
+   调用 `getLastKnownLocation(gps/network)` 并打 `VERIFY {"kind":"lastKnown",…}`；
+   **前提**是 `verifier` 模块要回到 `settings.gradle.kts`（构建文件，需 Lead 批准）。
+2. 不改进程：靠日志里的 `dropped delivery to <pkg>` / `substituted …` 作为证据（今天已经可用）。
+
+第 1 条能让断言变成"同一个 app 自己读到的值"（更接近用户可见行为）；第 2 条今天就能跑。
+
