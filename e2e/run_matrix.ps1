@@ -950,6 +950,28 @@ if (Test-Selected '10') {
             } | Measure-Object -Minimum).Minimum
         $outsideFake = ([double]$closest -le 60)
     }
+    # SECOND SIGNAL (added 2026-11-02): indoors there is frequently no fresh platform fix to observe —
+    # the GNSS truth gate withholds real satellites while gpsSignalSimulation=false and independent
+    # mode no longer injects a fake on that path — so the stream can legitimately show zero samples and
+    # "no leak" becomes indistinguishable from "nothing to observe". The per-package filter, however,
+    # is always observable in the module log, and it answers `getLastKnownLocation` from the provider
+    # cache (which stays GENUINE in independent mode):
+    #   independent: getLastLocation(gps) for a non-whitelisted caller -> real fix | no location
+    #   independent: dropped delivery to <pkg>
+    #   independent: substituted the last real gps fix for <pkg>
+    #   independent: provider last-known restored to the real fix on <provider>
+    # Captured NOW, before the whitelist phase, so its own "filter pass" lines cannot contaminate this.
+    $verifierPkg = $script:VerifierPackage
+    $indepLog = ''
+    try {
+        $indepLog = (((Invoke-AdbRoot "grep -h 'independent:' /data/adb/lspd/log/modules_*.log 2>/dev/null | tail -120" -AllowFailure).Output) -join "`n")
+    }
+    catch { }
+    $lastKnownGenuine = [bool]($indepLog -match 'getLastLocation\([^)]*\) for a non-whitelisted caller -> (real fix|no location)')
+    $droppedForUs = [bool]($indepLog -match ('dropped delivery to ' + [regex]::Escape($verifierPkg)))
+    $substitutedFor = [bool]($indepLog -match 'substituted the last real \w+ fix for ')
+    $cacheGenuine = [bool]($indepLog -match 'provider last-known restored to the real fix')
+    $logEvidence = $lastKnownGenuine -or $droppedForUs -or $substitutedFor -or $cacheGenuine
     # Phase (b): whitelist the verifier, settle, restart the verifier again, then expect the fake.
     Set-EngineConfig @{ mode = 'STATIC'; independentMode = $true; independentPackages = @($script:VerifierPackage); updateIntervalMs = 500 } | Out-Null
     Send-Start -Channel $Channel | Out-Null

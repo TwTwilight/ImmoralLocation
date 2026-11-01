@@ -378,3 +378,18 @@ independent: provider last-known restored to the real fix on fused
 
 下一轮的最小改法：独立模式下 `packageName == null` **无条件丢弃**任何**非** `realLast` 值
 （即只放行与最近真实 fix 一致的对象），并把 `fused/gps/network/passive` 四个缓存源都当作候选真实值。
+
+## 15. 本轮结束状态（2026-11-02 05:40）
+
+**回归验证**：`-Only 1,2,3` 全部 PASS（注入四 provider / 快速切换 1.59 s / 摇杆 3.3 m/s 方位 0°）
+⇒ 本轮对 hook 的改动没有影响默认模式。
+
+**`10-independent` 仍为 WARN(inconclusive)**，原因已经从"泄漏"变成"室内没有可观测的新位置"：
+平台在室内没有新鲜 GNSS 定位，而我们按设计扣留真实卫星；独立模式又不再注入假点。
+qa-e2e 将改为通过 `getLastKnownLocation`（读缓存，缓存现在保持真实）断言，这样室内也可测。
+
+**本轮新增/修改的 hook 行为（都只在独立模式生效）**
+1. 独立模式下不改写 provider 缓存；
+2. last-location getter 改为结构匹配（返回 Location 且首参 String），覆盖 LMS 与其内部类；
+3. 未解析包名的投递改为"有界"：看起来像我们的假点、或在已知真实值时对不上真实值 → 丢弃；
+   没有已知真实值时放行（避免黑屏式回归）。
