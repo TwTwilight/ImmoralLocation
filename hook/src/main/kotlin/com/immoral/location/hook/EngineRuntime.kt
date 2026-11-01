@@ -433,6 +433,188 @@ object EngineRuntime {
         )
     }
 
+    // ------------------------------------------------------------------ cells channel
+
+    /** `Settings.Global` key the phone process reads (`TelephonyHooks.cellsFromSettings`). */
+    private const val CELLS_KEY = "immoral_cells"
+
+    /** Dedup marker for "no row at all"; real payloads always start with `1|`. */
+    private const val CELLS_ABSENT = "<absent>"
+
+    /**
+     * A `Context` usable from the engine thread, resolved once and cached.
+     *
+     * This is what silently killed the cells channel: `ActivityThread.currentActivityThread()` is a
+     * **ThreadLocal**, so on the engine's own `HandlerThread` it answers `null`, the reflective
+     * `getSystemContext()` call then threw `NullPointerException`, and the old code logged that
+     * exactly once with `Log.once` while `Settings.Global` kept whatever a previous boot had left
+     * behind. The phone process therefore served one frozen cell set for the whole session — the
+     * "position moves, cells don't" defect (`6-cells`).
+     *
+     * Order: the (cheap, thread-correct) direct attempt, then — once — a hop to the **main looper**,
+     * where `currentActivityThread()` is always set. Nothing here may throw into the ticker.
+     */
+    @Volatile
+    private var cachedContext: android.content.Context? = null
+
+    @Volatile
+    private var contextRequested = false
+
+    private fun systemContext(): android.content.Context? {
+        cachedContext?.let { return it }
+        resolveContextHere()?.let {
+            cachedContext = it
+            Log.once("cells.context.direct", "cells channel: Context resolved on the engine thread")
+            return it
+        }
+        // Ask the main thread once. `currentActivityThread()` is non-null there even while the
+        // engine thread sees null, and the answer arrives within a tick or two, so the publish
+        // simply retries (the dedup key is not committed on failure).
+        if (!contextRequested) {
+            contextRequested = true
+            try {
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        val fromMain = resolveContextHere()
+                        if (fromMain != null) {
+                            cachedContext = fromMain
+                            Log.i("cells channel: Context resolved on the main thread")
+                        } else {
+                            Log.once("cells.context.main.err", "cells channel: no Context on the main thread either")
+                        }
+                    } catch (t: Throwable) {
+                        Log.once("cells.context.main.err", "cells channel: main-thread lookup failed: " + t.javaClass.simpleName)
+                    }
+                }
+            } catch (t: Throwable) {
+                contextRequested = false
+                Log.once("cells.context.post", "cells channel: cannot post to the main looper: " + t.javaClass.simpleName)
+            }
+        }
+        return null
+    }
+
+    /** Direct context lookup for the calling thread; `null` when this thread cannot see one. */
+    private fun resolveContextHere(): android.content.Context? {
+        try {
+            val threadClass = Class.forName("android.app.ActivityThread")
+            val current = threadClass.getMethod("currentActivityThread").invoke(null)
+            if (current != null) {
+                val system = threadClass.getMethod("getSystemContext").invoke(current)
+                if (system is android.content.Context) return system
+            }
+            val app = threadClass.getMethod("currentApplication").invoke(null)
+            if (app is android.content.Context) return app
+        } catch (_: Throwable) {
+        }
+        try {
+            val appGlobals = Class.forName("android.app.AppGlobals")
+            val app = appGlobals.getMethod("getInitialApplication").invoke(null)
+            if (app is android.content.Context) return app
+        } catch (_: Throwable) {
+        }
+        return null
+    }
+
+    /**
+     * Publishes the simulated cell set to `Settings.Global`.
+     *
+     * The cell getters live in `com.android.phone` (`PhoneInterfaceManager`), a different process
+     * from the engine, and `TelephonyRegistry` in `system_server` has no cell *getter* at all — so
+     * without a state channel the phone-side hooks are installed but inert.
+     *
+     * Contract with `TelephonyHooks.cellsFromSettings`:
+     *  - simulation on  -> `"1|type,mcc,mnc,lac,cid,pci,level,dbm,reg;…"`;
+     *  - simulation off -> the row is **deleted** (not rewritten as `0|`), so nothing about the
+     *    simulation survives in a globally readable setting once the user turns it off.
+     *
+     * The dedup key is only committed after a successful write: a failed `putString` (boot races,
+     * provider not ready) must not make the channel believe the value is already published.
+     */
+    private fun publishCells(value: Snap) {
+        val serving = value.cells.firstOrNull { it.registered }
+        val payload: String? = if (value.config.cellSimulation && value.cells.isNotEmpty()) {
+            "1|" + value.cells.joinToString(";") { c ->
+                "${c.type},${c.mcc},${c.mnc},${c.lac},${c.cid},${c.pci},${c.level},${c.dbm},${if (c.registered) 1 else 0}"
+            }
+        } else {
+            null
+        }
+        val dedupKey = payload ?: CELLS_ABSENT
+        if (dedupKey == lastCellsEncoded) return
+        val context = systemContext()
+        if (context == null) {
+            // Retried on the next tick: this is the boot race that used to be permanent.
+            Log.rate(
+                "cells.write.nocontext",
+                30_000L,
+                "cells channel: no Context yet on this thread, publish deferred (retrying every tick)",
+            )
+            return
+        }
+        val wrote = try {
+            android.provider.Settings.Global.putString(context.contentResolver, CELLS_KEY, payload)
+            true
+        } catch (t: Throwable) {
+            Log.rate(
+                "cells.write.err",
+                30_000L,
+                "cannot publish the cells setting: " + t.javaClass.simpleName + ": " + t.message,
+            )
+            false
+        }
+        if (!wrote) return
+        lastCellsEncoded = dedupKey
+        if (payload == null) {
+            Log.rate("cells.cleared", 10_000L, "cells channel cleared: " + CELLS_KEY + " row removed")
+            return
+        }
+        // Acceptance evidence for `6-cells`: the line carries the position the set was derived from
+        // *and* the serving identity, so "the published set follows the position" can be read
+        // straight out of the log instead of being inferred from the app side.
+        Log.rate(
+            "cells.written",
+            2_000L,
+            "cells published to Settings.Global lat=" + trimCoord(value.lat) + "," + trimCoord(value.lon) +
+                " serving=" + (serving?.let { "ci=" + it.cid + "/tac=" + it.lac } ?: "none") +
+                " count=" + value.cells.size + " -> " + payload.take(80),
+        )
+        verifyCellsSetting(payload)
+    }
+
+    /**
+     * Reads the setting back once after a change.
+     *
+     * `Settings.Global.putString` reports nothing, so a silently dropped write would leave the phone
+     * process serving the previous cell set forever. On a mismatch the dedup is cleared so the next
+     * tick writes again.
+     */
+    private fun verifyCellsSetting(expected: String?) {
+        val context = cachedContext ?: return
+        try {
+            val read = android.provider.Settings.Global.getString(context.contentResolver, CELLS_KEY)
+            if (read == expected) {
+                Log.once("cells.verify.ok", "cells setting reads back exactly what was published")
+            } else {
+                lastCellsEncoded = ""
+                Log.rate(
+                    "cells.verify.mismatch",
+                    5_000L,
+                    "cells setting read back " + (read?.take(60) ?: "null") + " instead of " +
+                        (expected?.take(60) ?: "null") + " (retrying on the next tick)",
+                )
+            }
+        } catch (t: Throwable) {
+            Log.once("cells.verify.err", "cannot read the cells setting back: " + t.javaClass.simpleName)
+        }
+    }
+
+    /** `31.2304`-style coordinate for log lines (6 decimals would only add noise). */
+    private fun trimCoord(value: Double): String =
+        (kotlin.math.round(value * 10_000.0) / 10_000.0).toString()
+
+    private var lastCellsEncoded: String = ""
+
     /**
      * Publishes a snapshot.
      *
@@ -442,116 +624,6 @@ object EngineRuntime {
      * 10 Hz while the engine only advances once per tick, which makes any consumer that derives
      * speed from consecutive fixes compute ~0 m/s.
      */
-    /**
-     * Publishes the independent-mode policy to Settings.Global. system_server cannot write app data
-     * (DAC) and the state bus only reaches apps we deliver to, so this is the only channel that lets a
-     * fresh NON-whitelisted process know it must not fabricate anything.
-     */
-    private fun publishPolicy(config: com.immoral.location.core.model.SimulationConfig) {
-        try {
-            val threadClass = Class.forName("android.app.ActivityThread")
-            val current = threadClass.getMethod("currentActivityThread").invoke(null)
-            val context = threadClass.getMethod("getSystemContext").invoke(current) as android.content.Context
-            val value = (if (config.independentMode) "1" else "0") + "|" +
-                config.independentPackages.sorted().joinToString(",")
-            android.provider.Settings.Global.putString(context.contentResolver, "immoral_policy", value)
-            Log.rate("policy.written", 10_000L, "policy published to Settings.Global: " + value)
-        } catch (t: Throwable) {
-            Log.once("policy.write.err", "cannot publish the policy setting: " + t.javaClass.simpleName)
-        }
-    }
-
-    /**
-     * Publishes the simulated cell set to `Settings.Global`.
-     *
-     * The cell getters live in `com.android.phone` (`PhoneInterfaceManager`), a different process
-     * from the engine, and `TelephonyRegistry` in `system_server` has no cell *getter* at all — so
-     * without a state channel the phone-side hooks are installed but inert. This is the same trick
-     * already used for [publishPolicy], and it is written only when the encoded value changes, so a
-     * stationary engine costs zero writes.
-     */
-    private fun publishCells(value: Snap) {
-        val encoded = try {
-            buildString {
-                if (value.config.cellSimulation) append("1|") else append("0|")
-                if (value.config.cellSimulation) {
-                    append(
-                        value.cells.joinToString(";") { c ->
-                            "${c.type},${c.mcc},${c.mnc},${c.lac},${c.cid},${c.pci},${c.level},${c.dbm},${if (c.registered) 1 else 0}"
-                        },
-                    )
-                }
-            }
-        } catch (t: Throwable) {
-            return
-        }
-        if (encoded == lastCellsEncoded) return
-        val serving = value.cells.firstOrNull { it.registered }
-        // Written **before** the log line and committed only on success: a failed `putString` must
-        // not poison the dedup, otherwise the channel would keep whatever value the one successful
-        // write stored and every later position would be invisible to the phone process.
-        val wrote = try {
-            val threadClass = Class.forName("android.app.ActivityThread")
-            val current = threadClass.getMethod("currentActivityThread").invoke(null)
-            val context = threadClass.getMethod("getSystemContext").invoke(current) as android.content.Context
-            android.provider.Settings.Global.putString(context.contentResolver, "immoral_cells", encoded)
-            true
-        } catch (t: Throwable) {
-            Log.once("cells.write.err", "cannot publish the cells setting: " + t.javaClass.simpleName)
-            false
-        }
-        if (!wrote) return
-        lastCellsEncoded = encoded
-        // Bring-up evidence for acceptance check `6-cells`: the line carries the position the set
-        // was derived from *and* the serving identity, so "the published set follows the position"
-        // can be read straight out of the log instead of being inferred from the app side.
-        Log.rate(
-            "cells.written",
-            2_000L,
-            "cells published to Settings.Global lat=" + trimCoord(value.lat) + "," + trimCoord(value.lon) +
-                " serving=" + (serving?.let { "ci=" + it.cid + "/tac=" + it.lac } ?: "none") +
-                " count=" + value.cells.size + " -> " + encoded.take(80),
-        )
-        verifyCellsSetting(encoded)
-    }
-
-    /**
-     * Reads the setting back once after a change.
-     *
-     * `Settings.Global.putString` reports nothing, so a silently dropped write (provider not ready
-     * yet, a vendor policy rejecting the key) would leave the phone process serving the previous
-     * cell set forever — exactly the "position moves, cells don't" defect this channel exists to
-     * fix. On a mismatch the dedup is cleared so the next tick writes again.
-     */
-    private fun verifyCellsSetting(expected: String) {
-        try {
-            val threadClass = Class.forName("android.app.ActivityThread")
-            val current = threadClass.getMethod("currentActivityThread").invoke(null)
-            val context = threadClass.getMethod("getSystemContext").invoke(current) as android.content.Context
-            val read = android.provider.Settings.Global.getString(context.contentResolver, "immoral_cells")
-            if (read == expected) {
-                Log.once("cells.verify.ok", "cells setting reads back exactly what was published")
-            } else {
-                lastCellsEncoded = ""
-                Log.rate(
-                    "cells.verify.mismatch",
-                    5_000L,
-                    "cells setting read back " + (read?.take(60) ?: "null") + " instead of " + expected.take(60) +
-                        " (retrying on the next tick)",
-                )
-            }
-        } catch (t: Throwable) {
-            Log.once("cells.verify.err", "cannot read the cells setting back: " + t.javaClass.simpleName)
-        }
-    }
-
-    /** `31.2304`-style coordinate for log lines (6 decimals would only add noise). */
-    private fun trimCoord(value: Double): String {
-        val scaled = (kotlin.math.round(value * 10_000.0) / 10_000.0).toString()
-        return scaled
-    }
-
-    private var lastCellsEncoded: String = ""
 
     private fun publish(value: Snap, pushLocation: Boolean = true) {
         snap = value
