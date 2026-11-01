@@ -1114,10 +1114,14 @@ fun SearchSuggestionCard(
                                 .fillMaxWidth()
                                 .clickable { onPick(result) }
                                 .padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                            // Top-aligned: a centred 32 dp tile against a two-line name/address block
+                            // sits between the lines, so the icon and the headline never share an
+                            // optical baseline (audit R5 on the search results).
+                            verticalAlignment = Alignment.Top,
                         ) {
                             Box(
                                 modifier = Modifier
+                                    .padding(top = 1.dp)
                                     .size(32.dp)
                                     .background(
                                         color = MaterialTheme.colorScheme.surfaceContainerHighest,
