@@ -202,18 +202,19 @@ function Get-DriftResult {
 # verifier stream, it is not throttled when the verifier is backgrounded — the delivered stream gave
 # only 2-8 samples per 8 s window, which turned a correct 13.9 m/s run into "0 m/s" and "67.53 m/s".
 function Get-EngineTicks {
-    param([int]$TailLines = 400)
+    param([int]$TailLines = 1500)
     $list = @()
     try {
         $r = Invoke-AdbRoot "grep -h 'tick dt' /data/adb/lspd/log/verbose_*.log | tail -$TailLines" -AllowFailure
         foreach ($line in $r.Output) {
-            if ($line -match 'tick dt=(\d+)ms.*appliedTicks=(\d+)\s+speed=([\d.]+)m/s\s+moved=([\d.]+)m\s+mode=(\w+)') {
+            if ($line -match 'tick dt=(\d+)ms.*appliedTicks=(\d+)\s+speed=([\d.]+)m/s\s+moved=([\d.]+)m\s+mode=(\w+)(?:\s+running=(\w+))?') {
                 $list += [pscustomobject]@{
                     DtMs    = [int]$matches[1]
                     Applied = [int]$matches[2]
                     Speed   = [double]$matches[3]
                     Moved   = [double]$matches[4]
                     Mode    = $matches[5]
+                    Running = ($matches[6] -eq 'true')
                 }
             }
         }
@@ -412,6 +413,11 @@ function Measure-JoystickDrift {
         DumpsysVel       = if ($dumpTrack) { $dumpTrack.vel } else { $null }
         ExpectedBearing  = [Math]::Round($expectedBearing, 1)
         Expected         = if ($Speed -eq 'CUSTOM') { $CustomMps } else { $null }
+        # The engine's own median speed over the MOVING ticks. Meters/Seconds divides by wall time that
+        # includes idle ticks (the ramp-in/ramp-out), which halves the ratio for one-off drags.
+        MedianSpeed      = if ($tickStats) { $tickStats.MedianSpeed } else { 0.0 }
+        TickMoving       = if ($tickStats) { $tickStats.MovingTicks } else { 0 }
+        TickTotal        = if ($tickStats) { $tickStats.Ticks } else { 0 }
         Track            = $track
     }
 }
@@ -503,6 +509,59 @@ Write-Step "starting verifier stream (500 ms cadence, ~7 min)"
 Ensure-VerifierStream
 Start-Sleep -Seconds 1
 
+# --- preflight: the engine must actually TICK before any number is trusted ------------------------
+# Twice tonight a run began against a stale boot where the module had not installed; every check then
+# failed for the same non-product reason and the report looked like a dozen regressions. One probe
+# fails once, loudly, with the remedy in its detail — instead of twelve quiet failures.
+Write-Step 'preflight: engine tick liveness'
+# Whose build are we measuring? Bundle path + install time in the same row, so "module loaded but a
+# STALE build is on the device" is distinguishable from "module not loaded at all" without a second run.
+$moduleBuildInfo = 'unknown'
+try {
+    $mpkg = Get-ModulePackageName
+    $pi = Invoke-AdbShell "dumpsys package $mpkg" -AllowFailure
+    $piLines = @($pi.Output)
+    $codePathLine = ($piLines | Where-Object { $_ -match 'codePath=' } | Select-Object -First 1)
+    $lastUpdLine = ($piLines | Where-Object { $_ -match 'lastUpdateTime=' } | Select-Object -First 1)
+    $verLine = ($piLines | Where-Object { $_ -match '^\s*versionName=' } | Select-Object -First 1)
+    $codePath = if ($codePathLine) { ($codePathLine -replace '^\s*codePath=', '').Trim() } else { '?' }
+    $lastUpd = if ($lastUpdLine) { ($lastUpdLine -replace '^\s*lastUpdateTime=', '').Trim() } else { '?' }
+    $verName = if ($verLine) { ($verLine -replace '^\s*versionName=', '').Trim() } else { '?' }
+    $moduleBuildInfo = "$mpkg v$verName; apk=$codePath; lastUpdateTime=$lastUpd"
+}
+catch { }
+Write-Step "module under test: $moduleBuildInfo"
+$liveTick = $null
+try {
+    Set-EngineConfig @{ mode = 'STATIC'; updateIntervalMs = 1000 } | Out-Null
+    Send-SetPosition -Lat $POINT_A.lat -Lon $POINT_A.lon -Channel $Channel | Out-Null
+    $tickBefore = @(Get-EngineTicks).Count
+    Send-Start -Channel $Channel | Out-Null
+    $liveDeadline = (Get-Date).AddSeconds(12)
+    while ((Get-Date) -lt $liveDeadline) {
+        Start-Sleep -Milliseconds 700
+        $allTicks = @(Get-EngineTicks)
+        if ($allTicks.Count -gt $tickBefore) { $liveTick = $allTicks[-1]; break }
+    }
+}
+catch { }
+if ($liveTick) {
+    Write-Ok ("engine ticking: appliedTicks={0} dt={1}ms speed={2}m/s mode={3} running={4}" -f $liveTick.Applied, $liveTick.DtMs, $liveTick.Speed, $liveTick.Mode, $liveTick.Running)
+    Add-Result -Id 'harness-liveness' -Name 'engine tick observed before the matrix' -Status 'PASS' `
+        -Detail ("appliedTicks={0} dt={1}ms speed={2}m/s mode={3} running={4}; module {5}" -f $liveTick.Applied, $liveTick.DtMs, $liveTick.Speed, $liveTick.Mode, $liveTick.Running, $moduleBuildInfo)
+}
+else {
+    Write-Err2 'engine did NOT tick within 12 s of Start — module not loaded / not in system_server scope.'
+    Write-Err2 'Every position and motion check would fail for this reason alone, so the run stops here (no numbers published).'
+    Write-Err2 'Fix: .\e2e\activate_module.ps1 -Packages android,com.android.phone -Prune  then reboot, and re-run.'
+    Add-Result -Id 'harness-liveness' -Name 'engine tick observed before the matrix' -Status 'FAIL' `
+        -Detail "no engine tick within 12 s of Start: module not loaded or not in system_server scope ($moduleBuildInfo) — activate_module.ps1 + reboot, then retry"
+    try { Send-Stop -Channel $Channel | Out-Null } catch { }
+    exit 2
+}
+try { Send-Stop -Channel $Channel | Out-Null } catch { }
+Start-Sleep -Milliseconds 700
+
 # Every check runs inside Invoke-AllTests so a single unexpected exception (device disappears,
 # system_server restarts, a nullable sample) is recorded as one FAIL instead of aborting the run.
 function Invoke-AllTests {
@@ -588,16 +647,19 @@ if (Test-Selected '3') {
     # fixedBearingDeg is a REFERENCE heading; x=+1 points at reference+90 deg -> with 0 it is east.
     # Get-DriftResult never throws and never returns an array: a failed measurement becomes a FAIL row.
     $m = Get-DriftResult -Params @{ Speed = 'RUN'; X = 0.0; Y = 1.0; Seconds = 8; Bearing = 0.0 }
-    $expected = 3.3 * $m.Seconds
-    $ratio = if ($expected -gt 1) { $m.Meters / $expected } else { 0 }
+    # Judge on the MOVING-tick rate, exactly like check 4. `Meters/Seconds` divides by wall time that
+    # also contains the idle ticks around the drag, which halves the ratio (measured: "1.77 m in 1.07 s
+    # = 3.3 m/s, ratio 0.5" — a correct rate reported as a failing ratio).
+    $eff = if ($m.PSObject.Properties['MedianSpeed'] -and [double]$m.MedianSpeed -gt 0) { [double]$m.MedianSpeed } else { [double]$m.Rate }
+    $ratio = if ($eff -gt 0) { $eff / 3.3 } else { 0 }
     $bearingDelta = [Math]::Abs((Get-AngleDelta -From $m.ExpectedBearing -To $m.Bearing))
     $bearingOk = ($bearingDelta -lt 30) -or ($m.Meters -lt 3)
     $ok = ($m.Source -ne 'none') -and ($ratio -ge 0.8 -and $ratio -le 1.2) -and $bearingOk
     $detail3 = if ($m.Source -eq 'none') { 'measurement produced no usable samples (helper returned no result — see the log above)' }
-    else { "moved $($m.Meters) m in $($m.Seconds)s = $($m.Rate) m/s (RUN 3.3), bearing $($m.Bearing)deg (expected ~$($m.ExpectedBearing)), ratio $([Math]::Round($ratio,2)), samples $($m.Samples)/$($m.RawSamples) stale$($m.StaleSamples)" }
+    else { "effective $eff m/s (RUN 3.3), moved $($m.Meters) m in $($m.Seconds)s, bearing $($m.Bearing)deg (expected ~$($m.ExpectedBearing)), ratio $([Math]::Round($ratio,2)), oracle=$($m.Source), samples $($m.Samples)/$($m.RawSamples) stale$($m.StaleSamples), ticks $($m.TickMoving)/$($m.TickTotal) moving" }
     Test-Result -Id '3-joystick' -Name 'joystick drift matches speed x time along reference bearing' -Condition $ok `
         -Detail $detail3 `
-        -Metrics @{ meters = $m.Meters; seconds = $m.Seconds; rate = $m.Rate; bearing = $m.Bearing; expectedBearing = $m.ExpectedBearing; ratio = [Math]::Round($ratio, 2); samples = $m.Samples; stale = $m.StaleSamples; source = $m.Source }
+        -Metrics @{ effective = $eff; meters = $m.Meters; seconds = $m.Seconds; rate = $m.Rate; medianSpeed = $m.MedianSpeed; bearing = $m.Bearing; expectedBearing = $m.ExpectedBearing; ratio = [Math]::Round($ratio, 2); samples = $m.Samples; stale = $m.StaleSamples; source = $m.Source; tickMoving = $m.TickMoving; tickTotal = $m.TickTotal }
 }
 
 # ------------------------------------------------------------------------------------------------
@@ -693,7 +755,7 @@ if (Test-Selected '5') {
     $ok = $advanced -and ($pausedMeters -lt 3.0) -and ($resumedMeters -gt 3.0)
     Send-StopRoute -Channel $Channel | Out-Null
     Test-Result -Id '5-route' -Name 'route advances, pause holds, resume continues' -Condition $ok `
-        -Detail "advanced $($track.meters)m in $($track.seconds)s ($(if ($track.PSObject.Properties['provider']) { $track.provider } else { 'verifier' })); paused drift $($pausedTrack.meters)m; resumed $($resumeTrack.meters)m" `
+        -Detail "advanced $($track.meters)m in $($track.seconds)s ($(if ($track.PSObject.Properties['provider']) { $track.provider } else { 'verifier' })); tick oracle tkAdvance=$(if ($tkAdvance) { "$($tkAdvance.Meters)m/$($tkAdvance.Ticks)t" } else { 'null' }) tkPause=$(if ($tkPause) { "$($tkPause.Meters)m" } else { 'null' }) tkResume=$(if ($tkResume) { "$($tkResume.Meters)m" } else { 'null' }); paused drift $($pausedTrack.meters)m; resumed $($resumeTrack.meters)m; tickBase=$tickAdvanceBase" `
         -Metrics @{ advanceMeters = $track.meters; pausedMeters = $pausedTrack.meters; resumedMeters = $resumeTrack.meters; samples = $samples.Count }
 }
 
@@ -705,24 +767,37 @@ if (Test-Selected '6') {
     Set-EngineConfig @{ mode = 'STATIC'; cellSimulation = $true; updateIntervalMs = 500 } | Out-Null
     Send-Start -Channel $Channel | Out-Null
     Invoke-SetPositionAndVerify -Lat $POINT_A.lat -Lon $POINT_A.lon | Out-Null
-    Start-Sleep -Seconds 3
+    Start-Sleep -Seconds 2
     # window the two snapshots: reading the whole buffer returns the same (first) cell twice
     $markA = Get-VerifyMark
     Invoke-SetPositionAndVerify -Lat $POINT_A.lat -Lon $POINT_A.lon | Out-Null
     Start-Sleep -Seconds 3
     $cellsA = @(Get-VerifySamples -Kind 'cell' -AfterTs $markA)
+    $sigA = ($cellsA | Where-Object { $_.registered } | Select-Object -First 1)
     $markC = Get-VerifyMark
     Invoke-SetPositionAndVerify -Lat $POINT_C.lat -Lon $POINT_C.lon | Out-Null
-    Start-Sleep -Seconds 3
-    $cellsC = @(Get-VerifySamples -Kind 'cell' -AfterTs $markC)
-    $sigA = ($cellsA | Where-Object { $_.registered } | Select-Object -First 1)
-    $sigC = ($cellsC | Where-Object { $_.registered } | Select-Object -First 1)
+    # The engine publishes only when the encoded set changes and the phone process caches it for 500 ms,
+    # so a fixed 3 s wait is marginal under load (measured 2026-11-02: stand-alone run PASS, full run
+    # unchanged ci/tac). Poll up to 12 s: the move+apply+read chain has measured 4.9 s under a full
+    # matrix, so 8 s was too tight for what is a TIMING question; 12 s still fails loudly if the
+    # channel is genuinely broken (Lead's call, 2026-11-02).
+    $cellsC = @()
+    $sigC = $null
+    $cellsCWait = 0
+    $deadlineC = (Get-Date).AddSeconds(12)
+    while ((Get-Date) -lt $deadlineC) {
+        Start-Sleep -Milliseconds 700
+        $cellsCWait += 0.7
+        $cellsC = @(Get-VerifySamples -Kind 'cell' -AfterTs $markC)
+        $sigC = ($cellsC | Where-Object { $_.registered } | Select-Object -First 1)
+        if ($sigC -and ((-not $sigA) -or ($sigC.ci -ne $sigA.ci) -or ($sigC.tac -ne $sigA.tac))) { break }
+    }
     $present = $cellsA.Count -gt 0
     $changed = ($sigA -and $sigC) -and (($sigA.ci -ne $sigC.ci) -or ($sigA.tac -ne $sigC.tac))
     $plmnOk = ($sigA -and $sigA.mcc -eq '460')
     Test-Result -Id '6-cells' -Name 'cell identity changes with position (基站模拟) [KNOWN-OPEN: hook-framework fixing]' -Condition ($present -and $changed) `
-        -Detail $(if ($sigA -and $sigC) { "A ci=$($sigA.ci)/tac=$($sigA.tac)/pci=$($sigA.pci) -> C ci=$($sigC.ci)/tac=$($sigC.tac); mcc=$($sigA.mcc)$($sigA.mnc) plmnOk=$plmnOk" } elseif ($present) { "cells present but no registered cell line (count A=$($cellsA.Count) C=$($cellsC.Count))" } else { 'no cell lines in the verifier stream' }) `
-        -Metrics @{ countA = $cellsA.Count; countC = $cellsC.Count; ciA = $(if ($sigA) { $sigA.ci } else { "n/a" }); ciC = $(if ($sigC) { $sigC.ci } else { "n/a" }); tacA = $(if ($sigA) { $sigA.tac } else { "n/a" }); tacC = $(if ($sigC) { $sigC.tac } else { "n/a" }); mcc = $(if ($sigA) { $sigA.mcc } else { "n/a" }) }
+        -Detail $(if ($sigA -and $sigC) { "A ci=$($sigA.ci)/tac=$($sigA.tac)/pci=$($sigA.pci) -> C ci=$($sigC.ci)/tac=$($sigC.tac); mcc=$($sigA.mcc)$($sigA.mnc) plmnOk=$plmnOk; polled $([Math]::Round($cellsCWait,1))s for the change" } elseif ($present) { "cells present but no registered cell line (count A=$($cellsA.Count) C=$($cellsC.Count), polled $([Math]::Round($cellsCWait,1))s)" } else { 'no cell lines in the verifier stream' }) `
+        -Metrics @{ countA = $cellsA.Count; countC = $cellsC.Count; pollSeconds = [Math]::Round($cellsCWait, 1); ciA = $(if ($sigA) { $sigA.ci } else { "n/a" }); ciC = $(if ($sigC) { $sigC.ci } else { "n/a" }); tacA = $(if ($sigA) { $sigA.tac } else { "n/a" }); tacC = $(if ($sigC) { $sigC.tac } else { "n/a" }); mcc = $(if ($sigA) { $sigA.mcc } else { "n/a" }) }
 }
 
 # ------------------------------------------------------------------------------------------------
@@ -977,13 +1052,18 @@ if (Test-Selected '10') {
     # the way an ordinary app would. Non-whitelisted: that cache must be GENUINE, i.e. at least 1 km
     # from the simulated point (or the read must have returned a value at all — a null read fails the
     # assertion explicitly instead of skipping it).
-    $lkOutside = @(Get-VerifySamples -Kind 'lastKnown' | Where-Object { $_.provider -eq 'gps' })
+    # ORDERING GUARD: everything from here on belongs to phase (b). A text-book failure was "outside
+    # read = POINT_C", i.e. a sample produced after the position had already moved to C. Cut the window
+    # explicitly so the outside read can only be data from before the C broadcast.
+    $outsideCutoff = Get-VerifyMark
+    $lkOutside = @(Get-VerifySamples -Kind 'lastKnown' | Where-Object { $_.ts -le $outsideCutoff -or $_.ts -eq 0 })
     $lkOut = if ($lkOutside.Count -gt 0) { $lkOutside[-1] } else { $null }
+    $lkOutIsPhaseC = [bool]($lkOut -and ([Math]::Abs([double]$lkOut.lat - $POINT_C.lat) -lt 1e-4) -and ([Math]::Abs([double]$lkOut.lon - $POINT_C.lon) -lt 1e-4))
     $lkOutPresent = [bool]($lkOut -and ("$($lkOut.present)" -eq 'True') -and ($null -ne $lkOut.lat))
     $lkOutDist = if ($lkOutPresent) {
         Get-GeoDistanceMeters -Lat1 $POINT_B.lat -Lon1 $POINT_B.lon -Lat2 $lkOut.lat -Lon2 $lkOut.lon
     } else { -1.0 }
-    $outsideLastKnownOk = $lkOutPresent -and ($lkOutDist -ge 1000)
+    $outsideLastKnownOk = $lkOutPresent -and ($lkOutDist -ge 1000) -and (-not $lkOutIsPhaseC)
     # Phase (b): whitelist the verifier, settle, restart the verifier again, then expect the fake.
     Set-EngineConfig @{ mode = 'STATIC'; independentMode = $true; independentPackages = @($script:VerifierPackage); updateIntervalMs = 500 } | Out-Null
     Send-Start -Channel $Channel | Out-Null
@@ -1017,7 +1097,7 @@ if (Test-Selected '10') {
             -Metrics @{ outsideSamples = $outside.Count; outsideFake = $null; insideReached = $inside.Ok; logEvidence = $evText; lastKnownOutside = 'null'; lastKnownInside = 'null'; inconclusive = $true }
     }
     else {
-        $lkOutText = if ($lkOutPresent) { "$([Math]::Round($lkOut.lat,5)),$([Math]::Round($lkOut.lon,5)) d=$([Math]::Round($lkOutDist))m" } else { 'read returned null' }
+        $lkOutText = if ($lkOutPresent) { "$([Math]::Round($lkOut.lat,5)),$([Math]::Round($lkOut.lon,5)) d=$([Math]::Round($lkOutDist))m$(if ($lkOutIsPhaseC) { ' [= POINT_C: stale cache left from the whitelisted phase — a non-whitelisted reader still sees the fake]' } else { '' })" } else { 'read returned null' }
         $lkInText = if ($lkInPresent) { "$([Math]::Round($lkIn.lat,5)),$([Math]::Round($lkIn.lon,5)) d=$([Math]::Round($lkInDist))m" } else { 'read returned null' }
         Test-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Condition $ok `
             -Detail "lastKnown outside(not whitelisted)=$lkOutText [need >=1000 m from the simulated point]; lastKnown inside(whitelisted)=$lkInText [need <=300 m]; stream outside fake=$outsideFake (samples=$($outside.Count)); per-package evidence=[$evText]; inside stream reached=$($inside.Ok)" `
@@ -1031,6 +1111,28 @@ if (Test-Selected '10') {
 # ------------------------------------------------------------------------------------------------
 if (Test-Selected '11') {
     Write-Step '11) favourites / quick return (收藏/快速返回) — UI assertions'
+    # S1 (docs/UIUX-AUDIT.md) moved the entry point: the 收藏 surface now opens from the peek card's
+    # “收藏 N ›” link, which ui-polish tagged `e2e.peek.favorites` precisely to keep this check alive.
+    # Try the tag first; fall back to the old text navigation so an older build still works, and say
+    # which path was used — "SKIP: not reachable" must never be ambiguous about why.
+    function Open-FavoritesSurface {
+        $favEl = $null
+        try { $favEl = Get-UiElement -Name 'peekFavorites' -Optional } catch { }
+        if ($favEl) {
+            Invoke-UiTapPoint -X $favEl.Cx -Y $favEl.Cy
+            Start-Sleep -Seconds 2
+            $favDump = Get-UiDump
+            if ($favDump -and ((Test-UiText -Text '收藏地点' -Dump $favDump) -or (Test-UiText -Text '收藏' -Dump $favDump))) {
+                Write-Step '     favourites opened via e2e.peek.favorites (peek-card link)'
+                return [pscustomobject]@{ Dump = $favDump; Path = 'peek-favorites-tag' }
+            }
+            Write-Warn2 'e2e.peek.favorites was on screen but did not open the favourites surface — falling back to text navigation'
+        }
+        else {
+            Write-Warn2 'e2e.peek.favorites not on screen — falling back to text navigation (older build?)'
+        }
+        return Open-UiScreen -Names @('收藏地点', '收藏', '收藏夹')
+    }
     Stop-Verifier
     # Put the engine on a known point so "收藏当前位置" saves POINT_B, then move it away so the
     # one-tap return is observable.
@@ -1055,7 +1157,7 @@ if (Test-Selected '11') {
         # 1) reach the favourites surface. The IA moved mid-project from "5 bottom tabs" to
         #    "map + tools sheet", so navigate adaptively: destination first, then a tools/overflow
         #    opener (Open-UiScreen in lib/bridge.ps1), and accept any of the known headings.
-        $nav = Open-UiScreen -Names @('收藏地点', '收藏', '收藏夹')
+        $nav = Open-FavoritesSurface
         $before = if ($nav) { $nav.Dump } else { $null }
         if (-not $before) { $before = Get-UiDump }
         $onFavorites = $before -and (
@@ -1091,7 +1193,7 @@ if (Test-Selected '11') {
                     break
                 }
                 if ($created) {
-                    $nav2 = Open-UiScreen -Names @('收藏地点', '收藏', '收藏夹')
+                    $nav2 = Open-FavoritesSurface
                     $again = if ($nav2) { $nav2.Dump } else { Get-UiDump }
                     if ($again) {
                         $before = $again
@@ -1147,24 +1249,35 @@ if (Test-Selected '11') {
                         $cx = [int](([int]$matches[1] + [int]$matches[3]) / 2)
                         $cy = [int](([int]$matches[2] + [int]$matches[4]) / 2)
                         Invoke-AdbShell "input tap $cx $cy" -AllowFailure | Out-Null
-                        Start-Sleep -Seconds 7
-                        # framework truth first (teleport auto-starts a stopped engine), then the
-                        # delivered client stream as a fallback
-                        $favFix = Get-DumpsysFix
+                        # Poll instead of a fixed 7 s: the tap can land while the sheet is still
+                        # animating, and the teleport is asynchronous. When it never moves, say
+                        # "tap had no effect" rather than report a misleading distance.
                         $dumpOk = $false
                         $dumpDetail = 'no fix'
-                        foreach ($k in @('gps', 'fused', 'network', 'passive')) {
-                            if (-not $favFix.ContainsKey($k)) { continue }
-                            $d = Get-GeoDistanceMeters -Lat1 $favLat -Lon1 $favLon -Lat2 $favFix[$k].lat -Lon2 $favFix[$k].lon
-                            if ($d -le 300) { $dumpOk = $true }
-                            $dumpDetail = "$k $($favFix[$k].lat),$($favFix[$k].lon) (d=$([Math]::Round($d))m)"
+                        $closest = -1.0
+                        $pollStart = Get-Date
+                        $deadlineT = (Get-Date).AddSeconds(10)
+                        while ((Get-Date) -lt $deadlineT) {
+                            Start-Sleep -Milliseconds 700
+                            $favFix = Get-DumpsysFix
+                            foreach ($k in @('gps', 'fused', 'network', 'passive')) {
+                                if (-not $favFix.ContainsKey($k)) { continue }
+                                $d = Get-GeoDistanceMeters -Lat1 $favLat -Lon1 $favLon -Lat2 $favFix[$k].lat -Lon2 $favFix[$k].lon
+                                if ($closest -lt 0 -or $d -lt $closest) { $closest = $d }
+                                $dumpDetail = "$k $($favFix[$k].lat),$($favFix[$k].lon) (d=$([Math]::Round($d))m)"
+                                if ($d -le 300) { $dumpOk = $true; break }
+                            }
                             if ($dumpOk) { break }
                         }
-                        $res = Wait-PositionNear -Lat $favLat -Lon $favLon -ToleranceMeters 300 -TimeoutSec 8
+                        $elapsed = [Math]::Round(((Get-Date) - $pollStart).TotalSeconds, 1)
+                        $res = Wait-PositionNear -Lat $favLat -Lon $favLon -ToleranceMeters 300 -TimeoutSec 4
                         $ok = $dumpOk -or $res.Ok
+                        $returnDetail = if ($ok) { "reached the favourite ($dumpDetail) after ${elapsed}s" }
+                        elseif ($closest -lt 0) { "tap had no effect: no fix at all ${elapsed}s after tapping the favourite at $favLat,$favLon" }
+                        else { "tap had no effect: closest fix stayed $([Math]::Round($closest))m away after ${elapsed}s (favourite $favLat,$favLon; last $dumpDetail)" }
                         Test-Result -Id '11b-favorite-return' -Name 'quick return jumps back to the saved favourite' `
                             -Condition $ok `
-                            -Detail "tapped favourite at $favLat,$favLon; dumpsys: $dumpDetail; verifier: $(if ($res.Sample) { "$($res.Sample.lat),$($res.Sample.lon) (d=$($res.Distance)m)" } else { 'no sample' })"
+                            -Detail $returnDetail
                         Stop-Verifier
                     }
                     else {

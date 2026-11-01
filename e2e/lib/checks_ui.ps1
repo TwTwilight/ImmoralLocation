@@ -43,6 +43,9 @@ $script:UiIds = @{
     searchSuggestions = @('e2e.search.suggestions')
     peekCollapsed = @('e2e.peek.collapsed')
     peekCollapse = @('e2e.peek.collapse')
+    # S1 moved the favourites entry point: the 收藏 surface is now opened from the peek card's
+    # “收藏 N ›” link, tagged by ui-polish specifically so this check survives the rework.
+    peekFavorites = @('e2e.peek.favorites')
     toolCustomSpeed = @('e2e.tool.customspeed')
     toolsPanel = @('e2e.sheet.tools')
     placeCard  = @('e2e.placecard')

@@ -1015,5 +1015,38 @@ verifier **不在** LSPosed 作用域内（框架-only 的前提）。**07:2x �
 - **`6-cells`**：轮询 4.9 s（含移动）后 `ci/tac` 仍未变。要么把窗口拉到 ~12 s，要么看通道
   （`cells published …` / `cells.read.direct`，见 §9.7 的三步排查）。
 
+### 14.3 复测（2026-11-02 07:3x）：`6-cells` 12 s 轮询 → **PASS 1.4 s**，并新增启动前置
+
+```
+PASS 6-cells  A ci=107084627/tac=46625/pci=336 -> C ci=129538244/tac=50274; plmnOk=True;
+              polled 1.4s for the change
+PASS 10-independent  outside=30.27635,120.17624 d=163536m；inside=31.23492 d=0m
+SKIP 11-favorites    favourites surface not reachable (opener>text:工具 ×3)  ← UI 在改，路径可能变了
+```
+
+**结论**：`6-cells` 的失败是负载/时序，不是通道 —— 这次 1.4 s 就变了，12 s 只是给了余量；
+`10-independent` 的时序护栏让 outside 读到的确实是**真实位置**（163.5 km 外）。两处都不必再改断言。
+
+## 15. 启动前置：`harness-liveness`（2026-11-02 07:2x 落地并实测）
+
+今晚两次整页红行都是"模块没在当下这次开机里加载"造成的。现在 matrix **在做任何检查之前**先做一个
+前置探针，并单独出一行：
+
+```
+SetConfig(STATIC,1s) + SetPosition(POINT_A) + Start
+→ 最多等 12 s，等出现新的 tick 行（读 hook 自己的 `tick dt=… appliedTicks=…`）
+```
+- **健康**：`PASS harness-liveness — appliedTicks=… dt=…ms speed=… mode=… running=…; module <pkg> v…;
+  apk=/data/app/…/base.apk; lastUpdateTime=…`
+- **没 tick**：一行响亮的 FAIL（detail 带补救指令）+ **`exit 2`**，**不发布任何数字**。
+
+`module … apk=… lastUpdateTime=…` 这一段来自一次 `dumpsys package`，用来区分三种情况：
+**没加载**（无 tick）/ **加载了但装的是旧构建**（tick 有，apk 与 lastUpdateTime 对不上新装的包）/
+**加载了但没在 system_server 作用域**（tick 无而构建信息正确 ⇒ 该跑 `activate_module.ps1` + 重启）。
+
+顺带修掉一个自曝的 bug：`Get-EngineTicks` 原先不解析 `running=`，导致前置探针在自己的成功行上崩溃
+（`The property 'Running' cannot be found`）—— 它**没有**静默通过，也没有误判为产品失败。
+
+
 
 
