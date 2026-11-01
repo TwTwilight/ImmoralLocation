@@ -5,6 +5,7 @@ import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -74,6 +75,19 @@ fun chromeContentColor(): Color = MaterialTheme.colorScheme.onSurface
 /** Border colour of floating chrome (deliberately faint: tonal separation does the work). */
 @Composable
 fun chromeBorder(): Color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+
+/**
+ * Container colour of the bottom sheet.
+ *
+ * `surfaceContainerLow` is the M3 role for a sheet, and it is what the contract names. In dark mode
+ * that role sits within a couple of percent of the dimmed raster map, so the sheet and the map shared
+ * an edge; one step up the ramp (`surfaceContainer`) restores the elevation the shadow alone cannot
+ * express over a busy dark map. Light mode keeps the contract value.
+ */
+@Composable
+fun sheetContainer(): Color = MaterialTheme.colorScheme.let { scheme ->
+    if (scheme.surface.luminance() < 0.5f) scheme.surfaceContainer else scheme.surfaceContainerLow
+}
 
 /** Shape shared by every floating card on the map. */
 val CardShape = RoundedCornerShape(Dimens.cardRadius)

@@ -62,6 +62,18 @@ internal object MarkerArt {
     }
 
     /**
+     * A denser shadow for the route badges.
+     *
+     * They are the only markers that must stay legible against a *route line and POI labels* at the
+     * same time, so the soft 20 % halo used by the position dot is not enough: this one is deeper
+     * and offset by a full pixel below the badge.
+     */
+    private fun hardShadow(density: Float) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0x55000000
+        maskFilter = BlurMaskFilter(3f * density, BlurMaskFilter.Blur.NORMAL)
+    }
+
+    /**
      * The ring/casing colour that separates a marker from whatever is underneath it.
      *
      * The spec says `surface`, which is near-white in light mode — exactly right. In dark mode
@@ -190,8 +202,13 @@ internal object MarkerArt {
     }
 
     /**
-     * Numbered waypoint or start/end badge: 22dp circle, `primaryContainer` /
-     * `errorContainer`, 2dp `surface` stroke (spec §3, rows 3–4).
+     * Numbered waypoint or start/end badge: 24dp circle, `primaryContainer` / `errorContainer`,
+     * 2.5dp casing (spec §3, rows 3–4).
+     *
+     * The sizes are chosen for legibility *over busy tiles*, which is where the old 22dp/11sp
+     * badge failed: at street zoom it sat on top of POI labels and road shields and its 2dp ring
+     * was thinner than the strokes underneath it, so 起 and 终 blurred into the map. A 24dp body
+     * with a 2.5dp casing, 12sp bold text and a stronger drop shadow keeps the badge a badge.
      */
     fun badge(
         palette: MapPalette,
@@ -199,22 +216,23 @@ internal object MarkerArt {
         text: String,
         style: Badge,
     ): MarkerBitmap {
-        val box = 28f
+        val box = 32f
         val (bmp, canvas) = bitmap(box, box, density)
         val c = box / 2f * density
-        val r = 11f * density
+        val r = 12f * density
+        val casing = 2.5f * density
         val container = if (style == Badge.END) palette.errorContainer else palette.primaryContainer
         val content = if (style == Badge.END) palette.onErrorContainer else palette.onPrimaryContainer
-        canvas.drawCircle(c, c + 1.5f * density, r + 2f * density, shadow(density))
-        canvas.drawCircle(c, c, r + 2f * density, fill(ring(palette)))
+        canvas.drawCircle(c, c + 2f * density, r + casing, hardShadow(density))
+        canvas.drawCircle(c, c, r + casing, fill(ring(palette)))
         canvas.drawCircle(c, c, r, fill(container))
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = content
-            textSize = 11f * density
+            textSize = 12f * density
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             textAlign = Paint.Align.CENTER
         }
-        canvas.drawText(text, c, c + 3.8f * density, textPaint)
+        canvas.drawText(text, c, c + 4.2f * density, textPaint)
         return MarkerBitmap(bmp, MarkerGeometry.CENTER, MarkerGeometry.CENTER)
     }
 

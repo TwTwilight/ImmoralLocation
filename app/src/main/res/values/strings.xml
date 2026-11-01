@@ -120,9 +120,11 @@
 
     <!-- 收藏 -->
     <string name="favorites_title">收藏地点</string>
+    <string name="favorites_sheet_title">已保存的地点</string>
     <string name="favorites_count">共 %1$d 个收藏</string>
     <string name="favorites_hint">点击条目一键回到该位置 · 右侧可重命名或删除</string>
     <string name="favorites_empty">还没有收藏。长按地图、或点击下方按钮把当前位置存为收藏，之后可以一键回到这里。</string>
+    <string name="favorites_empty_title">还没有保存的地点</string>
     <string name="favorites_add_current">收藏当前位置</string>
     <string name="favorites_distance">距离 %1$s</string>
     <string name="favorites_rename_title">重命名收藏</string>

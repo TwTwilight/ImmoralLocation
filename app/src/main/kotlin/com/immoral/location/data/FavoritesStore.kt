@@ -81,6 +81,6 @@ class FavoritesStore(context: Context) {
         const val PREFS_NAME = "immoral_favorites"
         const val KEY_FAVORITES = "favorites_json"
 
-        fun defaultName(index: Int): String = "收藏地点 $index"
+        fun defaultName(index: Int): String = "收藏点 $index"
     }
 }

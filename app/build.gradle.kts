@@ -24,6 +24,27 @@ val canSign = signingStoreFile.exists()
 val ciVersionName = System.getenv("IMMORAL_VERSION_NAME")
 val ciVersionCode = System.getenv("IMMORAL_VERSION_CODE")?.toIntOrNull()
 
+/**
+ * ABIs that go into the APK.
+ *
+ * The module's own native layer (`libimmoralhook.so`, loaded by LSPosed inside system_server) is
+ * built for arm64-v8a only, so a 32-bit build of this APK could not inject anything. Shipping
+ * 高德's 32-bit `libAMapSDK_MAP_v7_1_0.so` next to a 64-bit-only hook library is therefore dead
+ * weight — measured at 2 093 316 bytes (2.0 MB) of the compressed release APK.
+ *
+ * Escape hatches, so this stays a policy instead of a one-way door:
+ *   -PimmoralAbis=arm64-v8a,armeabi-v7a   ship both (needs a 32-bit libimmoralhook.so to make sense)
+ *   -PimmoralAbiSplits=true               emit per-ABI APKs instead of one universal APK
+ */
+val requestedAbis: List<String> =
+    (project.findProperty("immoralAbis") as String?)
+        ?.split(',')
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?.takeIf { it.isNotEmpty() }
+        ?: listOf("arm64-v8a")
+val abiSplitsEnabled = (project.findProperty("immoralAbiSplits") as String?)?.toBoolean() ?: false
+
 android {
     namespace = "com.immoral.location"
     compileSdk = 37
@@ -37,9 +58,23 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
 
-        // 高德 ships native libs for 4 ABIs; keep only what the product needs (APK ~-8 MB).
+        // 高德 ships native libs for 4 ABIs; keep only what this product can actually use
+        // (see [requestedAbis] — the hook layer is arm64-v8a only).
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            abiFilters += requestedAbis
+        }
+    }
+
+    /**
+     * Optional per-ABI APKs; off by default so CI keeps producing one `app-release.apk`.
+     * `-PimmoralAbiSplits=true` emits `app-arm64-v8a-release.apk` etc. instead.
+     */
+    splits {
+        abi {
+            isEnable = abiSplitsEnabled
+            reset()
+            include(*requestedAbis.toTypedArray())
+            isUniversalApk = false
         }
     }
 
@@ -95,6 +130,12 @@ android {
             "META-INF/LICENSE*",
             "META-INF/NOTICE*",
         )
+        // A/B probing of 高德-only asset packs (包体积 experiment, see docs/ROUND-NOTES.md §7):
+        //   .\gradlew.bat :app:assembleRelease -PimmoralDropAssets=cfg/**,ae/**
+        // Empty by default, so a normal build ships whatever the SDK brings.
+        resources.excludes += ((findProperty("immoralDropAssets") as String?) ?: "")
+            .split(',').map { it.trim() }.filter { it.isNotEmpty() }
+
         // Keep native libraries extractable: LSPosed must be able to System.load() our
         // libimmoralhook.so from inside system_server, which requires a real file under
         // <apk dir>/lib/<abi>/ rather than a page-aligned library inside the APK.

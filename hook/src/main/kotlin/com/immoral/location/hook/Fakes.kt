@@ -24,13 +24,13 @@ object Fakes {
     // ------------------------------------------------------------------ Location
 
     /**
-     * Builds the spoofed [Location] for [provider] (`gps`/`network`/`fused`/`passive`) **and tags it
-     * with the active simulation flags in its extras**.
+     * Builds the spoofed [Location] for [provider] (`gps`/`network`/`fused`/`passive`).
      *
-     * The extras double as the client layer's state bus: any scoped app process can read the
-     * framework's spoofed last-known location (no permission problems, no prefs), which hands it the
-     * authoritative step counter, cadence and per-feature switches even though the engine only lives
-     * in system_server.
+     * The `immoral.*` tags are a **diagnostic state bus, not a product feature**: any app that
+     * receives a fix can read `location.extras`, so they name the module and its per-feature
+     * switches to anyone who looks. They are therefore written only when a debug property is set —
+     * see [Log.extrasEnabled]; otherwise the bundle is not set at all (no empty values, no stub
+     * keys), and the Location is indistinguishable from one an OEM put together.
      */
     fun location(provider: String, snap: EngineRuntime.Snap): Location {
         val location = location(
@@ -43,26 +43,28 @@ object Fakes {
             snap.accuracyFor(provider),
             snap.steps,
         )
-        try {
-            val extras = location.extras ?: Bundle()
-            extras.putInt("satellites", snap.satellites.count { it.usedInFix })
-            extras.putLong(EXTRA_STEPS, snap.steps)
-            extras.putInt(EXTRA_CADENCE, snap.config.stepCadenceBpm)
-            extras.putBoolean(EXTRA_STEP_SIM, snap.config.stepSimulation)
-            extras.putBoolean(EXTRA_GPS_SIGNAL_SIM, snap.config.gpsSignalSimulation)
-            extras.putBoolean(EXTRA_CELL_SIM, snap.config.cellSimulation)
-            extras.putBoolean(EXTRA_WIFI_SIM, snap.config.wifiSimulation)
-            extras.putBoolean(EXTRA_INDEPENDENT, snap.config.independentMode)
-        if (snap.config.independentMode) {
-            extras.putString(
-                EXTRA_INDEPENDENT_PACKAGES,
-                snap.config.independentPackages.sorted().joinToString(","),
-            )
-        }
-            extras.putLong(EXTRA_TS, snap.updatedAtMs)
-            location.extras = extras
-        } catch (t: Throwable) {
-            Log.once("fakes.extras", "location extras failed: ${t.javaClass.simpleName}")
+        if (Log.extrasEnabled()) {
+            try {
+                val extras = location.extras ?: Bundle()
+                extras.putInt("satellites", snap.satellites.count { it.usedInFix })
+                extras.putLong(EXTRA_STEPS, snap.steps)
+                extras.putInt(EXTRA_CADENCE, snap.config.stepCadenceBpm)
+                extras.putBoolean(EXTRA_STEP_SIM, snap.config.stepSimulation)
+                extras.putBoolean(EXTRA_GPS_SIGNAL_SIM, snap.config.gpsSignalSimulation)
+                extras.putBoolean(EXTRA_CELL_SIM, snap.config.cellSimulation)
+                extras.putBoolean(EXTRA_WIFI_SIM, snap.config.wifiSimulation)
+                extras.putBoolean(EXTRA_INDEPENDENT, snap.config.independentMode)
+                if (snap.config.independentMode) {
+                    extras.putString(
+                        EXTRA_INDEPENDENT_PACKAGES,
+                        snap.config.independentPackages.sorted().joinToString(","),
+                    )
+                }
+                extras.putLong(EXTRA_TS, snap.updatedAtMs)
+                location.extras = extras
+            } catch (t: Throwable) {
+                Log.once("fakes.extras", "location extras failed: ${t.javaClass.simpleName}")
+            }
         }
         return location
     }
@@ -113,12 +115,15 @@ object Fakes {
                 setMock?.let { Refl.invoke(it, location, false) }
             } catch (_: Throwable) {
             }
-            val extras = Bundle()
-            extras.putInt("satellites", 0)
-            extras.putLong("immoral.steps", steps)
-            try {
-                location.extras = extras
-            } catch (_: Throwable) {
+            // Same diagnostic-bus gate as [location] above: no keys at all unless the property is set.
+            if (Log.extrasEnabled()) {
+                val extras = Bundle()
+                extras.putInt("satellites", 0)
+                extras.putLong(EXTRA_STEPS, steps)
+                try {
+                    location.extras = extras
+                } catch (_: Throwable) {
+                }
             }
         } catch (t: Throwable) {
             Log.once("fakes.location", "location build failed: ${t.javaClass.simpleName}")

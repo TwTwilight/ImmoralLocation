@@ -2,12 +2,14 @@ package com.immoral.location.ui.sheets
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -54,6 +56,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -88,8 +91,11 @@ import com.immoral.location.map.TilePreset
 import com.immoral.location.net.PlaceResult
 import com.immoral.location.net.SearchProvider
 import com.immoral.location.ui.components.CompassDial
+import com.immoral.location.ui.components.FavoriteText
 import com.immoral.location.ui.components.Fmt
 import com.immoral.location.ui.components.LabeledSlider
+import com.immoral.location.ui.components.PeekFavoritesEntry
+import com.immoral.location.ui.components.PeekHintChip
 import com.immoral.location.ui.components.PeekStatusText
 import com.immoral.location.ui.components.TransportModeRow
 import com.immoral.location.ui.theme.Dimens
@@ -118,10 +124,12 @@ fun PeekPanel(
     speedMps: Double,
     coordinates: String,
     favouriteHere: Boolean,
+    favouriteCount: Int,
     onOpenStatus: () -> Unit,
     onToggleRun: () -> Unit,
     onOpenRoute: () -> Unit,
     onToggleFavourite: () -> Unit,
+    onOpenFavorites: () -> Unit,
     onSpeedSelect: (SpeedLevel) -> Unit,
     dragHandle: @Composable () -> Unit,
     modifier: Modifier = Modifier,
@@ -143,26 +151,23 @@ fun PeekPanel(
             dragHandle()
         }
         Column(modifier = Modifier.padding(horizontal = Dimens.sheetPadding)) {
+            // What is happening. One tap opens the precise readout, which is why the whole row is
+            // the target and the chevron is only an affordance.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { onOpenStatus() }
-                    .padding(vertical = 6.dp),
+                    .padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 PeekStatusText(
                     running = running,
                     modeLabel = modeLabel,
-                    coordinates = coordinates,
                     modifier = Modifier.weight(1f),
                 )
                 if (hint != null) {
-                    Text(
-                        text = hint,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(end = 6.dp),
-                    )
+                    PeekHintChip(text = hint)
+                    Spacer(modifier = Modifier.width(6.dp))
                 }
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -171,21 +176,42 @@ fun PeekPanel(
                     modifier = Modifier.size(20.dp),
                 )
             }
+            // Where we are, and the way to everywhere we saved. Coordinates are `labelSmall` +
+            // `tnum` (spec §2): they must be readable and stable, never the headline.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = coordinates,
+                    style = MaterialTheme.typography.labelSmall.tabular(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                PeekFavoritesEntry(count = favouriteCount, onClick = onOpenFavorites)
+            }
 
-            Spacer(modifier = Modifier.height(10.dp))
-            TransportModeRow(selected = speed, onSelect = onSpeedSelect)
             Spacer(modifier = Modifier.height(12.dp))
+            TransportModeRow(selected = speed, onSelect = onSpeedSelect)
+            Spacer(modifier = Modifier.height(14.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // All three controls are 48dp tall: mixing the 40dp Button default with a 48dp
+                // icon button is the kind of 8dp misalignment a reviewer reads as "unfinished".
                 Button(
                     onClick = onToggleRun,
                     modifier = Modifier
                         .weight(1f)
+                        .height(48.dp)
                         .testTag("e2e.action.primary"),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
                 ) {
                     Icon(
                         imageVector = if (running) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -204,18 +230,34 @@ fun PeekPanel(
                     onClick = onOpenRoute,
                     modifier = Modifier
                         .weight(1f)
+                        .height(48.dp)
                         .testTag("e2e.action.route"),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
                 ) {
                     Icon(Icons.Filled.AltRoute, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(stringResource(R.string.action_route_short), maxLines = 1)
                 }
-                val favouriteColors = androidx.compose.material3.IconButtonDefaults.filledTonalIconButtonColors()
+                // 收藏这里: `tertiaryContainer` when a saved place already covers the simulated
+                // position, so the filled heart is not the only difference between on and off.
+                val favouriteColors = if (favouriteHere) {
+                    IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                } else {
+                    IconButtonDefaults.filledTonalIconButtonColors()
+                }
                 FilledTonalIconButton(
                     onClick = onToggleFavourite,
                     colors = favouriteColors,
                     modifier = Modifier
                         .size(48.dp)
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                            shape = CircleShape,
+                        )
                         .testTag("e2e.action.favorite"),
                 ) {
                     Icon(
@@ -225,7 +267,7 @@ fun PeekPanel(
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
         }
     }
 }
@@ -261,6 +303,7 @@ fun ToolsPanel(
     onOpenHeading: () -> Unit,
     onToggleOverlay: (Boolean) -> Unit,
     overlayRunning: Boolean,
+    overlayPermissionGranted: Boolean = true,
     modifier: Modifier = Modifier,
     onManageFavorites: () -> Unit = {},
     onImportGpx: () -> Unit = {},
@@ -379,9 +422,15 @@ fun ToolsPanel(
         ShortcutRow(
             icon = Icons.Filled.Smartphone,
             title = stringResource(R.string.joystick_overlay_title),
-            subtitle = stringResource(
-                if (overlayRunning) R.string.overlay_running else R.string.overlay_stopped,
-            ),
+            // Three states, not two: "off" and "off because the permission was never granted" look
+            // identical to the user otherwise, and the row would silently bounce them to the system
+            // settings screen without having said why.
+            subtitle = when {
+                !overlayPermissionGranted -> stringResource(R.string.overlay_permission_needed)
+                overlayRunning -> stringResource(R.string.overlay_running)
+                else -> stringResource(R.string.overlay_idle)
+            },
+            warn = !overlayPermissionGranted,
             onClick = { onToggleOverlay(!overlayRunning) },
         )
         ShortcutRow(
@@ -404,10 +453,25 @@ fun ToolsPanel(
         )
 
         Spacer(modifier = Modifier.height(14.dp))
-        SectionLabel(
-            stringResource(R.string.favorites_title) + "  ·  " +
-                stringResource(R.string.favorites_count, favorites.size),
-        )
+        SectionLabel(stringResource(R.string.tools_tab_favorites))
+        // Count and the way in share one line: the section used to say `收藏地点 · 共 N 个收藏` as a
+        // single label that looked like a heading and was not tappable, which is why the list it
+        // announced stayed unreachable. 管理 is also offered when the list is empty, so the empty
+        // state (and its 收藏当前位置 button) is one tap away instead of hidden.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.favorites_count, favorites.size),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onManageFavorites) {
+                Text(stringResource(R.string.favorites_manage), maxLines = 1)
+            }
+        }
         if (favorites.isEmpty()) {
             Text(
                 text = stringResource(R.string.favorites_empty_short),
@@ -426,7 +490,7 @@ fun ToolsPanel(
                         label = {
                             Column {
                                 Text(
-                                    text = place.name,
+                                    text = FavoriteText.displayName(place.name),
                                     style = MaterialTheme.typography.labelLarge,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -459,11 +523,6 @@ fun ToolsPanel(
                 Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(stringResource(R.string.favorites_add_current), maxLines = 1)
-            }
-            if (favorites.isNotEmpty()) {
-                TextButton(onClick = onManageFavorites) {
-                    Text(stringResource(R.string.favorites_manage), maxLines = 1)
-                }
             }
         }
 
@@ -546,6 +605,7 @@ private fun ShortcutRow(
     title: String,
     subtitle: String,
     onClick: () -> Unit,
+    warn: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -557,7 +617,7 @@ private fun ShortcutRow(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            tint = if (warn) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(20.dp),
         )
         Spacer(modifier = Modifier.width(14.dp))
@@ -566,7 +626,11 @@ private fun ShortcutRow(
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (warn) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

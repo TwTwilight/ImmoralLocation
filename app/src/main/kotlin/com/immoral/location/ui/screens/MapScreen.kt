@@ -9,6 +9,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
@@ -101,6 +102,7 @@ import com.immoral.location.ui.sheets.SearchUiState
 import com.immoral.location.ui.sheets.speedLabelRes
 import com.immoral.location.ui.theme.Dimens
 import com.immoral.location.ui.theme.SheetShape
+import com.immoral.location.ui.theme.sheetContainer
 import com.immoral.location.ui.theme.tabular
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
@@ -178,6 +180,8 @@ fun MapScreen(
     onOpenStatus: () -> Unit,
     detent: SheetDetent,
     onDetentChange: (SheetDetent) -> Unit,
+    favouriteCount: Int = 0,
+    onOpenFavorites: () -> Unit = {},
     toolsContent: @Composable ColumnScope.() -> Unit,
     routeContent: @Composable ColumnScope.() -> Unit,
     modifier: Modifier = Modifier,
@@ -422,15 +426,23 @@ fun MapScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        // A very light tonal scrim over the raster tiles. The base map is a third-party raster
-        // style, so tinting it towards `surface` is what makes the M3 chrome sit on top of it
-        // instead of fighting it. Markers are drawn inside the map view, so they are tinted too —
-        // at 5 % that is imperceptible and it keeps the whole surface coherent.
+        // Tone the raster tiles towards the M3 surfaces so the chrome and the base map read as one
+        // picture. A *gradient* rather than a flat wash: a uniform 8 % veil over the whole frame is
+        // what made the light theme look foggy and the labels pale, while the tint is only needed
+        // where chrome actually sits — under the search pill and just above the sheet. The middle
+        // of the frame (where the user reads the map) stays untouched.
+        val scrimTop = if (darkMap) 0.30f else 0.10f
+        val scrimBottom = if (darkMap) 0.34f else 0.16f
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    MaterialTheme.colorScheme.surface.copy(alpha = if (darkMap) 0.12f else 0.08f),
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        0f to MaterialTheme.colorScheme.surface.copy(alpha = scrimTop),
+                        0.26f to MaterialTheme.colorScheme.surface.copy(alpha = 0f),
+                        0.62f to MaterialTheme.colorScheme.surface.copy(alpha = 0f),
+                        0.86f to MaterialTheme.colorScheme.surface.copy(alpha = scrimBottom),
+                    ),
                 ),
         )
 
@@ -542,69 +554,93 @@ fun MapScreen(
         }
 
         // ----------------------------------------------------------- place card
-        val card = pendingPoint
-        if (card != null) {
-            val distance = GeoMath.distanceMeters(position, card)
-            PlaceCard(
-                title = stringResource(R.string.place_card_title),
-                coordinates = coordinateLine(card),
-                distance = stringResource(R.string.place_card_distance, Fmt.distance(distance)),
-                onSetPosition = {
-                    setPositionHandler(card)
-                    pendingPoint = null
-                },
-                onAddToRoute = {
-                    onAddRoutePoint(card)
-                    pendingPoint = null
-                },
-                onSave = {
-                    onAddFavorite("", card)
-                    pendingPoint = null
-                },
-                onNavigate = {
-                    onNavigateTo(card)
-                    pendingPoint = null
-                },
-                onDismiss = { pendingPoint = null },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .offset { IntOffset(0, -(sheetPx.roundToInt() + with(density) { 12.dp.toPx() }.roundToInt())) }
-                    .padding(horizontal = Dimens.chromeMargin),
-            )
+        // The card slides in from the sheet edge and fades back into it. `AnimatedVisibility` needs
+        // a non-null child during the exit animation, hence the remembered last point.
+        var lastCardPoint by remember { mutableStateOf<GeoPoint?>(null) }
+        LaunchedEffect(pendingPoint) { if (pendingPoint != null) lastCardPoint = pendingPoint }
+        AnimatedVisibility(
+            visible = pendingPoint != null,
+            enter = fadeIn(tween(150)) + slideInVertically(tween(180), initialOffsetY = { it / 3 }),
+            exit = fadeOut(tween(120)),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .offset { IntOffset(0, -(sheetPx.roundToInt() + with(density) { 12.dp.toPx() }.roundToInt())) }
+                .padding(horizontal = Dimens.chromeMargin),
+        ) {
+            val card = lastCardPoint ?: pendingPoint
+            if (card != null) {
+                val distance = GeoMath.distanceMeters(position, card)
+                PlaceCard(
+                    title = stringResource(R.string.place_card_title),
+                    coordinates = coordinateLine(card),
+                    distance = stringResource(R.string.place_card_distance, Fmt.distance(distance)),
+                    onSetPosition = {
+                        setPositionHandler(card)
+                        pendingPoint = null
+                    },
+                    onAddToRoute = {
+                        onAddRoutePoint(card)
+                        pendingPoint = null
+                    },
+                    onSave = {
+                        onAddFavorite("", card)
+                        pendingPoint = null
+                    },
+                    onNavigate = {
+                        onNavigateTo(card)
+                        pendingPoint = null
+                    },
+                    onDismiss = { pendingPoint = null },
+                )
+            }
         }
 
         // ------------------------------------------------------- tap affordance
-        val chip = tapChip
-        if (chip != null) {
-            TapChipCard(
-                coordinates = coordinateLine(chip.point),
-                onUndo = {
-                    setPositionHandler(chip.previous)
-                    tapChip = null
-                },
-                onSave = {
-                    onAddFavorite("", chip.point)
-                    tapChip = null
-                },
-                onRoute = {
-                    onAddRoutePoint(chip.point)
-                    tapChip = null
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .offset { IntOffset(0, -(sheetPx.roundToInt() + with(density) { Dimens.aboveSheet.toPx() }.roundToInt())) }
-                    .padding(start = Dimens.chromeMargin, end = 76.dp),
-            )
+        var lastChip by remember { mutableStateOf<TapChip?>(null) }
+        LaunchedEffect(tapChip) { if (tapChip != null) lastChip = tapChip }
+        AnimatedVisibility(
+            visible = tapChip != null,
+            enter = fadeIn(tween(150)) + slideInVertically(tween(180), initialOffsetY = { it / 3 }),
+            exit = fadeOut(tween(120)),
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .offset { IntOffset(0, -(sheetPx.roundToInt() + with(density) { Dimens.aboveSheet.toPx() }.roundToInt())) }
+                .padding(start = Dimens.chromeMargin, end = 76.dp),
+        ) {
+            val chip = lastChip ?: tapChip
+            if (chip != null) {
+                TapChipCard(
+                    coordinates = coordinateLine(chip.point),
+                    onUndo = {
+                        setPositionHandler(chip.previous)
+                        tapChip = null
+                    },
+                    onSave = {
+                        onAddFavorite("", chip.point)
+                        tapChip = null
+                    },
+                    onRoute = {
+                        onAddRoutePoint(chip.point)
+                        tapChip = null
+                    },
+                )
+            }
         }
 
         // ------------------------------------------------------------- fabs
+        // The stack does not just fade when the sheet takes over: it slips 10dp towards the sheet
+        // edge as it fades, so it reads as "moving out of the way" instead of "blinking off".
+        val fabShiftPx = with(density) { 10.dp.toPx() }
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .offset { IntOffset(0, -(sheetPx.roundToInt() + with(density) { Dimens.aboveSheet.toPx() }.roundToInt())) }
                 .padding(end = Dimens.chromeMargin)
-                .graphicsLayer { alpha = chromeAlpha },
+                .graphicsLayer {
+                    alpha = chromeAlpha
+                    translationY = (1f - chromeAlpha) * fabShiftPx
+                },
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -631,10 +667,16 @@ fun MapScreen(
         }
 
         // ---------------------------------------------------------- joystick
+        // Springs in instead of tweening in: the pad appears *because the user asked for it*, and a
+        // short overshoot confirms the tap even before the eye finds the control. Still < 220 ms,
+        // per the "no flashy custom animation" rule in the contract.
         AnimatedVisibility(
             visible = joystickEnabled && chromeVisible && tapChip == null,
-            enter = fadeIn(tween(150)) + scaleIn(tween(150), initialScale = 0.86f),
-            exit = fadeOut(tween(120)) + scaleOut(tween(120)),
+            enter = fadeIn(tween(150)) + scaleIn(
+                animationSpec = spring(dampingRatio = 0.68f, stiffness = Spring.StiffnessMediumLow),
+                initialScale = 0.82f,
+            ),
+            exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.9f),
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .offset { IntOffset(0, -(sheetPx.roundToInt() + with(density) { Dimens.aboveSheet.toPx() }.roundToInt())) }
@@ -651,6 +693,10 @@ fun MapScreen(
         }
 
         // ------------------------------------------------------------- sheet
+        // One step of tonal elevation above the map (`surfaceContainerLow` in light, one lighter
+        // role in dark where surfaceContainerLow sits within ~2 % of the dimmed tiles) plus the
+        // 1dp hairline the contract asks for: without the stroke the dark sheet and the dark map
+        // shared an edge and the sheet looked like a cut-out of the map rather than chrome on it.
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -658,7 +704,11 @@ fun MapScreen(
                 .height(with(density) { sheetPx.toDp() })
                 .testTag("e2e.sheet"),
             shape = SheetShape,
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            color = sheetContainer(),
+            border = androidx.compose.foundation.BorderStroke(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+            ),
             shadowElevation = 14.dp,
         ) {
             // The gesture-bar inset is applied once, at the bottom of the sheet, so the peek block
@@ -711,10 +761,12 @@ fun MapScreen(
                                 null
                             },
                             favouriteHere = favouriteHere,
+                            favouriteCount = favouriteCount,
                             onOpenStatus = onOpenStatus,
                             onToggleRun = onToggleRun,
                             onOpenRoute = onOpenRoutePlanner,
                             onToggleFavourite = onToggleFavoriteHere,
+                            onOpenFavorites = onOpenFavorites,
                             onSpeedSelect = onSpeedSelect,
                             dragHandle = {
                                 SheetHandle(

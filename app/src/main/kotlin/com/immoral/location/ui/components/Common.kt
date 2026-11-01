@@ -58,6 +58,27 @@ object Fmt {
         }
 }
 
+/**
+ * Display-side naming of saved places.
+ *
+ * `FavoritesStore` names a place that was saved without a name `收藏地点 N`. That placeholder reads
+ * like a heading ("收藏地点" is the title of the saved-places screen), so every list shows it as
+ * `收藏点 N` instead: the row name and the screen title no longer look like the same thing, and a
+ * row never starts with the title of the surface it lives in. User-chosen names are untouched.
+ */
+object FavoriteText {
+
+    private val placeholder = Regex("""^收藏地点\s*(\d+)$""")
+
+    /** The name to render for [name] (never blank; blank falls back to `收藏点`). */
+    fun displayName(name: String): String {
+        val trimmed = name.trim()
+        val match = placeholder.matchEntire(trimmed)
+        if (match != null) return "收藏点 " + match.groupValues[1]
+        return trimmed.ifEmpty { "收藏点" }
+    }
+}
+
 /** A titled rounded card; the building block of every screen. */
 @Composable
 fun SectionCard(

@@ -486,16 +486,69 @@ object EngineRuntime {
             return
         }
         if (encoded == lastCellsEncoded) return
-        lastCellsEncoded = encoded
-        try {
+        val serving = value.cells.firstOrNull { it.registered }
+        // Written **before** the log line and committed only on success: a failed `putString` must
+        // not poison the dedup, otherwise the channel would keep whatever value the one successful
+        // write stored and every later position would be invisible to the phone process.
+        val wrote = try {
             val threadClass = Class.forName("android.app.ActivityThread")
             val current = threadClass.getMethod("currentActivityThread").invoke(null)
             val context = threadClass.getMethod("getSystemContext").invoke(current) as android.content.Context
             android.provider.Settings.Global.putString(context.contentResolver, "immoral_cells", encoded)
-            Log.rate("cells.written", 10_000L, "cells published to Settings.Global: " + encoded.take(80))
+            true
         } catch (t: Throwable) {
             Log.once("cells.write.err", "cannot publish the cells setting: " + t.javaClass.simpleName)
+            false
         }
+        if (!wrote) return
+        lastCellsEncoded = encoded
+        // Bring-up evidence for acceptance check `6-cells`: the line carries the position the set
+        // was derived from *and* the serving identity, so "the published set follows the position"
+        // can be read straight out of the log instead of being inferred from the app side.
+        Log.rate(
+            "cells.written",
+            2_000L,
+            "cells published to Settings.Global lat=" + trimCoord(value.lat) + "," + trimCoord(value.lon) +
+                " serving=" + (serving?.let { "ci=" + it.cid + "/tac=" + it.lac } ?: "none") +
+                " count=" + value.cells.size + " -> " + encoded.take(80),
+        )
+        verifyCellsSetting(encoded)
+    }
+
+    /**
+     * Reads the setting back once after a change.
+     *
+     * `Settings.Global.putString` reports nothing, so a silently dropped write (provider not ready
+     * yet, a vendor policy rejecting the key) would leave the phone process serving the previous
+     * cell set forever — exactly the "position moves, cells don't" defect this channel exists to
+     * fix. On a mismatch the dedup is cleared so the next tick writes again.
+     */
+    private fun verifyCellsSetting(expected: String) {
+        try {
+            val threadClass = Class.forName("android.app.ActivityThread")
+            val current = threadClass.getMethod("currentActivityThread").invoke(null)
+            val context = threadClass.getMethod("getSystemContext").invoke(current) as android.content.Context
+            val read = android.provider.Settings.Global.getString(context.contentResolver, "immoral_cells")
+            if (read == expected) {
+                Log.once("cells.verify.ok", "cells setting reads back exactly what was published")
+            } else {
+                lastCellsEncoded = ""
+                Log.rate(
+                    "cells.verify.mismatch",
+                    5_000L,
+                    "cells setting read back " + (read?.take(60) ?: "null") + " instead of " + expected.take(60) +
+                        " (retrying on the next tick)",
+                )
+            }
+        } catch (t: Throwable) {
+            Log.once("cells.verify.err", "cannot read the cells setting back: " + t.javaClass.simpleName)
+        }
+    }
+
+    /** `31.2304`-style coordinate for log lines (6 decimals would only add noise). */
+    private fun trimCoord(value: Double): String {
+        val scaled = (kotlin.math.round(value * 10_000.0) / 10_000.0).toString()
+        return scaled
     }
 
     private var lastCellsEncoded: String = ""

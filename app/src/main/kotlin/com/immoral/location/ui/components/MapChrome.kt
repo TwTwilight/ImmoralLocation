@@ -1,4 +1,11 @@
 package com.immoral.location.ui.components
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -22,16 +29,20 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.AltRoute
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.DirectionsBike
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Flight
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -40,7 +51,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
@@ -221,42 +234,53 @@ fun TransportModeRow(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f),
         contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(3.dp),
+                .padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             transportModes.forEach { mode ->
                 val active = mode.level == selected
+                // Animated, because the selection moves while the row is already on screen: a hard
+                // colour swap between two neighbouring cells reads as a flicker, a 120 ms fade
+                // reads as the highlight travelling.
+                val container by animateColorAsState(
+                    targetValue = if (active) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        androidx.compose.ui.graphics.Color.Transparent
+                    },
+                    animationSpec = tween(120),
+                    label = "transportContainer",
+                )
+                val content by animateColorAsState(
+                    targetValue = if (active) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    animationSpec = tween(120),
+                    label = "transportContent",
+                )
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .height(Dimens.transportCell)
                         .testTag(mode.tag)
-                        .background(
-                            color = if (active) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                androidx.compose.ui.graphics.Color.Transparent
-                            },
-                            shape = RoundedCornerShape(11.dp),
-                        )
+                        .background(color = container, shape = RoundedCornerShape(12.dp))
                         .clickable { onSelect(mode.level) },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = mode.icon,
                         contentDescription = stringResource(mode.labelRes),
-                        tint = if (active) {
-                            MaterialTheme.colorScheme.onPrimary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
+                        tint = content,
                         modifier = Modifier.size(22.dp),
                     )
                 }
@@ -264,53 +288,145 @@ fun TransportModeRow(
         }
     }
 }
-/** One line of `模拟中 · 步行 1.4 m/s` plus the tabular coordinate line under it. */
+
+/**
+ * One line of `模拟中 · 步行 1.4 m/s`.
+ *
+ * The live dot pulses only while the simulation runs: it is the one element on the peek row that
+ * answers "is this thing on?" before the user reads a single word, and a static dot could not be
+ * told from a decorative bullet. Text weight does the hierarchy (`titleMedium` state, `bodyMedium`
+ * muted detail); the coordinates deliberately live in the meta row below, at `labelSmall`, so the
+ * headline of the whole card stays a state and not a number.
+ */
 @Composable
 fun PeekStatusText(
     running: Boolean,
     modeLabel: String,
-    coordinates: String,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .background(
-                        color = if (running) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.outline
-                        },
-                        shape = CircleShape,
-                    ),
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = if (running) {
-                    stringResource(R.string.peek_running)
-                } else {
-                    stringResource(R.string.peek_idle)
-                },
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-            )
-            Text(
-                text = "  ·  $modeLabel",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+    val transition = rememberInfiniteTransition(label = "peekDot")
+    val pulse by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = if (running) 0.42f else 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1_100, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "peekDotAlpha",
+    )
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .alpha(if (running) pulse else 1f)
+                .background(
+                    color = if (running) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
+                    shape = CircleShape,
+                ),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
         Text(
-            text = coordinates,
-            style = MaterialTheme.typography.labelSmall.tabular(),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            text = if (running) {
+                stringResource(R.string.peek_running)
+            } else {
+                stringResource(R.string.peek_idle)
+            },
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
             maxLines = 1,
         )
+        Text(
+            text = "  ·  $modeLabel",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * The one-tap way into the saved-places list, docked on the peek card's meta row.
+ *
+ * Without it the list existed but had no entrance: it sat three interactions deep inside 工具 and
+ * the only control that mentioned 收藏 was the heart, which *saves* (or, when a place is already
+ * saved here, silently deletes). A tonal chip with the bookmark count makes the surface reachable
+ * from the default state and visible even when the list is empty (that is what turns "0 saved
+ * places" from a non-feature into an invitation).
+ */
+@Composable
+fun PeekFavoritesEntry(
+    count: Int,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AssistChip(
+        onClick = onClick,
+        modifier = modifier
+            .height(32.dp)
+            .testTag("e2e.peek.favorites"),
+        shape = RoundedCornerShape(10.dp),
+        border = null,
+        colors = AssistChipDefaults.assistChipColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            leadingIconContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            trailingIconContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        ),
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Filled.Bookmark,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+        },
+        label = {
+            Text(
+                text = stringResource(R.string.tools_tab_favorites),
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+            )
+        },
+        trailingIcon = if (count > 0) {
+            {
+                Text(
+                    text = count.toString(),
+                    style = MaterialTheme.typography.labelMedium.tabular(),
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 2.dp),
+                )
+            }
+        } else {
+            null
+        },
+    )
+}
+
+/** A one-line, non-blocking warning (module not activated) that fits beside the status row. */
+@Composable
+fun PeekHintChip(text: String, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.ErrorOutline,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(text = text, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        }
     }
 }
 /**

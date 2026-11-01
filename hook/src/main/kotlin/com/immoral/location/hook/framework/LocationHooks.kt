@@ -752,7 +752,13 @@ object LocationHooks {
                     if (packageName == null) {
                         // Unresolved listener: in independent mode it is by definition NOT whitelisted,
                         // so a fabricated fix is suppressed (never passed through). Real fixes pass.
-                        if (Fakes.containsFabricated(carrier)) {
+                        //
+                        // Two tests, because the markers do not always survive: the `immoral.*` extras
+                        // can be dropped when the platform re-creates the Location, so a coordinate
+                        // match against the engine's own fix is the fallback. Without it a
+                        // non-whitelisted app could still receive our fake through an unresolved
+                        // registration (measured: `pkg=UNRESOLVED (independent)` deliveries).
+                        if (Fakes.containsFabricated(carrier) || coordinatesMatchSnap(carrier, snap)) {
                             dropDelivery(param)
                             Log.rate(
                                 "indep.unresolved.drop",
@@ -783,9 +789,34 @@ object LocationHooks {
         }
     }
 
+    /**
+     * Does this delivery carry the engine's own fix?
+     *
+     * Independent mode needs a second identity test: the `immoral.*` extras survive the report path
+     * but not necessarily a platform-side re-creation of the `Location`, and a fabricated fix that
+     * slips through to a non-whitelisted registration is a product-visible leak (measured as
+     * `pkg=UNRESOLVED (independent)` deliveries). Coordinates are compared with a 150 m tolerance —
+     * orders of magnitude below the distance between the fake position and the device's real one.
+     */
+    private fun coordinatesMatchSnap(carrier: Any?, snap: EngineRuntime.Snap): Boolean {
+        if (carrier == null) return false
+        val locations = try {
+            if (Refl.isInstanceOf(carrier, LR_NAME)) Fakes.locationsOfResult(carrier)
+            else listOfNotNull(carrier as? Location)
+        } catch (_: Throwable) {
+            return false
+        }
+        for (location in locations) {
+            val dLat = location.latitude - snap.lat
+            val dLon = location.longitude - snap.lon
+            val meters = Math.sqrt(dLat * dLat + dLon * dLon * 0.66) * 111_320.0
+            if (meters <= 150.0) return true
+        }
+        return false
+    }
+
     /** Cancels the delivery: no-op ListenerOperation when possible, plain early return otherwise. */
-    private fun dropDelivery(param: XC_MethodHook.MethodHookParam) {
-        val noOp = noOpReturnValue(param)
+    private fun dropDelivery(param: XC_MethodHook.MethodHookParam) {        val noOp = noOpReturnValue(param)
         param.result = if (noOp == NO_OP_UNAVAILABLE) null else noOp
     }
 

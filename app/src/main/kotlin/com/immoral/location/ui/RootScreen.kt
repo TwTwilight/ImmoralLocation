@@ -116,6 +116,21 @@ fun RootScreen(app: App, initialSearch: String? = null) {
     val overlayRunning by SimulationService.overlayRunning.collectAsStateWithLifecycle()
     val headingDeg by SimulationService.headingDegFlow.collectAsStateWithLifecycle()
 
+    // 悬浮窗权限 is an *edge state* the tools panel must be able to explain: without it the
+    // "悬浮摇杆" row silently does nothing visible until the system settings screen opens. Read on
+    // every RESUME (the user comes back from that screen) instead of on every recomposition.
+    var overlayPermission by remember { mutableStateOf(canDrawOverlays(context)) }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                overlayPermission = canDrawOverlays(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val position = remember(engineState, lastPosition) {
         engineState?.point?.takeIf { it.isValid() } ?: lastPosition
     }
@@ -310,6 +325,11 @@ fun RootScreen(app: App, initialSearch: String? = null) {
             onOpenRoutePlanner = { detent = SheetDetent.FULL },
             onToggleFavoriteHere = toggleFavouriteHere,
             onOpenStatus = { modal = ModalSheet.STATUS },
+            favouriteCount = favorites.size,
+            // The saved-places list is reachable from the peek card. Before this entry point the
+            // only control on the default surface that mentioned 收藏 was the heart — which saves
+            // (or, when the point already has a saved place, deletes) instead of opening the list.
+            onOpenFavorites = { modal = ModalSheet.FAVORITES },
             detent = detent,
             onDetentChange = { detent = it },
             toolsContent = {
@@ -325,6 +345,7 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                     onOpenHeading = { modal = ModalSheet.HEADING },
                     onToggleOverlay = toggleOverlay,
                     overlayRunning = overlayRunning,
+                    overlayPermissionGranted = overlayPermission,
                     onManageFavorites = { modal = ModalSheet.FAVORITES },
                     onPickApps = { modal = ModalSheet.APPS },
                     onImportGpx = {
@@ -440,3 +461,8 @@ fun RootScreen(app: App, initialSearch: String? = null) {
         )
     }
 }
+
+/** `SYSTEM_ALERT_WINDOW` state; devices before M never needed the runtime switch. */
+private fun canDrawOverlays(context: android.content.Context): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+        android.provider.Settings.canDrawOverlays(context)
