@@ -461,9 +461,49 @@ object EngineRuntime {
         }
     }
 
+    /**
+     * Publishes the simulated cell set to `Settings.Global`.
+     *
+     * The cell getters live in `com.android.phone` (`PhoneInterfaceManager`), a different process
+     * from the engine, and `TelephonyRegistry` in `system_server` has no cell *getter* at all — so
+     * without a state channel the phone-side hooks are installed but inert. This is the same trick
+     * already used for [publishPolicy], and it is written only when the encoded value changes, so a
+     * stationary engine costs zero writes.
+     */
+    private fun publishCells(value: Snap) {
+        val encoded = try {
+            buildString {
+                if (value.config.cellSimulation) append("1|") else append("0|")
+                if (value.config.cellSimulation) {
+                    append(
+                        value.cells.joinToString(";") { c ->
+                            "${c.type},${c.mcc},${c.mnc},${c.lac},${c.cid},${c.pci},${c.level},${c.dbm},${if (c.registered) 1 else 0}"
+                        },
+                    )
+                }
+            }
+        } catch (t: Throwable) {
+            return
+        }
+        if (encoded == lastCellsEncoded) return
+        lastCellsEncoded = encoded
+        try {
+            val threadClass = Class.forName("android.app.ActivityThread")
+            val current = threadClass.getMethod("currentActivityThread").invoke(null)
+            val context = threadClass.getMethod("getSystemContext").invoke(current) as android.content.Context
+            android.provider.Settings.Global.putString(context.contentResolver, "immoral_cells", encoded)
+            Log.rate("cells.written", 10_000L, "cells published to Settings.Global: " + encoded.take(80))
+        } catch (t: Throwable) {
+            Log.once("cells.write.err", "cannot publish the cells setting: " + t.javaClass.simpleName)
+        }
+    }
+
+    private var lastCellsEncoded: String = ""
+
     private fun publish(value: Snap, pushLocation: Boolean = true) {
         snap = value
         config = value.config
+        publishCells(value)
         if (pushLocation) {
             for (listener in tickListeners) {
                 try {
