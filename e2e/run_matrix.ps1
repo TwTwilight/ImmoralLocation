@@ -765,8 +765,8 @@ if (Test-Selected '8') {
     #   "steps seam: engine steps=64 delta=4 cadence=120bpm sim=true running=true"
     # It is unthrottled (unlike the verifier's callback stream, which can yield a single sample in a
     # 12 s window and made this check order-dependent). Count the lines first, then read the ones that
-    # appear during the window, so nothing from an earlier check can leak in.
-    $seamBefore = @(Get-StepSeamValues).Count
+    # appear during the window, so nothing from an earlier check can leak in. The baseline is taken
+    # immediately before the measurement window (below), so both oracles cover the same span.
     $mark = Get-VerifyMark
     # Baseline must be a POST-reset sample: the verifier may still be holding the pre-reset counter
     # (measured: a stale 21 against a post-reset 19 produced "delta=-2"), so wait for a near-zero
@@ -778,6 +778,7 @@ if (Test-Selected '8') {
         Start-Sleep -Milliseconds 500
     }
     if (-not $start) { $start = Get-LastVerifierValue -Kind 'stepCounter' }
+    $seamBefore = @(Get-StepSeamValues).Count
     Start-Sleep -Seconds 12
     $samples = @(Get-VerifySamples -Kind 'stepCounter' -AfterTs $mark)
     if ($samples.Count -lt 2) {
@@ -913,17 +914,35 @@ if (Test-Selected '10') {
     # Wait for the replay FIRST: a freshly started verifier immediately logs the framework's cached
     # last location — a NEW log line carrying an OLD fix. Taking the mark before that line makes the
     # replay look like a leak "produced after the whitelist change" (measured 2026-11-02: fake=True in
-    # the combined run, fake=False when run alone). So: absorb the replay, THEN take the mark.
+    # the combined run, fake=False when run alone). The replay arrives per provider, so absorb until the
+    # GPS one has landed (the assertion below only counts gps), then let any stragglers drain.
     $replay = $null
-    for ($i = 0; $i -lt 20; $i++) {
+    for ($i = 0; $i -lt 25; $i++) {
         $ls = @(Get-VerifySamples -Kind 'location')
-        if ($ls.Count -gt 0) { $replay = $ls[-1]; break }
+        $g = @($ls | Where-Object { $_.provider -eq 'gps' })
+        if ($g.Count -gt 0) { $replay = $g[-1]; break }
+        if ($ls.Count -gt 0) { $replay = $ls[-1] }
         Start-Sleep -Milliseconds 400
     }
-    Start-Sleep -Seconds 3
+    Start-Sleep -Seconds 4
     $mark = Get-VerifyMark
     Start-Sleep -Seconds 6
     $outside = @(Get-VerifySamples -Kind 'location' -AfterTs $mark | Where-Object { $_.provider -eq 'gps' })
+    if ($outside.Count -eq 0) {
+        # One retry: a backgrounded verifier can be starved of callbacks entirely. Absorb its replay,
+        # then measure again — "no samples" must never be reported as a pass (that is exactly how this
+        # row looked green when run alone on 2026-11-02 while the combined run showed the leak).
+        Start-Verifier -Count 40 -IntervalMs 500 -Stream
+        for ($i = 0; $i -lt 20; $i++) {
+            $ls = @(Get-VerifySamples -Kind 'location')
+            if (@($ls | Where-Object { $_.provider -eq 'gps' }).Count -gt 0) { break }
+            Start-Sleep -Milliseconds 400
+        }
+        Start-Sleep -Seconds 3
+        $mark2 = Get-VerifyMark
+        Start-Sleep -Seconds 6
+        $outside = @(Get-VerifySamples -Kind 'location' -AfterTs $mark2 | Where-Object { $_.provider -eq 'gps' })
+    }
     $outsideFake = $false
     if ($outside) {
         $closest = ($outside | ForEach-Object {
@@ -941,9 +960,19 @@ if (Test-Selected '10') {
     Start-Sleep -Seconds 5
     $inside = Invoke-SetPositionAndVerify -Lat $POINT_C.lat -Lon $POINT_C.lon
     $ok = (-not $outsideFake) -and $inside.Ok
-    Test-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Condition $ok `
-        -Detail "outside-whitelist fake=$outsideFake (samples=$($outside.Count), cached replay absorbed=$(if ($replay) { "$($replay.provider)@$([Math]::Round($replay.lat,5))" } else { 'none' })); inside-whitelist reached=$($inside.Ok)" `
-        -Metrics @{ outsideFake = $outsideFake; insideReached = $inside.Ok; outsideSamples = $outside.Count; replayAbsorbed = [bool]$replay }
+    if ($outside.Count -eq 0) {
+        # Inconclusive, not a pass: the non-whitelisted verifier received nothing, so this run cannot
+        # tell a leak from a starved stream. Reported as WARN so nobody reads it as "independent mode
+        # is verified" (that is precisely how the row looked green when run alone).
+        Add-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Status 'WARN' `
+            -Detail "inconclusive: non-whitelisted verifier received no location sample even after a retry (vacuous pass suppressed); inside-whitelist reached=$($inside.Ok)" `
+            -Metrics @{ outsideSamples = 0; outsideFake = $null; insideReached = $inside.Ok; replayAbsorbed = [bool]$replay; inconclusive = $true }
+    }
+    else {
+        Test-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Condition $ok `
+            -Detail "outside-whitelist fake=$outsideFake (samples=$($outside.Count), cached replay absorbed=$(if ($replay) { "$($replay.provider)@$([Math]::Round($replay.lat,5))" } else { 'none' })); inside-whitelist reached=$($inside.Ok)" `
+            -Metrics @{ outsideFake = $outsideFake; insideReached = $inside.Ok; outsideSamples = $outside.Count; replayAbsorbed = [bool]$replay }
+    }
     Set-EngineConfig @{ mode = 'STATIC' } | Out-Null
 }
 
@@ -1002,8 +1031,9 @@ if (Test-Selected '11') {
             $created = $false
             if (($countBefore -lt 1) -or ($coordNodes.Count -lt 1)) {
                 Write-Step '     no saved favourite yet — creating the precondition'
-                foreach ($favId in @('e2e.tap.save', 'e2e.action.favorite')) {
-                    $el = Get-UiElement -Id $favId -Optional
+                # `Get-UiElement -Name` takes a key from $script:UiIds, not a raw tag string.
+                foreach ($favName in @('tapSave', 'actionFav')) {
+                    $el = Get-UiElement -Name $favName -Optional
                     if (-not $el) { continue }
                     Invoke-UiTapPoint -X $el.Cx -Y $el.Cy
                     Start-Sleep -Seconds 2
@@ -1044,7 +1074,9 @@ if (Test-Selected '11') {
 
             # 3) quick return: move the engine somewhere else, tap the favourite row, expect the
             #    engine (and therefore the verifier) back at the saved coordinates.
-            if ($okList) {
+            #    Only when a saved row actually exists — the empty-state branch above passes the list
+            #    assertion with zero rows, and indexing it used to throw "Index was outside the bounds".
+            if ($okList -and $coordNodes.Count -ge 1) {
                 $rowText = $coordNodes[0].GetAttribute('text').Trim()
                 $parts = $rowText -split ','
                 $favLat = [double]$parts[0].Trim()

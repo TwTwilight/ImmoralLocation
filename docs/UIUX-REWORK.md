@@ -248,3 +248,11 @@ val routePath: StateFlow<List<GeoPoint>>   // 道路级几何，空则回退 rou
 * 主操作/次操作**必须有可见文字**；图标按钮必须有 contentDescription（`Get-AppString` 可解析的 string 资源）。
 * 摇杆：盘面右下角…（见 §4）现在带一个 36dp ✕ 收起按钮（`e2e.joystick.close`），不再是"只能靠 FAB 再点一次"。
 
+
+### 10.8 R6 — 地图相机必须让主体可见（subject visible）
+
+* sheet 存在时，模拟点 **不得**落在屏幕几何中心：`MapScreen` 把相机偏移设为 `sheetPx / 2`
+  （`MapBackend.setSubjectOffsetY`；osmdroid 用 `setMapCenterOffset`，高德用 `setPointToCenter`），
+  使主体落在"sheet 上方可见带"的中心。PEEK / HALF / FULL 三档都适用。
+* 这条规则以前只存在于口头：第二轮的 FULL 帧里模拟点正好被 sheet 顶边切成两半（S4 的光环等于白做）。
+* 验收：任何包含 sheet 的截图里，模拟点必须完整可见，且其外环不被 sheet 边缘裁切。

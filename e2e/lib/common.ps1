@@ -129,7 +129,7 @@ function Wait-ForBoot {
         if (((Get-Date) - $lastBeat).TotalSeconds -ge 10) {
             # Visible heartbeat: a silent wait is indistinguishable from a hung adb, and that cost a
             # 20-minute stall once. Never poll a background job around this - the dots are the progress.
-            Write-Host ("  ... still waiting for boot ({(0:N0}s elapsed))" -f ((Get-Date) - ($deadline.AddSeconds(-$TimeoutSec))).TotalSeconds)
+            Write-Host ("  ... still waiting for boot ({0:N0}s elapsed)" -f ((Get-Date) - $deadline.AddSeconds(-$TimeoutSec)).TotalSeconds)
             $lastBeat = Get-Date
         }
         # adb can wedge while the device is booting: recreate the server rather than waiting it out.
@@ -335,3 +335,4 @@ function Invoke-Native {
     $out = & $Exe @Arguments 2>&1
     return [pscustomobject]@{ Code = $LASTEXITCODE; Output = @($out | ForEach-Object { "$_" }) }
 }
+

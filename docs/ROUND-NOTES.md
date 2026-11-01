@@ -879,3 +879,30 @@ e2e/out/report-8 10 11.json     # 序列 B：同样三条单独跑，同一构�
 所以自造前置的循环不用改。**注意**：`收藏` chip 与 ♡ 都能把计数从 0 变 1，
 **任何自动化检查都无法分辨点的是哪一个** —— 这正是 R3 属于设计评审、而不属于断言的原因。
 
+
+## 12. 事件记录：设备进入 LSPosed safe mode（2026-11-02 03:57）——不是本模块的崩溃
+
+**现象**：system_server 反复崩溃，LSPosed 打印
+`System server crashed too many times, stop all modules and enter safe mode`；
+随后 `pm list packages` 返回空、`activate_module.ps1` 报 "ImmoralLocation is not installed"。
+
+**真实原因（crash buffer 原文）**：
+```
+*** FATAL EXCEPTION IN SYSTEM PROCESS: main
+java.lang.NullPointerException: pkg name: com.android.apex.cts.shim does not have a corresponding entry
+  at KeySetManagerService.removeAppKeySetDataLPw
+  at InstallPackageHelper.commitReconciledScanResultLocked
+  at InstallPackageHelper.scanApexPackages
+  at PackageManagerService.<init>
+```
+崩溃发生在 PackageManager 初始化扫描 APEX 时，`HookBridge`/`t.intercept` 帧只是**包裹层**，抛异常的是框架自身。
+即：设备的 APEX/keyset 状态坏了（`com.android.apex.cts.shim`），与我们的 hook 无关。
+
+**恢复步骤**：重新 `activate_module.ps1 -Packages android,com.android.phone -Prune`（会重写 DB 的 enabled 行，
+等效于清掉 safe mode 标记）→ 一次干净重启 → 验证 `sys.boot_completed=1`、crash buffer 中
+`FATAL EXCEPTION IN SYSTEM PROCESS` 计数为 **0**、`modules_*.log` 有本模块日志（153 行）。
+
+**顺带修掉的 harness bug**：`e2e/lib/common.ps1` 的等待心跳字符串格式写错
+（`({(0:N0}s elapsed)`），会让 `install.ps1` / `activate_module.ps1` 直接以
+`Error formatting a string` 退出而不是等待；已修正。另：`Test-PackageInstalled` 在 PM 刚刚恢复、
+`pm list packages` 返回不完整时会把已安装的包判成未安装，现已加 `pm path` 兜底。
