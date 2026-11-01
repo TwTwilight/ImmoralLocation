@@ -930,7 +930,13 @@ object LocationHooks {
                 rememberReal(original)
                 // Capture the manager instance the first time we see a real report.
                 if (managers.isEmpty()) captureManager(param.thisObject)
-                val replaced = replaceValue(original, snap) ?: return
+                // Independent mode must still be able to hand the REAL fix to non-whitelisted callers, and
+            // the only dependable source of it is the provider's own cache - so do not overwrite it in
+            // that mode. The fake is injected at the delivery/query seams instead, which know who the
+            // receiver is (measured 2026-11-02: rewriting the cache here made 10-independent either
+            // leak the fake through getLastKnownLocation or black out entirely).
+            if (snap.config.independentMode) return
+            val replaced = replaceValue(original, snap) ?: return
                 param.args[0] = replaced
                 Log.rate("replace:" + label, 30_000L, "report path replaced via $label")
             } catch (t: Throwable) {
@@ -1019,5 +1025,6 @@ object LocationHooks {
         else -> value
     }
 }
+
 
 

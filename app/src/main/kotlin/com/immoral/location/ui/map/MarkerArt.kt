@@ -121,8 +121,8 @@ internal object MarkerArt {
                 c,
                 haloRadius,
                 intArrayOf(
-                    alpha(palette.primary, 0.30f),
-                    alpha(palette.primary, 0.12f),
+                    alpha(palette.primary, haloAlpha),
+                    alpha(palette.primary, haloMid),
                     alpha(palette.primary, 0f),
                 ),
                 floatArrayOf(0f, 0.45f, 1f),

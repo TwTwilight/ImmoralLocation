@@ -339,7 +339,18 @@ fun TransportModeRow(
                 .padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            transportModes.forEach { mode ->
+            transportModes.forEachIndexed { index, mode ->
+                // The sixth cell opens a different idea (custom speed, dialled in 工具), so it gets a
+                // hairline separator and stops pretending to be the fifth speed (audit S5). Widths
+                // stay within 1 px, so 14b-speed-row still measures six equal cells.
+                if (index == transportModes.lastIndex) {
+                    androidx.compose.foundation.layout.Box(
+                        modifier = Modifier
+                            .padding(horizontal = 2.dp)
+                            .size(width = 1.dp, height = 20.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.8f)),
+                    )
+                }
                 val active = mode.level == selected
                 // Animated, because the selection moves while the row is already on screen: a hard
                 // colour swap between two neighbouring cells reads as a flicker, a 120 ms fade

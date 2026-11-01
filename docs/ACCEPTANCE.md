@@ -338,3 +338,23 @@ last-location 处理之后，非白名单 app 从"收到假点"变成了"什么�
 
 风险：高德早期（t+0~t+12s）读取 `getLastKnownLocation` 的实现依赖报告路径改写。重构时必须用
 `e2e/amap_verify.ps1` 重跑 10 分钟稳定性，确认没有回到"半分钟后跳回真实位置"的老问题。
+
+## 14. 独立模拟：重构第一步已落地，但**未验收通过**（2026-11-02 05:20）
+
+已改（都只在 `independentMode = true` 时生效，默认模式零影响）：
+1. 报告路径在独立模式下**不再改写** provider 缓存（假点改由投递/查询 seam 注入）。
+2. `LocationManagerService` 与其内部类的 last-location getter 改成**结构匹配**（返回 Location 且首参 String）。
+3. 非白名单分支的"真实值"查找加了**跨 provider 兜底**（reports 记的是 gps/network/fused，app 常读 passive）。
+
+实测：`10-independent` 仍是 `WARN inconclusive`（非白名单侧零样本）；手动探针另发现
+**缓存污染**：先跑过普通模式的检查后，provider 缓存里留着假点，切到独立模式后
+非白名单 app 仍能通过 `last:*` 读到它（31 条假 / 35 条真）。
+
+下一轮必须做（顺序固定）：
+1. 切到独立模式时，把缓存里的**假点主动还原**：在报告 seam 记录"我们写进去的对象"，切模式时用
+   `realLast`（或刚被放行的真实报告）覆盖回去；没有真实值就清空缓存而不是留着假点。
+2. 用**干净 boot**（开机即独立模式）复测，排除上一轮普通模式的残留。
+3. 验收标准：非白名单样本 **非空**且与模拟点距离 > 1 km；白名单样本 = 模拟点。两者都有才算 PASS。
+
+方法学提醒：`e2e_bcast.sh` 有时返回 `Broadcast completed: result=0`（没有接收者应答），此时引擎配置
+**并未生效**——手动探针必须先确认 `config applied` 或 tick 日志里的模式，否则会得出错误结论（本轮踩过）。
