@@ -53,6 +53,9 @@ import com.immoral.location.core.model.FavoritePlace
 import com.immoral.location.core.model.GeoPoint
 import com.immoral.location.ui.components.FavoriteText
 import com.immoral.location.ui.components.Fmt
+import com.immoral.location.ui.components.SheetSupporting
+import com.immoral.location.ui.components.SheetTitle
+import com.immoral.location.ui.components.SheetValue
 import com.immoral.location.ui.theme.tabular
 
 /**
@@ -98,28 +101,18 @@ fun FavoritesScreen(
                 .padding(bottom = 8.dp),
         ) {
             Column(modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp)) {
-                Text(
-                    text = stringResource(R.string.favorites_sheet_title),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
+                SheetTitle(stringResource(R.string.favorites_sheet_title))
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(
+                SheetValue(
                     text = stringResource(R.string.favorites_count, favorites.size),
-                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Medium,
                 )
                 // The long "how it works" line is only shown when there is something to explain: in
                 // the empty state the copy belongs to the empty state's own body, and printing it
                 // twice (header + body) is exactly the kind of duplication that reads as unfinished.
                 if (favorites.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = stringResource(R.string.favorites_hint),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    SheetSupporting(stringResource(R.string.favorites_hint))
                 }
             }
 
@@ -250,13 +243,7 @@ private fun FavoriteRow(
             }
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = FavoriteText.displayName(place.name),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                SheetValue(text = FavoriteText.displayName(place.name))
                 Text(
                     text = "${Fmt.coord(place.point.lat)}, ${Fmt.coord(place.point.lon)}",
                     style = MaterialTheme.typography.labelSmall.tabular(),
@@ -327,6 +314,5 @@ private fun EmptyState(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
             modifier = Modifier.widthIn(max = 280.dp),
-        )
-    }
+        )    }
 }

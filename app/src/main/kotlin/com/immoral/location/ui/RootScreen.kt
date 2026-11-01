@@ -356,10 +356,13 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                     onPickRecent = controller::setPosition,
                 )
             },
-            routeContent = {
+            routeContent = { onHeightChange ->
                 RoutePlannerHost(
                     controller = controller.routePlanner,
                     onDismiss = { detent = SheetDetent.PEEK },
+                    // The planner reports its content height so the FULL detent can hug it instead of
+                    // expanding to the screen and leaving a dead lower half (audit P1).
+                    onContentHeightChange = onHeightChange,
                 )
             },
         )

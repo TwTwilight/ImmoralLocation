@@ -45,6 +45,12 @@ object Dimens {
     /** A small floating button (layer / locate / joystick toggle). */
     val fabSize: Dp = 48.dp
 
+    /**
+     * Width of the right-edge FAB plate: one 48 dp button plus 8 dp of plate on each side, so the
+     * cluster reads as one container instead of three buttons glued together (audit S3).
+     */
+    val fabGroupWidth: Dp = 64.dp
+
     /** Height of one transport-mode cell in the peek row. */
     val transportCell: Dp = 44.dp
 

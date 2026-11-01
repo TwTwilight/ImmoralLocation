@@ -363,6 +363,23 @@ class MapHost(
         }
     }
 
+    /** Pixels the subject is drawn above the view centre (see [MapBackend.setSubjectOffsetY]). */
+    @Volatile
+    private var subjectOffsetY = 0
+
+    override fun setSubjectOffsetY(offsetPx: Int) {
+        if (offsetPx == subjectOffsetY) return
+        subjectOffsetY = offsetPx
+        try {
+            // osmdroid's offset is applied to the projected centre, so a positive Y value moves the
+            // drawn subject up by that many pixels.
+            mapView.setMapCenterOffset(0, -offsetPx)
+            mapView.invalidate()
+        } catch (t: Throwable) {
+            // ignore
+        }
+    }
+
     override fun onResume() {
         try {
             mapView.onResume()

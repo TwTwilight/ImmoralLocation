@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -25,6 +26,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
@@ -40,6 +42,7 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Flight
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -202,6 +205,95 @@ fun ChromeFab(
         }
     }
 }
+/**
+ * The one labelled action that shares the top bar with the search pill (audit S2).
+ *
+ * Before this pass the top bar had a 48 dp square of a *different* size and shape next to a 56 dp
+ * pill: same visual weight, no label, and it meant 工具. A control that is not search must not look
+ * like a peer of search unless it says what it does, so this control is the search pill's twin —
+ * same 56 dp height, same circle shape, same container/border/elevation — plus a visible label and a
+ * 16 dp gap, which is the same gap the pill keeps from the screen edge.
+ */
+@Composable
+fun ChromeActionPill(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    tag: String? = null,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier
+            .height(Dimens.searchBarHeight)
+            .then(if (tag != null) Modifier.testTag(tag) else Modifier),
+        shape = PillShape,
+        color = chromeContainer(),
+        contentColor = chromeContentColor(),
+        border = BorderStroke(1.dp, chromeBorder()),
+        shadowElevation = Elevation.search,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, end = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * The right-edge floating button stack, as **one** container (audit S3).
+ *
+ * Three separate 48 dp squares used to float over the map with 10 dp air between them, so they read
+ * as three unrelated buttons that happen to be stacked (and one of them covered a POI label the map
+ * had drawn underneath). One tonal plate with hairline-inset dividers groups them: the group reads
+ * as a single control cluster, the dividers keep the 48 dp touch targets exactly where the overlap
+ * matrix measures them, and the plate's 20 dp radius matches the cards.
+ */
+@Composable
+fun ChromeFabGroup(
+    modifier: Modifier = Modifier,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    Surface(
+        // Width is *pinned* to one button. The dividers inside want to fill their row, so without
+        // this the plate stretched to the whole map width and the three buttons floated in its
+        // middle — caught in the first capture of this round, not by reasoning.
+        modifier = modifier.width(Dimens.fabGroupWidth),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, chromeBorder()),
+        shadowElevation = Elevation.fab,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, content = content)
+    }
+}
+
+/** A divider that separates two buttons *inside* [ChromeFabGroup]. */
+@Composable
+fun ChromeFabGroupDivider() {
+    androidx.compose.material3.HorizontalDivider(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp),
+        thickness = 1.dp,
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+    )
+}
+
 /** One transport / movement-speed preset. */
 data class TransportMode(
     val level: SpeedLevel,
@@ -216,7 +308,9 @@ val transportModes: List<TransportMode> = listOf(
     TransportMode(SpeedLevel.BIKE, Icons.Filled.DirectionsBike, R.string.speed_bike, "e2e.speed.bike"),
     TransportMode(SpeedLevel.DRIVE, Icons.Filled.DirectionsCar, R.string.speed_drive, "e2e.speed.drive"),
     TransportMode(SpeedLevel.PLANE, Icons.Filled.Flight, R.string.speed_plane, "e2e.speed.plane"),
-    TransportMode(SpeedLevel.CUSTOM, Icons.Filled.Tune, R.string.speed_custom, "e2e.speed.custom"),
+    // `Speed`, not `Tune`: the gear glyph made the sixth cell look like a settings/图层 button
+    // sitting at the end of the speed row (audit S5 — one control, one job, one meaning per glyph).
+    TransportMode(SpeedLevel.CUSTOM, Icons.Filled.Speed, R.string.speed_custom, "e2e.speed.custom"),
 )
 /**
  * Six equal-width transport cells.
@@ -290,18 +384,23 @@ fun TransportModeRow(
 }
 
 /**
- * One line of `模拟中 · 步行 1.4 m/s`.
+ * The peek card's summary line: `● 模拟中 · 步行 1.4 m/s · ±3 m`.
  *
  * The live dot pulses only while the simulation runs: it is the one element on the peek row that
  * answers "is this thing on?" before the user reads a single word, and a static dot could not be
  * told from a decorative bullet. Text weight does the hierarchy (`titleMedium` state, `bodyMedium`
  * muted detail); the coordinates deliberately live in the meta row below, at `labelSmall`, so the
  * headline of the whole card stays a state and not a number.
+ *
+ * Audit S7: the row used to be "未开始 · 步行 1.4 m/s" with a chevron stranded at the far right of
+ * the card — a status line with no affordance next to a lone glyph. It is now a real summary
+ * (state · mode · speed · accuracy) with the expand affordance inline where the eye already is.
  */
 @Composable
 fun PeekStatusText(
     running: Boolean,
     modeLabel: String,
+    accuracyLabel: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val transition = rememberInfiniteTransition(label = "peekDot")
@@ -346,64 +445,82 @@ fun PeekStatusText(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        // Accuracy belongs in the summary: it is the one number that says how "real" the simulated
+        // fix looks, and it used to live only inside the status sheet.
+        if (accuracyLabel != null) {
+            Text(
+                text = "  ·  $accuracyLabel",
+                style = MaterialTheme.typography.bodyMedium.tabular(),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        // The expand affordance sits at the end of the sentence the user is already reading, not
+        // alone at the far right of a 360 dp row (audit S7).
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .padding(start = 4.dp)
+                .size(18.dp),
+        )
     }
 }
 
 /**
- * The one-tap way into the saved-places list, docked on the peek card's meta row.
+ * The peek card's way into the saved-places list: `收藏 N ›`, rendered as a *link*.
  *
- * Without it the list existed but had no entrance: it sat three interactions deep inside 工具 and
- * the only control that mentioned 收藏 was the heart, which *saves* (or, when a place is already
- * saved here, silently deletes). A tonal chip with the bookmark count makes the surface reachable
- * from the default state and visible even when the list is empty (that is what turns "0 saved
- * places" from a non-feature into an invitation).
+ * Audit S1 said the old tonal chip and the action row's ♡ looked like two controls for one job. They
+ * were not (the ♡ toggles "save this point", this opens a list), but the chip *looked* like a state
+ * chip, so the distinction was invisible. The rule is now stated in the design contract and encoded
+ * in the idioms:
+ *
+ *  * a **filled tonal icon button** is a toggle (`e2e.action.favorite`, the only save control);
+ *  * **primary text + trailing chevron, no container** is a link to a list (this component).
+ *
+ * The count stays because it is the discoverability signal ("there are 5 saved places"), and it is
+ * also what keeps the surface reachable for the acceptance harness without touching the ♡.
  */
 @Composable
-fun PeekFavoritesEntry(
+fun PeekFavoritesLink(
     count: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    AssistChip(
-        onClick = onClick,
+    Row(
         modifier = modifier
-            .height(32.dp)
-            .testTag("e2e.peek.favorites"),
-        shape = RoundedCornerShape(10.dp),
-        border = null,
-        colors = AssistChipDefaults.assistChipColors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-            labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            leadingIconContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            trailingIconContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-        ),
-        leadingIcon = {
-            Icon(
-                imageVector = Icons.Filled.Bookmark,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-            )
-        },
-        label = {
-            Text(
-                text = stringResource(R.string.tools_tab_favorites),
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-            )
-        },
-        trailingIcon = if (count > 0) {
-            {
-                Text(
-                    text = count.toString(),
-                    style = MaterialTheme.typography.labelMedium.tabular(),
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(start = 2.dp),
-                )
-            }
-        } else {
-            null
-        },
-    )
+            .heightIn(min = 40.dp)
+            .testTag("e2e.peek.favorites")
+            .clickable(onClick = onClick)
+            .padding(start = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Bookmark,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = if (count > 0) {
+                stringResource(R.string.tools_tab_favorites) + " " + count
+            } else {
+                stringResource(R.string.tools_tab_favorites)
+            },
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp),
+        )
+    }
 }
 
 /** A one-line, non-blocking warning (module not activated) that fits beside the status row. */

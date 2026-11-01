@@ -36,10 +36,12 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
@@ -82,7 +84,10 @@ import com.immoral.location.core.model.GeoPoint
 import com.immoral.location.core.model.SimulationConfig
 import com.immoral.location.core.model.SpeedLevel
 import com.immoral.location.map.ResolvedTiles
+import com.immoral.location.ui.components.ChromeActionPill
 import com.immoral.location.ui.components.ChromeFab
+import com.immoral.location.ui.components.ChromeFabGroup
+import com.immoral.location.ui.components.ChromeFabGroupDivider
 import com.immoral.location.ui.components.Fmt
 import com.immoral.location.ui.components.JoystickPad
 import com.immoral.location.ui.components.PlaceCard
@@ -183,7 +188,7 @@ fun MapScreen(
     favouriteCount: Int = 0,
     onOpenFavorites: () -> Unit = {},
     toolsContent: @Composable ColumnScope.() -> Unit,
-    routeContent: @Composable ColumnScope.() -> Unit,
+    routeContent: @Composable ColumnScope.(onHeightChange: (Int) -> Unit) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -196,8 +201,14 @@ fun MapScreen(
     var joystickEnabled by rememberSaveable { mutableStateOf(false) }
     var pendingPoint by remember { mutableStateOf<GeoPoint?>(null) }
     var tapChip by remember { mutableStateOf<TapChip?>(null) }
+    // Timestamp holder: a camera settle fired by our own position update must not eat the chip.
+    val tapChipAtMs = remember { LongArray(1) }
     var selectedFavoriteId by remember { mutableStateOf<String?>(null) }
     var peekHeightPx by remember { mutableIntStateOf(0) }
+    // Height the route planner reports for its own content. The FULL detent hugs this number, which
+    // is the fix for the "expanded sheet with a dead lower half" defect: a 3-field planner used to
+    // open at full screen height and leave ~800 px of empty container under its actions.
+    var routeContentPx by remember { mutableIntStateOf(0) }
 
     // The map callbacks are captured once by the (remembered) backend, so they must only read
     // state through `rememberUpdatedState` refs, never through captured values.
@@ -211,6 +222,7 @@ fun MapScreen(
             // away. The chip below the FABs is the affordance (undo / save / route), not a modal.
             setPositionHandler(point)
             tapChip = TapChip(point, previous)
+            tapChipAtMs[0] = android.os.SystemClock.uptimeMillis()
         }
     }
     val handleLongPress: (GeoPoint) -> Unit = remember {
@@ -226,7 +238,13 @@ fun MapScreen(
             favoriteTapHandler(place)
         }
     }
-    val handleMapGesture: () -> Unit = remember { { tapChip = null } }
+    // AMap reports a camera change after the marker moves, which used to dismiss the chip in the
+    // same frame it appeared. Ignore camera events in the first 800 ms after our own tap.
+    val handleMapGesture: () -> Unit = remember {
+        {
+            if (android.os.SystemClock.uptimeMillis() - tapChipAtMs[0] > 800) tapChip = null
+        }
+    }
 
     // The place card and the tap chip are peek-state affordances: expanding the sheet to the tools
     // or the route planner means the user moved on, and leaving them floating would either overlap
@@ -359,6 +377,13 @@ fun MapScreen(
     val running = state?.running == true
     val modeLabel = stringResource(speedLabelRes(config.speed)) + " " +
         Fmt.trimZero(config.effectiveSpeedMps()) + " m/s"
+    // Accuracy is part of the peek summary now (audit S7). It is only shown when jitter is
+    // configured, because "±0 m" would claim a precision the simulation does not have.
+    val accuracyLabel = if (config.gpsJitterMeters > 0.0) {
+        "±" + Fmt.trimZero(config.gpsJitterMeters) + " m"
+    } else {
+        null
+    }
     val favouriteHere = remember(favorites, position) {
         favorites.any { GeoMath.distanceMeters(position, it.point) < 25.0 }
     }
@@ -390,7 +415,17 @@ fun MapScreen(
         val chromeTopPx = with(density) {
             (Dimens.searchBarHeight + Dimens.chromeGap * 4).toPx()
         } + navInsetTopPx
-        val fullPx = (totalPx - chromeTopPx).coerceAtLeast(halfPx)
+        val fullCapPx = (totalPx - chromeTopPx).coerceAtLeast(halfPx)
+        // FULL hugs the planner's measured content (plus the collapsed status row above it and the
+        // gesture bar below it) and falls back to the screen cap until the first measurement lands.
+        val collapsedHeaderPx = with(density) { 52.dp.toPx() }
+        val fullPx = if (routeContentPx > 0) {
+            // Floor is PEEK, not HALF: clamping to HALF is what left ~500 px of dead sheet under a
+            // three-field planner even after the height was measured.
+            (routeContentPx + collapsedHeaderPx + navInsetPx).coerceIn(peekPx, fullCapPx)
+        } else {
+            fullCapPx
+        }
         val targetPx = when (detent) {
             SheetDetent.PEEK -> peekPx
             SheetDetent.HALF -> halfPx
@@ -416,6 +451,12 @@ fun MapScreen(
             animationSpec = tween(durationMillis = 160),
             label = "chromeAlpha",
         )
+
+        // Keep the simulated subject inside the band of map that the sheet leaves visible: with a
+        // sheet at PEEK the subject sits half a sheet-height above the view centre, so its halo and
+        // ring are never clipped by the sheet edge (audit R6).
+        val subjectOffsetPx = (sheetPx / 2f).roundToInt()
+        LaunchedEffect(subjectOffsetPx, backend) { backend.setSubjectOffsetY(subjectOffsetPx) }
 
         // ------------------------------------------------------------ the map
         AndroidView(
@@ -463,9 +504,13 @@ fun MapScreen(
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(modifier = Modifier.width(Dimens.chromeGap))
-                ChromeFab(
+                // The 工具 entry is the search pill's twin: same 56 dp height, same circle, same
+                // container/border/elevation, plus a visible label. The unlabelled 48 dp square that
+                // used to sit here had the same visual weight as search but a different shape and no
+                // name (audit S2: the worst of both).
+                ChromeActionPill(
                     icon = Icons.Filled.Tune,
-                    contentDescription = stringResource(R.string.action_tools),
+                    label = stringResource(R.string.action_tools),
                     onClick = onOpenTools,
                     tag = "e2e.fab.tools",
                 )
@@ -642,28 +687,35 @@ fun MapScreen(
                     translationY = (1f - chromeAlpha) * fabShiftPx
                 },
             horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
-            ChromeFab(
-                icon = Icons.Filled.Layers,
-                contentDescription = stringResource(R.string.map_layer),
-                onClick = onOpenLayers,
-                active = false,
-                tag = "e2e.fab.layer",
-            )
-            ChromeFab(
-                icon = Icons.Filled.SportsEsports,
-                contentDescription = stringResource(R.string.map_joystick),
-                onClick = { joystickEnabled = !joystickEnabled },
-                active = joystickEnabled,
-                tag = "e2e.fab.joystick",
-            )
-            ChromeFab(
-                icon = Icons.Filled.MyLocation,
-                contentDescription = stringResource(R.string.map_back_to_position),
-                onClick = { backend.animateTo(position) },
-                tag = "e2e.fab.locate",
-            )
+            // One tonal plate (audit S3) instead of three unrelated squares floating 10 dp apart.
+            // The dividers keep the 48 dp touch targets and their exact bounds, so the overlap
+            // matrix keeps measuring the same rectangles.
+            ChromeFabGroup {
+                ChromeFab(
+                    icon = Icons.Filled.Layers,
+                    contentDescription = stringResource(R.string.map_layer),
+                    onClick = onOpenLayers,
+                    active = false,
+                    tag = "e2e.fab.layer",
+                )
+                ChromeFabGroupDivider()
+                ChromeFab(
+                    icon = Icons.Filled.SportsEsports,
+                    contentDescription = stringResource(R.string.map_joystick),
+                    onClick = { joystickEnabled = !joystickEnabled },
+                    active = joystickEnabled,
+                    tag = "e2e.fab.joystick",
+                )
+                ChromeFabGroupDivider()
+                ChromeFab(
+                    icon = Icons.Filled.MyLocation,
+                    contentDescription = stringResource(R.string.map_back_to_position),
+                    onClick = { backend.animateTo(position) },
+                    tag = "e2e.fab.locate",
+                )
+            }
         }
 
         // ---------------------------------------------------------- joystick
@@ -689,6 +741,23 @@ fun MapScreen(
                     onVector = onJoystick,
                     onRelease = onReleaseJoystick,
                 )
+                // The pad had no visible way out: the only affordance was the toggle FAB, which is
+                // off-screen-corner knowledge. A close chip on the pad's own rim fixes that (audit:
+                // missing label / ambiguous affordance). It lives *inside* the pad's bounds so the
+                // e2e overlap matrix measures the same rectangle as before.
+                FilledTonalIconButton(
+                    onClick = { joystickEnabled = false },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(36.dp)
+                        .testTag("e2e.joystick.close"),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = stringResource(R.string.joystick_hide),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
 
@@ -762,6 +831,7 @@ fun MapScreen(
                             },
                             favouriteHere = favouriteHere,
                             favouriteCount = favouriteCount,
+                            accuracyLabel = accuracyLabel,
                             onOpenStatus = onOpenStatus,
                             onToggleRun = onToggleRun,
                             onOpenRoute = onOpenRoutePlanner,
@@ -793,7 +863,11 @@ fun MapScreen(
                                     // The planner is full-height content with no insets
                                     // of its own; the horizontal gutter is ours.
                                     .padding(horizontal = 16.dp),
-                            ) { routeContent() }
+                            ) {
+                                // The planner reports its own content height; the FULL detent uses
+                                // it so a short planner never opens into a dead lower half.
+                                routeContent { height -> routeContentPx = height }
+                            }
                             SheetDetent.PEEK -> Unit
                         }
                     }

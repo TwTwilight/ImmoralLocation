@@ -94,9 +94,13 @@ import com.immoral.location.ui.components.CompassDial
 import com.immoral.location.ui.components.FavoriteText
 import com.immoral.location.ui.components.Fmt
 import com.immoral.location.ui.components.LabeledSlider
-import com.immoral.location.ui.components.PeekFavoritesEntry
+import com.immoral.location.ui.components.PeekFavoritesLink
 import com.immoral.location.ui.components.PeekHintChip
 import com.immoral.location.ui.components.PeekStatusText
+import com.immoral.location.ui.components.SheetLabel
+import com.immoral.location.ui.components.SheetSupporting
+import com.immoral.location.ui.components.SheetTitle
+import com.immoral.location.ui.components.SheetValue
 import com.immoral.location.ui.components.TransportModeRow
 import com.immoral.location.ui.theme.Dimens
 import com.immoral.location.ui.theme.tabular
@@ -134,6 +138,7 @@ fun PeekPanel(
     dragHandle: @Composable () -> Unit,
     modifier: Modifier = Modifier,
     hint: String? = null,
+    accuracyLabel: String? = null,
 ) {
     val modeLabel = buildString {
         append(stringResource(speedLabelRes(speed)))
@@ -152,7 +157,8 @@ fun PeekPanel(
         }
         Column(modifier = Modifier.padding(horizontal = Dimens.sheetPadding)) {
             // What is happening. One tap opens the precise readout, which is why the whole row is
-            // the target and the chevron is only an affordance.
+            // the target; the chevron lives inside the summary line (audit S7) instead of floating
+            // alone at the far right. A confirmed-missing module adds its chip at the row's end.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -163,21 +169,13 @@ fun PeekPanel(
                 PeekStatusText(
                     running = running,
                     modeLabel = modeLabel,
+                    accuracyLabel = accuracyLabel,
                     modifier = Modifier.weight(1f),
-                )
-                if (hint != null) {
-                    PeekHintChip(text = hint)
-                    Spacer(modifier = Modifier.width(6.dp))
-                }
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = stringResource(R.string.sheet_status_title),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp),
                 )
             }
             // Where we are, and the way to everywhere we saved. Coordinates are `labelSmall` +
-            // `tnum` (spec §2): they must be readable and stable, never the headline.
+            // `tnum` (spec §2): they must be readable and stable, never the headline. The 收藏 link
+            // is navigation only — the ♡ in the action row is the one save/unsave control (S1).
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -191,7 +189,11 @@ fun PeekPanel(
                     maxLines = 1,
                     modifier = Modifier.weight(1f),
                 )
-                PeekFavoritesEntry(count = favouriteCount, onClick = onOpenFavorites)
+                if (hint != null) {
+                    PeekHintChip(text = hint)
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                PeekFavoritesLink(count = favouriteCount, onClick = onOpenFavorites)
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -552,12 +554,11 @@ fun ToolsPanel(
 
 @Composable
 private fun SectionLabel(text: String) {
-    Text(
+    // One type scale for every sheet (audit P7): a section label is `labelMedium`/onSurfaceVariant
+    // from SheetText, never a locally invented `labelLarge`/primary headline.
+    SheetLabel(
         text = text,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+        modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
     )
 }
 
@@ -685,16 +686,10 @@ fun LayerSheetContent(
             .padding(horizontal = Dimens.sheetPadding)
             .verticalScroll(rememberScrollState()),
     ) {
-        Text(
-            text = stringResource(R.string.map_layer),
-            style = MaterialTheme.typography.titleLarge,
-        )
-        Text(
-            text = stringResource(R.string.layers_desc),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
-        )
+        SheetTitle(stringResource(R.string.map_layer))
+        Spacer(modifier = Modifier.height(2.dp))
+        SheetSupporting(stringResource(R.string.layers_desc))
+        Spacer(modifier = Modifier.height(8.dp))
         TilePreset.entries.forEach { option ->
             val enabled = option != TilePreset.TIANDITU || hasKey
             Row(
@@ -709,16 +704,11 @@ fun LayerSheetContent(
                     onClick = { onPresetChange(option) },
                 )
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(option.labelRes),
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
+                    SheetValue(text = stringResource(option.labelRes))
                     if (!enabled) {
-                        Text(
-                            text = stringResource(R.string.tile_preset_needs_key),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
+                        // Information, not an error: the preset is fine, it just needs a key. Red
+                        // here read as "this option is broken" (audit: inconsistent role).
+                        SheetLabel(stringResource(R.string.tile_preset_needs_key))
                     }
                 }
             }
@@ -726,16 +716,9 @@ fun LayerSheetContent(
         Spacer(modifier = Modifier.height(8.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
         Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = stringResource(R.string.settings_tianditu_key),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        Text(
-            text = stringResource(R.string.settings_tianditu_key_desc),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        SheetLabel(stringResource(R.string.settings_tianditu_key))
+        Spacer(modifier = Modifier.height(2.dp))
+        SheetSupporting(stringResource(R.string.settings_tianditu_key_desc))
         OutlinedTextField(
             value = keyDraft,
             onValueChange = { keyDraft = it },
@@ -744,8 +727,15 @@ fun LayerSheetContent(
                 .fillMaxWidth()
                 .padding(top = 8.dp),
         )
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = { onKeyChange(keyDraft) }) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            // 48 dp control rhythm, same as every other action in the app (audit S6).
+            androidx.compose.material3.FilledTonalButton(
+                onClick = { onKeyChange(keyDraft) },
+                modifier = Modifier.height(48.dp),
+            ) {
                 Text(stringResource(R.string.action_save))
             }
         }
@@ -753,7 +743,7 @@ fun LayerSheetContent(
             text = stringResource(R.string.tile_preset_gcj_note),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 28.dp),
+            modifier = Modifier.padding(top = 12.dp, bottom = 28.dp),
         )
     }
 }
@@ -773,16 +763,10 @@ fun HeadingSheetContent(
             .padding(horizontal = Dimens.sheetPadding)
             .verticalScroll(rememberScrollState()),
     ) {
-        Text(
-            text = stringResource(R.string.sheet_heading_title),
-            style = MaterialTheme.typography.titleLarge,
-        )
-        Text(
-            text = stringResource(R.string.sheet_heading_desc),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
-        )
+        SheetTitle(stringResource(R.string.sheet_heading_title))
+        Spacer(modifier = Modifier.height(4.dp))
+        SheetSupporting(stringResource(R.string.sheet_heading_desc))
+        Spacer(modifier = Modifier.height(8.dp))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -948,21 +932,26 @@ fun SearchSheetContent(
 @Composable
 fun OverlayPromptContent(onEnable: () -> Unit, onDismiss: () -> Unit) {
     Column(modifier = Modifier.padding(horizontal = Dimens.sheetPadding, vertical = 8.dp)) {
-        Text(
-            text = stringResource(R.string.overlay_prompt_title),
-            style = MaterialTheme.typography.titleLarge,
-        )
-        Text(
-            text = stringResource(R.string.overlay_prompt_body),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),
-        )
+        SheetTitle(stringResource(R.string.overlay_prompt_title))
+        Spacer(modifier = Modifier.height(8.dp))
+        SheetSupporting(stringResource(R.string.overlay_prompt_body))
+        Spacer(modifier = Modifier.height(20.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(onClick = onEnable, modifier = Modifier.weight(1f)) {
+            // 48 dp primary + secondary rhythm, same hierarchy as every other surface (audit S6).
+            Button(
+                onClick = onEnable,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp),
+            ) {
                 Text(stringResource(R.string.overlay_prompt_enable))
             }
-            TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+            androidx.compose.material3.FilledTonalButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp),
+            ) {
                 Text(stringResource(R.string.overlay_prompt_later))
             }
         }
