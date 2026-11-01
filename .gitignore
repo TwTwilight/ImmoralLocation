@@ -27,6 +27,8 @@ e2e/out/
 hook/harness/
 verifier/
 *.ps1
+*.ps1
+!e2e/**/*.ps1
 *.py
 
 # Reverse-engineering / acceptance material: kept on disk, never published.
