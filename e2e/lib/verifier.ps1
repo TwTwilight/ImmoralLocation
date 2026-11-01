@@ -34,6 +34,7 @@ function Start-Verifier {
         [int]$Count = 10,
         [int]$IntervalMs = 2000,
         [switch]$Stream,      # also subscribe to requestLocationUpdates (proves the injection path)
+        [switch]$LastKnown,   # also probe getLastKnownLocation(gps/network) every second for ~20 s
         [switch]$NoSteps,
         [switch]$Wait,
         [int]$TimeoutSec = 0
@@ -42,6 +43,7 @@ function Start-Verifier {
     Start-Sleep -Milliseconds 400
     $cmd = "am start -W -n $script:VerifierActivity --es autotest true --es count $Count --es intervalMs $IntervalMs"
     if ($Stream) { $cmd += ' --es stream true' }
+    if ($LastKnown) { $cmd += ' --es lastknown true' }
     if (-not $NoSteps) { $cmd += ' --es steps true' }
     Invoke-AdbShell $cmd -AllowFailure | Out-Null
     Start-Sleep -Seconds 1

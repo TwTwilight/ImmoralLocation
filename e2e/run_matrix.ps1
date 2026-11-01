@@ -910,7 +910,7 @@ if (Test-Selected '10') {
     Start-Sleep -Seconds 2
     Stop-Verifier
     Start-Sleep -Milliseconds 600
-    Start-Verifier -Count 40 -IntervalMs 500 -Stream
+    Start-Verifier -Count 40 -IntervalMs 500 -Stream -LastKnown
     # Wait for the replay FIRST: a freshly started verifier immediately logs the framework's cached
     # last location — a NEW log line carrying an OLD fix. Taking the mark before that line makes the
     # replay look like a leak "produced after the whitelist change" (measured 2026-11-02: fake=True in
@@ -972,28 +972,56 @@ if (Test-Selected '10') {
     $substitutedFor = [bool]($indepLog -match 'substituted the last real \w+ fix for ')
     $cacheGenuine = [bool]($indepLog -match 'provider last-known restored to the real fix')
     $logEvidence = $lastKnownGenuine -or $droppedForUs -or $substitutedFor -or $cacheGenuine
+    # --- PRIMARY SIGNAL: getLastKnownLocation (indoor-measurable and cannot pass vacuously) --------
+    # The verifier was started with `--es lastknown true`, so it reads the provider cache once a second
+    # the way an ordinary app would. Non-whitelisted: that cache must be GENUINE, i.e. at least 1 km
+    # from the simulated point (or the read must have returned a value at all — a null read fails the
+    # assertion explicitly instead of skipping it).
+    $lkOutside = @(Get-VerifySamples -Kind 'lastKnown' | Where-Object { $_.provider -eq 'gps' })
+    $lkOut = if ($lkOutside.Count -gt 0) { $lkOutside[-1] } else { $null }
+    $lkOutPresent = [bool]($lkOut -and ("$($lkOut.present)" -eq 'True') -and ($null -ne $lkOut.lat))
+    $lkOutDist = if ($lkOutPresent) {
+        Get-GeoDistanceMeters -Lat1 $POINT_B.lat -Lon1 $POINT_B.lon -Lat2 $lkOut.lat -Lon2 $lkOut.lon
+    } else { -1.0 }
+    $outsideLastKnownOk = $lkOutPresent -and ($lkOutDist -ge 1000)
     # Phase (b): whitelist the verifier, settle, restart the verifier again, then expect the fake.
     Set-EngineConfig @{ mode = 'STATIC'; independentMode = $true; independentPackages = @($script:VerifierPackage); updateIntervalMs = 500 } | Out-Null
     Send-Start -Channel $Channel | Out-Null
     Start-Sleep -Seconds 2
     Stop-Verifier
     Start-Sleep -Milliseconds 600
-    Start-Verifier -Count 40 -IntervalMs 500 -Stream
+    Start-Verifier -Count 40 -IntervalMs 500 -Stream -LastKnown
     Start-Sleep -Seconds 5
     $inside = Invoke-SetPositionAndVerify -Lat $POINT_C.lat -Lon $POINT_C.lon
-    $ok = (-not $outsideFake) -and $inside.Ok
-    if ($outside.Count -eq 0) {
-        # Inconclusive, not a pass: the non-whitelisted verifier received nothing, so this run cannot
-        # tell a leak from a starved stream. Reported as WARN so nobody reads it as "independent mode
-        # is verified" (that is precisely how the row looked green when run alone).
+    $insideMark = Get-VerifyMark
+    Start-Sleep -Seconds 4
+    $lkInside = @(Get-VerifySamples -Kind 'lastKnown' -AfterTs $insideMark | Where-Object { $_.provider -eq 'gps' })
+    $lkIn = if ($lkInside.Count -gt 0) { $lkInside[-1] } else { $null }
+    $lkInPresent = [bool]($lkIn -and ("$($lkIn.present)" -eq 'True') -and ($null -ne $lkIn.lat))
+    $lkInDist = if ($lkInPresent) {
+        Get-GeoDistanceMeters -Lat1 $POINT_C.lat -Lon1 $POINT_C.lon -Lat2 $lkIn.lat -Lon2 $lkIn.lon
+    } else { -1.0 }
+    $insideLastKnownOk = $lkInPresent -and ($lkInDist -le 300)
+    $ok = $outsideLastKnownOk -and $insideLastKnownOk -and (-not $outsideFake) -and $inside.Ok
+    $evidence = @()
+    if ($lastKnownGenuine) { $evidence += 'log:getLastLocation->real' }
+    if ($droppedForUs) { $evidence += 'log:dropped-for-verifier' }
+    if ($substitutedFor) { $evidence += 'log:substituted-real' }
+    if ($cacheGenuine) { $evidence += 'log:cache-genuine' }
+    $evText = if ($evidence.Count -gt 0) { $evidence -join ',' } else { 'none' }
+    if ($null -eq $lkOut -and $null -eq $lkIn -and -not $logEvidence) {
+        # Nothing observable at all — neither a cache read nor any per-package log line. That is an
+        # inconclusive run, never a pass (this is exactly how the row looked green when run alone).
         Add-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Status 'WARN' `
-            -Detail "inconclusive: non-whitelisted verifier received no location sample even after a retry (vacuous pass suppressed); inside-whitelist reached=$($inside.Ok)" `
-            -Metrics @{ outsideSamples = 0; outsideFake = $null; insideReached = $inside.Ok; replayAbsorbed = [bool]$replay; inconclusive = $true }
+            -Detail "inconclusive: no getLastKnownLocation reading and no per-package filter evidence (vacuous pass suppressed); inside-whitelist reached=$($inside.Ok)" `
+            -Metrics @{ outsideSamples = $outside.Count; outsideFake = $null; insideReached = $inside.Ok; logEvidence = $evText; lastKnownOutside = 'null'; lastKnownInside = 'null'; inconclusive = $true }
     }
     else {
+        $lkOutText = if ($lkOutPresent) { "$([Math]::Round($lkOut.lat,5)),$([Math]::Round($lkOut.lon,5)) d=$([Math]::Round($lkOutDist))m" } else { 'read returned null' }
+        $lkInText = if ($lkInPresent) { "$([Math]::Round($lkIn.lat,5)),$([Math]::Round($lkIn.lon,5)) d=$([Math]::Round($lkInDist))m" } else { 'read returned null' }
         Test-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Condition $ok `
-            -Detail "outside-whitelist fake=$outsideFake (samples=$($outside.Count), cached replay absorbed=$(if ($replay) { "$($replay.provider)@$([Math]::Round($replay.lat,5))" } else { 'none' })); inside-whitelist reached=$($inside.Ok)" `
-            -Metrics @{ outsideFake = $outsideFake; insideReached = $inside.Ok; outsideSamples = $outside.Count; replayAbsorbed = [bool]$replay }
+            -Detail "lastKnown outside(not whitelisted)=$lkOutText [need >=1000 m from the simulated point]; lastKnown inside(whitelisted)=$lkInText [need <=300 m]; stream outside fake=$outsideFake (samples=$($outside.Count)); per-package evidence=[$evText]; inside stream reached=$($inside.Ok)" `
+            -Metrics @{ outsideLastKnownOk = $outsideLastKnownOk; lkOutsideDistance = [Math]::Round($lkOutDist); lkOutsidePresent = $lkOutPresent; insideLastKnownOk = $insideLastKnownOk; lkInsideDistance = [Math]::Round($lkInDist); lkInsidePresent = $lkInPresent; outsideFake = $outsideFake; outsideSamples = $outside.Count; insideReached = $inside.Ok; logEvidence = $evText; lastKnownGenuine = $lastKnownGenuine; droppedForVerifier = $droppedForUs; substituted = $substitutedFor; cacheGenuine = $cacheGenuine }
     }
     Set-EngineConfig @{ mode = 'STATIC' } | Out-Null
 }

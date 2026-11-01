@@ -953,3 +953,33 @@ detail 里直接写 `per-package evidence=[…]`，读报告的人不用再猜�
 
 第 1 条能让断言变成"同一个 app 自己读到的值"（更接近用户可见行为）；第 2 条今天就能跑。
 
+### 13.3 探针已落地并实测 —— 抓到一个**新的泄漏路径**（2026-11-02 06:0x）
+
+`verifier` 增加 `--es lastknown true`：每秒读一次 `getLastKnownLocation("gps"/"network")`，
+打 `VERIFY {"kind":"lastKnown","provider":…,"present":…,"lat":…,"lon":…}`（null 也显式发 `present:false`）。
+`e2e` 侧把它当**主判据**：白名单外必须 ≥1000 m，白名单内必须 ≤300 m，读不到就 FAIL（不是 SKIP）。
+
+两次连续运行（`e2e/out/report-10.json`）结果完全一致：
+
+| 相位 | `getLastKnownLocation("gps")` 读到 | 判定 |
+|---|---|---|
+| 白名单外（`independentPackages=[]`） | `31.23042,121.4787`，d=**0 m**（= 模拟点 POINT_B） | **FAIL：非白名单应用通过 last-known 读到了模拟位置** |
+| 白名单内（verifier 在名单里） | `31.23492,121.4737`，d=0 m（= POINT_C） | 正确 |
+| 流（outside） | 跑 A `samples=0`；跑 B `fake=True, samples=3` | 因此需要缓存探针 |
+| 模块日志 | `getLastLocation(...) -> real fix` / `dropped delivery to <pkg>` / `substituted the last real gps fix` / `provider last-known restored to the real fix` | 四条都在 |
+
+⇒ **"日志说已按包过滤"与"app 真的读到了假值"同时成立**，唯一自洽解释：app 实际调用的重载
+`LocationManager#getLastKnownLocation(String)`（以及 `(String,String)`）**没有被 hook**，
+拿到的是 provider 缓存里上一次注入的值；日志里那条 `getLastLocation(...)` 来自**另一个**被 hook 的形态。
+
+**给 hook 侧的待办**：把这两个重载纳入 `lastLocationHook`，并让独立模拟下的非白名单调用返回真实缓存或 null。
+
+**方法学**：这条断言不可能空转 —— 白名单外读到假值 = FAIL，读到 null = FAIL（显式 `read returned null`），
+只有"真实缓存且远离模拟点"才 PASS；室内可测，与 `gpsSignalSimulation` 无关。
+
+**当天的构建状态**：`:app:compileDebugKotlin` 因 `SettingsScreen.kt` 的 `MaterialTheme` 冲突导入与
+`Unresolved reference 'height'` 而失败（ui-polish 在改），因此本轮只单独安装 `verifier-debug.apk`
+（`.\gradlew.bat :verifier:assembleDebug` 成功），**未重装 app、未重启、未重新激活**；
+verifier **不在** LSPosed 作用域内（框架-only 的前提）。
+
+

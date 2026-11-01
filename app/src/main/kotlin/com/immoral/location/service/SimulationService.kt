@@ -82,6 +82,11 @@ class SimulationService : Service() {
 
             ACTION_RELEASE_JOYSTICK -> app?.bridge?.releaseJoystick()
             ACTION_HIDE_OVERLAY -> hideOverlay()
+            // Suspend/resume exist because the floating pad belongs to *other* apps: while our
+            // activity is resumed the in-app FAB is the control, and the bubble would sit on top of
+            // our own sheet (it covered the very switch that turns it off).
+            ACTION_SUSPEND_OVERLAY -> overlay?.setSuspended(true)
+            ACTION_RESUME_OVERLAY -> overlay?.setSuspended(false)
             ACTION_STOP_SERVICE -> stopSelf()
             else -> Unit
         }
@@ -346,6 +351,8 @@ class SimulationService : Service() {
         const val ACTION_SYNC_CONFIG = "com.immoral.location.service.SYNC_CONFIG"
         const val ACTION_TOGGLE_OVERLAY = "com.immoral.location.service.TOGGLE_OVERLAY"
         const val ACTION_HIDE_OVERLAY = "com.immoral.location.service.HIDE_OVERLAY"
+    const val ACTION_SUSPEND_OVERLAY = "com.immoral.location.service.SUSPEND_OVERLAY"
+    const val ACTION_RESUME_OVERLAY = "com.immoral.location.service.RESUME_OVERLAY"
         const val ACTION_STOP_SERVICE = "com.immoral.location.service.STOP_SERVICE"
         const val ACTION_SET_JOYSTICK = "com.immoral.location.service.SET_JOYSTICK"
         const val ACTION_RELEASE_JOYSTICK = "com.immoral.location.service.RELEASE_JOYSTICK"

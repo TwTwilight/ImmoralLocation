@@ -393,3 +393,26 @@ qa-e2e 将改为通过 `getLastKnownLocation`（读缓存，缓存现在保持�
 2. last-location getter 改为结构匹配（返回 Location 且首参 String），覆盖 LMS 与其内部类；
 3. 未解析包名的投递改为"有界"：看起来像我们的假点、或在已知真实值时对不上真实值 → 丢弃；
    没有已知真实值时放行（避免黑屏式回归）。
+
+### 15.1 决定性证据：`getLastKnownLocation` 仍然返回假点（2026-11-02 06:11）
+
+给 verifier 加了 `--es lastknown true` 探针（它自己调 `getLastKnownLocation("gps"/"network")` 并打印
+`VERIFY {"kind":"lastKnown",…}`），结果两轮一致：
+
+```
+lastKnown outside(not whitelisted) = 31.23042,121.4787  → d = 0 m（就是模拟点）
+lastKnown inside(whitelisted)      = 31.23492,121.4737  → d = 0 m（正确）
+per-package evidence = [log:getLastLocation->real, log:dropped-for-verifier, log:substituted-real, log:cache-genuine]
+```
+
+即：**按包过滤的日志全部正常，app 自己读到的却是假点**。把 LMS 与其内部类里"返回 Location"的方法
+**全部**纳入 hook 之后仍然如此 ⇒ 结论变成架构性的：**假点进入了 provider 缓存**，而 app 读的是缓存。
+
+缓存为什么是假的：普通模式（检查 1–9）一直在改写/注入假点；切到独立模式后，我们只"停止继续写"，
+但**没有把已写入的假点还原**。`publishRealToManager` 依赖 `realLast`，而 `realLast` 在只有注入流的
+会话里可能是空的。
+
+**下一轮的唯一正确做法（不再打补丁）**：让 provider 缓存**始终保存真实值** —— 报告路径在任何模式下都
+不再被改写/注入假点，假点只在"知道接收者是谁"的 seam 注入（per-registration 投递、last-location 查询、
+`getCurrentLocation`）。随后必须用 `e2e/amap_verify.ps1` 重跑 10 分钟稳定性，确认没有回到
+"半分钟后跳回真实位置"的老问题。

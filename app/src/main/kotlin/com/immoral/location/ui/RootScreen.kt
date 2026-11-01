@@ -17,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -121,10 +122,29 @@ fun RootScreen(app: App, initialSearch: String? = null) {
     // every RESUME (the user comes back from that screen) instead of on every recomposition.
     var overlayPermission by remember { mutableStateOf(canDrawOverlays(context)) }
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val overlayRunningNow by rememberUpdatedState(overlayRunning)
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                overlayPermission = canDrawOverlays(context)
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    overlayPermission = canDrawOverlays(context)
+                }
+
+                androidx.lifecycle.Lifecycle.Event.ON_START -> {
+                    // The floating pad is for *other* apps. While ours is in front the in-app FAB is
+                    // the control; the bubble would otherwise float over our own sheet (it covered
+                    // the switch that turns it off). Suspending keeps the user's preference intact.
+                    if (overlayRunningNow) {
+                        SimulationService.command(app, SimulationService.ACTION_SUSPEND_OVERLAY)
+                    }
+                }
+
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
+                    // Leaving the app: bring the floating pad back for wherever the user goes next.
+                    SimulationService.command(app, SimulationService.ACTION_RESUME_OVERLAY)
+                }
+
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -162,6 +182,16 @@ fun RootScreen(app: App, initialSearch: String? = null) {
             modal = ModalSheet.OVERLAY_PROMPT
         }
         wasRunning = running
+    }
+
+    // The ON_START hook alone missed the common case "user enables the pad from 工具 while already in
+    // the app", so the window appeared on the sheet. This effect covers both: entering the app with
+    // the pad on, and turning it on while in front.
+    val lifecycleState by lifecycleOwner.lifecycle.currentStateFlow.collectAsStateWithLifecycle()
+    LaunchedEffect(overlayRunning, lifecycleState) {
+        if (overlayRunning && lifecycleState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) {
+            SimulationService.command(app, SimulationService.ACTION_SUSPEND_OVERLAY)
+        }
     }
 
     val importLauncher = rememberLauncherForActivityResult(

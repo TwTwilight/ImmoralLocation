@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -18,8 +19,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -155,8 +159,10 @@ fun SettingsScreen(
             title = stringResource(R.string.settings_independent),
             subtitle = stringResource(R.string.settings_independent_desc),
         ) {
+            // The switch used to repeat the card title verbatim (card 独立模拟 / row 独立模拟). The
+            // row now names the *action* of the switch, which is what the user is toggling.
             SwitchRow(
-                title = stringResource(R.string.settings_independent),
+                title = stringResource(R.string.settings_independent_enable),
                 checked = config.independentMode,
                 onCheckedChange = { on -> onUpdate { it.copy(independentMode = on) } },
             )
@@ -183,10 +189,13 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Text(
-                    text = "›",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // A real chevron icon, not the "›" glyph: the glyph renders at label-tracking width
+                // and its baseline is off by 2-3 dp against the row (audit R5, settings).
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
                 )
             }
         }
@@ -205,12 +214,21 @@ fun SettingsScreen(
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = { tileDraft = com.immoral.location.data.SettingsStore.DEFAULT_TILE_URL }) {
+                // Same 48 dp control rhythm and the same secondary/primary pair as every other
+                // surface (audit R5): 恢复默认 is tertiary text, 保存 is the tonal action of the card.
+                TextButton(
+                    onClick = { tileDraft = com.immoral.location.data.SettingsStore.DEFAULT_TILE_URL },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
                     Text(stringResource(R.string.settings_tile_reset))
                 }
-                TextButton(onClick = { onTileUrlChange(tileDraft) }) {
+                FilledTonalButton(
+                    onClick = { onTileUrlChange(tileDraft) },
+                    modifier = Modifier.height(48.dp),
+                ) {
                     Text(stringResource(R.string.action_save))
                 }
             }
