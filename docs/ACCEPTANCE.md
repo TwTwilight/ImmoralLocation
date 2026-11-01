@@ -442,3 +442,15 @@ per-package evidence = [getLastLocation->real, dropped-for-verifier, substituted
 回归（同 build）：`1` PASS、`3` PASS（3.3 m/s 方位 0°）、`8` PASS（`delta=33`，seam 4 / verifier 1）、
 `9` PASS（58 颗合成星）；`6-cells` 在本轮合并运行里出现一次 `ci` 未变化，单独运行（`report-final-r7.json`）
 为 PASS，属已知的 publish 时序抖动，下一轮用同样方式复核。
+
+## 17. 全量矩阵（2026-11-02 07:13，`report-full-r9.json`）：10 PASS / 5 FAIL，五项都判为测量缺陷
+
+| 检查 | 详情 | 判定 |
+|---|---|---|
+| 3-joystick | `moved 1.77 m in 1.07s = 3.3 m/s, ratio 0.5` | 速率本身对（3.3），**ratio 仍用 meters/seconds**；应与 4-speed 一样用 moving-tick 速率 |
+| 5-route | `advanced 3.54m in 6.81s (verifier)` | tick oracle 取空（单独运行 71.5 m）；需显式记录 `tkAdvance=null` |
+| 6-cells | `A ci=…46625 -> C ci=…46625` | 单独运行 PASS；3 s 固定等待在负载下不够，应轮询到 `ci/tac` 变化（≤8 s） |
+| 10-independent | `outside=31.23492 d=690m`（31.23492 其实是 **POINT_C**） | **顺序缺陷**：outside 读数发生在位置已移到 C 之后；应在发出 C 之前读取并断言时间戳 |
+| 11b-favorite-return | 点击收藏后位置仍是 31.230416 | 点击未生效；应轮询到位置变化（≤8 s），失败时报"点击无效"而不是距离 |
+
+已交给 harness 负责人按此顺序修。**注意：这五项均不能靠改判据变绿**，只能修测量/顺序。
