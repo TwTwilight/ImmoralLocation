@@ -45,6 +45,25 @@ class JoystickOverlay(
     private val density = appContext.resources.displayMetrics.density
     private val view = JoystickView()
 
+    /**
+     * Bounds of the real window area, insets included.
+     *
+     * displayMetrics ignores insets and was the cause of the drawn bubble sitting ~130 px away from
+     * its input bounds; every position below is computed from this rectangle instead.
+     */
+    private val windowBounds: android.graphics.Rect =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            windowManager.currentWindowMetrics.bounds
+        } else {
+            @Suppress("DEPRECATION")
+            android.graphics.Rect(
+                0,
+                0,
+                appContext.resources.displayMetrics.widthPixels,
+                appContext.resources.displayMetrics.heightPixels,
+            )
+        }
+
     private val params = WindowManager.LayoutParams().apply {
         type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -53,24 +72,75 @@ class JoystickOverlay(
             WindowManager.LayoutParams.TYPE_PHONE
         }
         format = PixelFormat.TRANSLUCENT
+        // NOT_FOCUSABLE keeps taps going to the app behind the *window*, NOT_TOUCH_MODAL lets
+        // touches outside the bubble reach that app too. No LAYOUT_NO_LIMITS: it let the window be
+        // laid out outside its own input bounds, which is why the drawn bubble could not be tapped.
         flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-        gravity = Gravity.TOP or Gravity.START
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+        // TOP|END: x is measured from the right edge, so the bubble stays 16 dp off it.
+        gravity = Gravity.TOP or Gravity.END
         width = view.collapsedSizePx
         height = view.collapsedSizePx
-        val metrics = appContext.resources.displayMetrics
-        x = (metrics.widthPixels - width - view.marginPx).coerceAtLeast(0)
-        y = (metrics.heightPixels * 6 / 10).coerceAtLeast(0)
+        x = view.marginPx
+        y = (windowBounds.height() * 6 / 10).coerceAtLeast(0)
     }
 
     var isShowing: Boolean = false
         private set
 
+    /** Set while our own app is in the foreground: the window is gone, the choice is remembered. */
+    private var suspended = false
+
+    /**
+     * Removes/restores the window without touching the user's preference.
+     *
+     * The floating pad exists for *other* apps; while our activity is resumed the in-app FAB is the
+     * control, and a floating bubble would sit on top of our own sheet (it covered the switch that
+     * turns it off).
+     */
+    fun setSuspended(value: Boolean) {
+        if (suspended == value) return
+        suspended = value
+        // Deliberately NOT FLAG_NOT_TOUCHABLE: an untouchable-but-drawn window is exactly the
+        // failure mode "the bubble is visible but taps fall through to the app behind it". Removing
+        // the view cannot produce that state, so a drawn bubble is always a tappable bubble.
+        if (value) hide() else show()
+        logWindowFlags(if (value) "suspended" else "resumed")
+    }
+
+    /**
+     * One line per window transition, so a mis-flagged window can be told apart from a mis-positioned
+     * one without guessing: 0x10 in the mask is FLAG_NOT_TOUCHABLE.
+     */
+    private fun logWindowFlags(stage: String) {
+        try {
+            val notTouchable =
+                (params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
+            android.util.Log.i(
+                "JoystickOverlay",
+                "stage=" + stage +
+                    " flags=0x" + Integer.toHexString(params.flags) +
+                    " NOT_TOUCHABLE=" + notTouchable +
+                    " showing=" + isShowing +
+                    " suspended=" + suspended +
+                    " size=" + params.width + "x" + params.height +
+                    " gravity=" + params.gravity +
+                    " x=" + params.x + " y=" + params.y +
+                    " attached=" + view.isAttachedToWindow +
+                    " windowVisible=" + (view.windowVisibility == View.VISIBLE) +
+                    " windowBounds=" + windowBounds.width() + "x" + windowBounds.height() +
+                    "@" + windowBounds.top,
+            )
+        } catch (t: Throwable) {
+            // diagnostics must never break the overlay
+        }
+    }
     fun show() {
-        if (isShowing) return
+        if (isShowing || suspended) return
         try {
             windowManager.addView(view, params)
             isShowing = true
+            logWindowFlags("shown")
         } catch (t: Throwable) {
             isShowing = false
         }
@@ -81,6 +151,7 @@ class JoystickOverlay(
         isShowing = false
         try {
             windowManager.removeView(view)
+            logWindowFlags("hidden")
         } catch (t: Throwable) {
             // The window may already be gone (process death / permission revoked).
         }
@@ -160,6 +231,16 @@ class JoystickOverlay(
             strokeWidth = 2.2f * density
             strokeCap = Paint.Cap.ROUND
         }
+        private val closeFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(200, 255, 255, 255)
+            style = Paint.Style.FILL
+        }
+        private val closeGlyph = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#FF1C1B1F")
+            style = Paint.Style.STROKE
+            strokeWidth = 2f * density
+            strokeCap = Paint.Cap.ROUND
+        }
         private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#CCFFFFFF")
             textSize = 10f * density
@@ -178,6 +259,20 @@ class JoystickOverlay(
         private var dragged = false
         private var touchSlop = 8 * density
         private var closePosted = false
+        private var downInClose = false
+
+        /** Centre of the close chip, on the dial's upper-right shoulder. */
+        private fun closeButtonCenter(): Pair<Float, Float> {
+            val r = min(width, height) / 2f - 6f * density
+            return Pair(width / 2f + r * 0.62f, height / 2f - r * 0.62f)
+        }
+
+        /** 22 dp grab radius keeps the chip usable with a thumb, bigger than its 15 dp visual. */
+        private fun hitClose(x: Float, y: Float): Boolean {
+            if (width == 0 || height == 0) return false
+            val c = closeButtonCenter()
+            return hypot(x - c.first, y - c.second) <= 22f * density
+        }
 
         private val springBack = object : Runnable {
             override fun run() {
@@ -251,6 +346,14 @@ class JoystickOverlay(
                     cy + r * 0.64f,
                     label,
                 )
+                // Discoverable way out (audit R4): a 30 dp close chip on the dial's shoulder. The
+                // long-press-to-close gesture stays, but it was invisible — an overlay whose only
+                // exit is an undocumented gesture reads like a debug widget.
+                val closeC = closeButtonCenter()
+                canvas.drawCircle(closeC.first, closeC.second, 15f * density, closeFill)
+                val arm = 4.5f * density
+                canvas.drawLine(closeC.first - arm, closeC.second - arm, closeC.first + arm, closeC.second + arm, closeGlyph)
+                canvas.drawLine(closeC.first + arm, closeC.second - arm, closeC.first - arm, closeC.second + arm, closeGlyph)
             }
         }
 
@@ -259,6 +362,7 @@ class JoystickOverlay(
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = event.rawX
                     downRawY = event.rawY
+                    downInClose = expanded && hitClose(event.x, event.y)
                     startWindowX = params.x
                     startWindowY = params.y
                     dragged = false
@@ -289,6 +393,11 @@ class JoystickOverlay(
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     removeCallbacks(closeRunnable)
+                    if (downInClose) {
+                        downInClose = false
+                        onClose()
+                        return true
+                    }
                     if (expanded) {
                         knobDx = 0f
                         knobDy = 0f
@@ -353,13 +462,13 @@ class JoystickOverlay(
 
         /** Keeps the window fully on screen after growing, or after being dragged to an edge. */
         private fun clampToScreen() {
-            val metrics = appContext.resources.displayMetrics
-            val maxX = (metrics.widthPixels - params.width).coerceAtLeast(0)
-            val maxY = (metrics.heightPixels - params.height).coerceAtLeast(0)
+            // With Gravity.END, x is the distance from the right edge: keep it inside the margin band.
+            val maxX = (windowBounds.width() - params.width - marginPx).coerceAtLeast(marginPx)
+            val maxY = (windowBounds.height() - params.height).coerceAtLeast(0)
             // Never let the floating pad drift into the top 30 % of the screen: that strip is
             // where every app (including ours) anchors its snackbars and banners.
-            val minY = (metrics.heightPixels * TOP_KEEP_OUT).toInt().coerceAtMost(maxY)
-            params.x = params.x.coerceIn(0, maxX)
+            val minY = (windowBounds.height() * TOP_KEEP_OUT).toInt().coerceAtMost(maxY)
+            params.x = params.x.coerceIn(marginPx, maxX)
             params.y = params.y.coerceIn(minY, maxY)
         }
 

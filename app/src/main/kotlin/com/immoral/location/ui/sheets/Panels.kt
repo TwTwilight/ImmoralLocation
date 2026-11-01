@@ -421,9 +421,12 @@ fun ToolsPanel(
             },
             onClick = onOpenHeading,
         )
-        ShortcutRow(
+        ToolSwitchRow(
             icon = Icons.Filled.Smartphone,
             title = stringResource(R.string.joystick_overlay_title),
+            checked = overlayRunning,
+            tag = "e2e.tool.overlay",
+            onChange = onToggleOverlay,
             // Three states, not two: "off" and "off because the permission was never granted" look
             // identical to the user otherwise, and the row would silently bounce them to the system
             // settings screen without having said why.
@@ -433,7 +436,6 @@ fun ToolsPanel(
                 else -> stringResource(R.string.overlay_idle)
             },
             warn = !overlayPermissionGranted,
-            onClick = { onToggleOverlay(!overlayRunning) },
         )
         ShortcutRow(
             icon = Icons.Filled.Bookmark,
@@ -570,6 +572,7 @@ private fun ToolSwitchRow(
     onChange: (Boolean) -> Unit,
     tag: String,
     subtitle: String? = null,
+    warn: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -592,7 +595,11 @@ private fun ToolSwitchRow(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (warn) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
             }
         }

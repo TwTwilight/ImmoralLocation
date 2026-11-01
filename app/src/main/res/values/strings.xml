@@ -153,6 +153,7 @@
     <string name="settings_step_cadence">步频</string>
     <string name="settings_step_cadence_value">%1$d 步/分</string>
     <string name="settings_independent">独立模拟</string>
+    <string name="settings_independent_enable">启用独立模拟</string>
     <string name="settings_independent_desc">只对勾选的应用生效，其余应用保持真实位置</string>
     <string name="settings_pick_apps">选择应用</string>
     <string name="settings_apps_selected">已选择 %1$d 个应用</string>
