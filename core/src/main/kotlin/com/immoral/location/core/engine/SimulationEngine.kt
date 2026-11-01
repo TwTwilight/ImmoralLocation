@@ -397,15 +397,16 @@ class SimulationEngine(
     fun accessPoints(): List<SimulatedAp> = WifiSynth.synthesize(basePosition)
 
     /**
-     * Number of steps that [deltaMs] of walking at the *current* speed and cadence produces.
+     * Number of steps that [deltaMs] at the configured cadence produces.
      *
-     * This is a pure prediction: it does not mutate the counter (the ticker owns that). Steps
-     * are only emitted above [STEP_MIN_SPEED_MPS] and only while
-     * [SimulationConfig.stepSimulation] is enabled, mirroring `TYPE_STEP_DETECTOR` behaviour.
+     * This is a pure prediction: it does not mutate the counter (the ticker owns that). Steps are
+     * produced while [SimulationConfig.stepSimulation] is enabled and the engine is
+     * [running] — independent of the movement mode and of the ground speed, because 步频模拟 is a
+     * cadence (`stepCadenceBpm`), not a motion read-out: a user who turns the toggle on while the
+     * engine sits in [MoveMode.STATIC] expects the counter to climb at the configured rate.
      */
     fun stepDelta(deltaMs: Long): Int {
-        if (deltaMs <= 0L || !currentConfig.stepSimulation) return 0
-        if (speedValue <= STEP_MIN_SPEED_MPS) return 0
+        if (deltaMs <= 0L || !runningFlag || !currentConfig.stepSimulation) return 0
         val steps = currentConfig.stepCadenceBpm / 60.0 * deltaMs / 1_000.0
         return if (steps > 0.0) steps.toInt() else 0
     }
@@ -497,8 +498,19 @@ class SimulationEngine(
         return GeoMath.normalizeBearing(current + applied)
     }
 
+    /**
+     * Advances the step counter for [deltaMs] of simulated time.
+     *
+     * Cadence-driven, not motion-driven: `stepCadenceBpm / 60 * deltaMs` steps are accumulated
+     * whenever the ticker runs with [SimulationConfig.stepSimulation] enabled, in every
+     * [MoveMode] and at every speed. Fractional steps carry over between ticks, so a 500 ms tick
+     * at 120 bpm adds 1 step every other tick instead of rounding to 0 (or to 2) every time.
+     *
+     * The engine being stopped is handled by [tick], which returns before this is called: a
+     * stopped simulation must not keep counting steps (that would make the counter rise while the
+     * user sees "stopped" everywhere else).
+     */
     private fun accumulateSteps(deltaMs: Long) {
-        if (speedValue <= STEP_MIN_SPEED_MPS) return
         val stepsPerSecond = currentConfig.stepCadenceBpm / 60.0
         stepFraction += stepsPerSecond * deltaMs / 1_000.0
         val whole = stepFraction.toLong()
@@ -549,7 +561,14 @@ class SimulationEngine(
         /** Joystick magnitudes below this are treated as "not moving". */
         const val JOYSTICK_DEAD_ZONE: Double = 0.02
 
-        /** Steps are only produced above this ground speed, in meters/second. */
+        /**
+         * Ground speed that used to gate the step counter, in meters/second.
+         *
+         * **No longer consulted.** 步频模拟 is cadence-driven (see [accumulateSteps]): the counter
+         * advances whenever the engine runs with `stepSimulation = true`, in every movement mode.
+         * Kept as a named constant because the on-device acceptance harness and older call sites
+         * still refer to the value when they describe "walking speed".
+         */
         const val STEP_MIN_SPEED_MPS: Double = 0.5
     }
 }

@@ -248,7 +248,29 @@ class StepSimulationTest {
     }
 
     @Test
-    fun noStepsBelowTheMinimumSpeed() {
+    fun stepsAdvanceWhileStandingStill() {
+        // 步频模拟 is cadence-driven: the toggle alone is enough, no movement required. On the
+        // device the acceptance check runs the engine in STATIC mode, and a counter that only
+        // ticks while the position moves reads delta=0 there (this used to be the case).
+        val engine = SimulationEngine(
+            Reference.BEIJING,
+            SimulationConfig(
+                mode = MoveMode.STATIC,
+                stepSimulation = true,
+                stepCadenceBpm = 120,
+            ),
+        )
+        engine.clock = { 0L }
+        engine.running = true
+        repeat(10) { engine.tick(1_000L) }
+        assertEquals(20L, engine.state.steps, "120 bpm for 10 s is 20 steps, STATIC or not")
+        assertEquals(0.0, engine.state.speedMps, "the position does not move in STATIC mode")
+    }
+
+    @Test
+    fun stepsFollowTheCadenceAtWalkingSpeedToo() {
+        // Below STEP_MIN_SPEED_MPS the old implementation produced nothing; the cadence, not the
+        // speed, is what the counter follows now.
         val engine = SimulationEngine(
             Reference.BEIJING,
             SimulationConfig(
@@ -257,12 +279,24 @@ class StepSimulationTest {
                 customSpeedMps = 0.4,
                 followHeading = false,
                 stepSimulation = true,
+                stepCadenceBpm = 90,
             ),
         )
+        engine.clock = { 0L }
         engine.running = true
         engine.setJoystick(0f, 1f)
         repeat(10) { engine.tick(1_000L) }
-        assertEquals(0L, engine.state.steps)
+        // 90 bpm for 10 s = 15 steps (1.5 per second, whole steps only).
+        assertEquals(15L, engine.state.steps)
+    }
+
+    @Test
+    fun twelveSecondWindowMatchesTheAcceptanceCadence() {
+        // The device check reads the counter over a 12 s window at 120 bpm and expects ~24 steps,
+        // delivered as 500 ms ticks (what the engine ticker uses at the default interval).
+        val engine = walkingEngine(cadence = 120)
+        repeat(24) { engine.tick(500L) }
+        assertEquals(24L, engine.state.steps)
     }
 
     @Test
@@ -273,13 +307,25 @@ class StepSimulationTest {
     }
 
     @Test
-    fun noStepsWhileStopped() {
+    fun noStepsWhileTheEngineIsStopped() {
+        val engine = walkingEngine()
+        repeat(5) { engine.tick(1_000L) }
+        val steps = engine.state.steps
+        engine.running = false
+        repeat(5) { engine.tick(1_000L) }
+        assertEquals(steps, engine.state.steps, "a stopped engine must not keep counting")
+    }
+
+    @Test
+    fun stepsKeepAdvancingAfterTheJoystickIsReleased() {
+        // Releasing the stick stops the position, not the counter: the toggle is still on and the
+        // engine is still running, which is exactly the state a user leaves the panel in.
         val engine = walkingEngine()
         repeat(5) { engine.tick(1_000L) }
         val steps = engine.state.steps
         engine.releaseJoystick()
         repeat(5) { engine.tick(1_000L) }
-        assertEquals(steps, engine.state.steps)
+        assertTrue(engine.state.steps > steps, "cadence keeps running while the engine is running")
     }
 
     @Test

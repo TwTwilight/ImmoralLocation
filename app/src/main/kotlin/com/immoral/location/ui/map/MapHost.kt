@@ -198,14 +198,16 @@ class MapHost(
             } else {
                 // Light mode: the base map is a third-party raster style (bilingual OSM labels),
                 // and left untouched it dominates the frame no matter how good the chrome is.
-                // 0.8 saturation + a small brightness lift pulls it towards the M3 neutral
-                // surfaces while keeping road hierarchy and labels legible.
-                val soften = ColorMatrix().apply { setSaturation(0.8f) }
+                // 0.86 saturation + a small brightness lift pulls it towards the M3 neutral
+                // surfaces while keeping road hierarchy and labels legible. The lift is deliberately
+                // small: the tonal *scrim* in MapScreen already tints the bands under the chrome,
+                // and lifting the whole frame on top of that is what made round 1 look foggy.
+                val soften = ColorMatrix().apply { setSaturation(0.86f) }
                 val lift = ColorMatrix(
                     floatArrayOf(
-                        1f, 0f, 0f, 0f, 12f,
-                        0f, 1f, 0f, 0f, 12f,
-                        0f, 0f, 1f, 0f, 10f,
+                        1f, 0f, 0f, 0f, 5f,
+                        0f, 1f, 0f, 0f, 5f,
+                        0f, 0f, 1f, 0f, 4f,
                         0f, 0f, 0f, 1f, 0f,
                     ),
                 )

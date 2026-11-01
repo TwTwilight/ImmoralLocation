@@ -45,6 +45,36 @@ val requestedAbis: List<String> =
         ?: listOf("arm64-v8a")
 val abiSplitsEnabled = (project.findProperty("immoralAbiSplits") as String?)?.toBoolean() ?: false
 
+/**
+ * 高德 style + indoor packs (`assets/cfg`, 1 623 749 B compressed) are dropped from release builds.
+ *
+ * **The in-app map is 高德.** `ReadyAMapSDK v1.0.4` + `3dmap 10.0.600` initialises with the key the
+ * AAR ships and renders — device log `I AmapHost: amap map loaded (tiles rendered)`, screenshot
+ * identical with and without `assets/cfg`. The osmdroid raster view is only the fallback for ROMs
+ * where the SDK cannot initialise.
+ *
+ * Measured on device, four arms, each installed fresh (uninstall → install → cold start → frame):
+ *   arm                            APK bytes   screenshot   `amap map loaded`   verdict
+ *   control (assets in)            8 165 765   1 021 801 B  yes                 map renders
+ *   cfg dropped                    6 542 016   1 020 639 B  yes                 renders identically
+ *   ae dropped                     7 827 484     130 276 B  late               BLACK map
+ *   all six dropped                5 274 854     130 197 B  no                 BLACK map
+ *
+ * `assets/ae/res.zip` is load-bearing (`java.io.FileNotFoundException: ae/res.zip` →
+ * `NullPointerException … GLMapState.setMapZoomer` → black surface), so it stays. `map_assets`
+ * (−602 041 B), `map_custom` (−84 047 B) and `offlinemapv4.png` + `amap_resource1_0_0.png`
+ * (−242 742 B) were only ever tested inside the black-screen all-six arm, so they are NOT dropped;
+ * each needs its own install + frame before it can be considered. `-PimmoralAmapAssets=false`
+ * (release) / `=true` (debug, or any build that wants the packs back) switches the whole set.
+ *
+ * Mechanism: aapt2 `--ignore-assets`, applied per variant below. `packaging.resources.excludes` does
+ * NOT touch `assets/` on AGP 9 (measured: same glob, all 15 `assets/cfg` entries still packaged).
+ */
+val amapAssetPatterns: List<String> = listOf(
+    "cfg",
+)
+val amapAssetsRequested = (project.findProperty("immoralAmapAssets") as String?)?.toBoolean()
+
 android {
     namespace = "com.immoral.location"
     compileSdk = 37
@@ -190,4 +220,20 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test:runner:1.7.0")
+}
+
+/**
+ * Apply [amapAssetPatterns] per variant: release drops the packs (measured render-identical), debug
+ * keeps them so a developer can bisect a map problem with the full SDK asset set in place.
+ *
+ * The Variant API is required because the module-level `androidResources.ignoreAssetsPatterns` is
+ * variant-agnostic.
+ */
+androidComponents {
+    onVariants { variant ->
+        val keepAmapAssets = amapAssetsRequested ?: (variant.buildType != "release")
+        if (!keepAmapAssets) {
+            variant.androidResources?.ignoreAssetsPatterns?.addAll(amapAssetPatterns)
+        }
+    }
 }

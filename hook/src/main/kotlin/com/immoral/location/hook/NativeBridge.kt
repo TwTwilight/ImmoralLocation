@@ -96,13 +96,19 @@ object NativeBridge {
     @Synchronized
     fun install(): Boolean {
         if (hooked) return true
-        if (!ensureLoaded()) return false
+        if (!ensureLoaded()) {
+            // No native layer: still wire the framework-side step diagnostics, so the acceptance
+            // run can prove *which* half of 步频模拟 is missing instead of reading delta=0 blind.
+            SensorBoot.install()
+            return false
+        }
         hooked = runCatching { nativeInit() }.getOrElse {
             Log.e("native init threw", it)
             false
         }
         val err = runCatching { nativeLastError() }.getOrNull().orEmpty()
         Log.i("native hooks hooked=$hooked version=${runCatching { nativeVersion() }.getOrNull()} error=$err")
+        SensorBoot.install()
         return hooked
     }
 
@@ -111,6 +117,27 @@ object NativeBridge {
         if (!hooked) return
         runCatching { nativeSetStepState(steps, cadenceBpm, enabled) }
     }
+
+    /**
+     * Tells the native layer the HAL handle of `TYPE_STEP_COUNTER`, which is what makes
+     * **fabrication** possible (see `native/src/sensor_hook.cpp`).
+     *
+     * Rewriting alone cannot satisfy 步频模拟 on a stationary device: `TYPE_STEP_COUNTER` reports
+     * on change, so a phone on a desk produces no event at all and there is nothing to rewrite.
+     * With the handle, the native hook can hand one fabricated event to `SensorService`'s own
+     * per-connection `sendEvents`, which delivers it only to apps that registered that sensor.
+     *
+     * Best effort: a `-1` handle simply disarms fabrication.
+     */
+    fun setStepSensorHandle(handle: Int) {
+        if (!hooked) return
+        runCatching { nativeSetStepSensor(handle) }
+            .onFailure { Log.once("native.step.handle", "nativeSetStepSensor failed: ${it.javaClass.simpleName}") }
+    }
+
+    /** Fabrication counters (`handle=… injected=… skipped=…`), for the acceptance-run seam line. */
+    fun stepSeam(): String =
+        runCatching { if (hooked) nativeStepSeam() else "not hooked" }.getOrDefault("n/a")
 
     /** Rewrite counters for the diagnostics line. */
     fun stats(): String = runCatching { if (hooked) nativeStats() else "not hooked" }.getOrDefault("n/a")
@@ -177,6 +204,10 @@ object NativeBridge {
     private external fun nativeInit(): Boolean
 
     private external fun nativeSetStepState(steps: Long, cadenceBpm: Int, enabled: Boolean)
+
+    private external fun nativeSetStepSensor(handle: Int)
+
+    private external fun nativeStepSeam(): String
 
     private external fun nativeStats(): String
 
