@@ -185,3 +185,66 @@ val routePath: StateFlow<List<GeoPoint>>   // 道路级几何，空则回退 rou
 * 落针卡 / 轻点 chip：`fadeIn(150) + slideInVertically(180, it/3)`，退出 `fadeOut(120)`；
 * 出行方式选中格：`animateColorAsState(tween(120))`。
 
+
+## 10. 表面规则（surface rules）— 所有者「灾难级别」评审后的唯一真源
+
+> 这一节是**规则**，不是描述。任何新面板 / 新按钮先对照本节，再写代码。
+> 评审给出的判据只有五类：死空间、禁用噪音、含糊可点、角色不一致、缺标签。
+
+### 10.1 容器角色（谁用哪个 tonal role）
+
+| 表面 | 容器 | 说明 |
+|---|---|---|
+| 底部 sheet | `sheetContainer()`（浅 `surfaceContainerLow` / 深 `surfaceContainer`）+ 1dp `outlineVariant` 描边 | 不使用 `surface`：浅色下会在 sheet 里开一个"白洞" |
+| sheet 内普通卡片 | `surfaceContainerHigh` + 1dp hairline，**elevation 0** | 描边即边界，阴影留给浮在地图上的 chrome |
+| sheet 内焦点卡（路线结果） | `surfaceContainerHighest` + hairline | 只允许一张焦点卡 |
+| 浮在地图上的 chrome（搜索条、工具胶囊、FAB 组、落针卡） | `surfaceContainerLow` @0.94 + 1dp hairline + elevation 3–6dp | 唯一允许投影的一层 |
+| 地图压暗 | 渐变 scrim（见 §2） | 不用整屏平铺 |
+
+### 10.2 唯一动作层级（action hierarchy）
+
+1. **主操作**：每个表面**最多一个** `Button`（filled），高 48dp，能全宽就全宽。
+2. **次操作**：`FilledTonalButton` 48dp；贴在卡片上的图标按钮用 `FilledTonalIconButton` 48dp + 1dp `outlineVariant` 描边。
+3. **破坏性操作**：`FilledTonalIconButton`，容器 `errorContainer`、图标 `onErrorContainer`，永远是图标按钮而不是文字主按钮。
+4. **列表行内操作**（重命名/删除/上移下移）：裸 `IconButton`，只带 contentDescription，可与 48dp 行共存。
+5. **禁用即隐藏**：不存在"灰着的主按钮"。当前状态不可能执行的动作**不渲染**，条件成立时再出现（progressive disclosure）。唯一例外是等待期进度条。
+6. 所有控件 48dp 高（图标按钮正方形 48×48），同一行内不允许 40dp 与 48dp 混排。
+
+### 10.3 一个控件一个职责（one control, one job）
+
+* **开关**用实心/着色图标按钮表示（例：♡ = 收藏/取消收藏当前位置，唯一带 `e2e.action.favorite` 的控件）。
+* **跳转**用 `primary` 文字 + 尾部 chevron、**无容器**表示（例：peek 第二行 `收藏 N ›` 打开收藏列表）。
+* 二者**不得合并成一个 chip**：第一轮把"打开列表"做成 tonal chip，看起来像第二个状态开关，这正是 S1 的缺陷来源。
+* 同一 glyph 不得表达两件事（第六个出行格改用 `Speed` 表盘，不再用 `Tune` 齿轮，避免与工具/图层撞脸）。
+
+### 10.4 字阶（type scale，唯一来源 `ui/components/SheetText.kt`）
+
+| 角色 | 组件 | 样式 |
+|---|---|---|
+| 标题 | `SheetTitle` | `titleLarge` / SemiBold |
+| 标签（字段名、分组名、统计名） | `SheetLabel` | `labelMedium` / onSurfaceVariant |
+| 值（地点名、坐标以外的数值、选项名） | `SheetValue` | `titleMedium` |
+| 辅助说明 | `SheetSupporting` | `bodySmall` / onSurfaceVariant |
+| 提示（不是控件） | `SheetHint` | bodySmall + info 图标，**无容器** |
+
+禁止：`headlineSmall` 当标题、`bodyLarge` 当字段值、`labelLarge` 当分组标签、把提示塞进填充卡片（会读成禁用按钮）。
+
+### 10.5 顶部 chrome 与右缘
+
+* 顶栏只允许 **56dp 胶囊**：搜索胶囊 + 它的"孪生兄弟"工具胶囊（同高、同圆角、同容器、同描边、**带可见文字标签**）。顶栏禁止出现方形按钮。
+* 右缘浮件只允许 **一个分组托盘**（`ChromeFabGroup`：20dp 圆角 tonal 盘 + 内嵌分隔线），里面的 48dp 按钮保留原 `e2e.fab.*` tag 与 bounds。散落的多个方块按钮不再允许。
+
+### 10.6 sheet 几何（不许有死空间）
+
+* **每个 sheet 都要贴合内容**，上限为该 sheet 可用高度的 92%：
+  * PEEK：`PeekPanel` 自身 `onSizeChanged` 上报（第一轮已有）；
+  * FULL：`RoutePlannerHost` 通过 `onContentHeightChange` 上报内容高度，`MapScreen` 用 `min(内容 + 折叠状态行 + 手势条, 屏幕上限)`；
+  * 模态 sheet（收藏）：`BoxWithConstraints` + `heightIn(max = 92%)`。
+* 内容短时**不得**出现"下半屏空容器"；内容长时内部滚动，不拉高 sheet。
+* 主 CTA 直接排在内容之后，不做"钉底 CTA + 上方空洞"。
+
+### 10.7 缺标签（missing label）
+
+* 主操作/次操作**必须有可见文字**；图标按钮必须有 contentDescription（`Get-AppString` 可解析的 string 资源）。
+* 摇杆：盘面右下角…（见 §4）现在带一个 36dp ✕ 收起按钮（`e2e.joystick.close`），不再是"只能靠 FAB 再点一次"。
+
