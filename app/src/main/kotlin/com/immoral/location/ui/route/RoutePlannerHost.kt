@@ -453,7 +453,9 @@ private fun StopBadge(
         shape = CircleShape,
         color = container,
         contentColor = contentColor,
-        modifier = Modifier.size(28.dp),
+        // 24 dp, the same diameter as the map's start/end badges: the card used 28 dp next to 24 dp
+        // pins on the map, so the same stop looked like two different objects (audit S9).
+        modifier = Modifier.size(24.dp),
     ) {
         Box(contentAlignment = Alignment.Center) {
             Text(
