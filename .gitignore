@@ -24,10 +24,11 @@ artifacts/
 # Device harness, probes and the verifier app stay on the box that owns the phone. They are never
 # part of the repository: they need a real device, a rooted ROM and an LSPosed install, so they are
 # dead weight for anyone reading the source, and CI does not run them.
-e2e/
+e2e/out/
 hook/harness/
 verifier/
 *.ps1
+!e2e/**/*.ps1
 *.psm1
 *.sh
 *.py
@@ -35,7 +36,7 @@ verifier/
 # Reverse-engineering / acceptance material: kept on disk, never published.
 .lead/
 apk/
-docs/
+docs/**
 dumps/
 frida/
 jadx2/
@@ -47,6 +48,7 @@ web/
 
 # Documentation beyond the README
 *.md
+!docs/**/*.md
 !/README.md
 
 # Native layer build outputs (libimmoralhook.so is committed prebuilt in hook/src/main/jniLibs;
