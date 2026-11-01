@@ -35,8 +35,7 @@ verifier/
 # Reverse-engineering / acceptance material: kept on disk, never published.
 .lead/
 apk/
-docs/**
-!docs/**/*.md
+docs/
 dumps/
 frida/
 jadx2/
@@ -48,7 +47,6 @@ web/
 
 # Documentation beyond the README
 *.md
-!docs/**/*.md
 !/README.md
 
 # Native layer build outputs (libimmoralhook.so is committed prebuilt in hook/src/main/jniLibs)
