@@ -759,7 +759,17 @@ object LocationHooks {
                         // match against the engine's own fix is the fallback. Without it a
                         // non-whitelisted app could still receive our fake through an unresolved
                         // registration (measured: `pkg=UNRESOLVED (independent)` deliveries).
-                        if (Fakes.containsFabricated(carrier) || coordinatesMatchSnap(carrier, snap)) {
+                        // Fail closed for unresolved identities: the ONLY thing that may pass is a value that
+                        // matches the last genuine fix we saw. Any other object here is either our fake or
+                        // a platform re-creation of it, and handing that to an unknown receiver is exactly
+                        // the leak measured on 2026-11-02 (samples=2, fake=True).
+                        // Drop when it looks like ours, or when it matches no genuine fix while we KNOW one.
+                        // With no known real fix we must let it through: the alternative is a blackout for every
+                        // unresolved receiver (measured as "inconclusive: no sample").
+                        val looksOurs = Fakes.containsFabricated(carrier) || coordinatesMatchSnap(carrier, snap)
+                        val realLike = coordinatesMatchReal(carrier) || realLast.isEmpty()
+                        val dropIt = looksOurs || (!realLike && realLast.isNotEmpty())
+                        if (dropIt) {
                             dropDelivery(param)
                             Log.rate(
                                 "indep.unresolved.drop",
@@ -830,6 +840,31 @@ object LocationHooks {
      * `pkg=UNRESOLVED (independent)` deliveries). Coordinates are compared with a 150 m tolerance —
      * orders of magnitude below the distance between the fake position and the device's real one.
      */
+    /**
+     * Does this delivery resemble a GENUINE fix?
+     *
+     * Used for the fail-closed branch: an unresolved receiver may only be handed a value that is
+     * close to a real fix we have seen. 500 m is generous on purpose (a walking engine barely moves
+     * the real chip), while our simulated point is normally kilometres away.
+     */
+    private fun coordinatesMatchReal(carrier: Any?): Boolean {
+        if (carrier == null || realLast.isEmpty()) return false
+        val locations = try {
+            if (Refl.isInstanceOf(carrier, LR_NAME)) Fakes.locationsOfResult(carrier)
+            else listOfNotNull(carrier as? Location)
+        } catch (_: Throwable) {
+            return false
+        }
+        for (location in locations) {
+            for (real in realLast.values) {
+                val dLat = location.latitude - real.latitude
+                val dLon = location.longitude - real.longitude
+                val meters = Math.sqrt(dLat * dLat + dLon * dLon * 0.66) * 111_320.0
+                if (meters <= 500.0) return true
+            }
+        }
+        return false
+    }
     private fun coordinatesMatchSnap(carrier: Any?, snap: EngineRuntime.Snap): Boolean {
         if (carrier == null) return false
         val locations = try {
@@ -1025,6 +1060,9 @@ object LocationHooks {
         else -> value
     }
 }
+
+
+
 
 
 
