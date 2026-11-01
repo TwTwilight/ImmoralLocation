@@ -822,3 +822,60 @@ PASS  8-steps  counter delta=31 over 1 samples (monotonic=True, cadence ~24 at 1
 **遗留（与本轮改动无关，没顺手改）**：`e2e/install.ps1` / `activate_module.ps1` 在重启后收集证据那一步
 会抛 `Error formatting a string: … near offset 31`，脚本以 1 退出，但激活本身成功（数据库已核对、hook
 日志已在）。定位在 `Reboot-Device` 之后的证据收集里，下次修。
+
+## 12. 确定性验证：`8`/`10`/`11` 的顺序依赖已消除（qa-e2e，2026-11-02 03:0x）
+
+目的不是"跑绿一次"，而是**证明同一构建上换顺序结果不变**（原先 `8-steps`/`10-independent` 单独跑 PASS、
+跟着别的检查跑就 FAIL）。两个报告都在仓库里：
+
+```
+e2e/out/report-5 8 10 11.json   # 序列 A：先跑 5（原先会破坏 8/10 的顺序）
+e2e/out/report-8 10 11.json     # 序列 B：同样三条单独跑，同一构建
+```
+
+### 12.1 序列 A：`.\e2e\run_matrix.ps1 -SkipUi -Only 5,8,10,11`
+| check | 状态 | 数字 |
+|---|---|---|
+| `5-route` | **PASS** | advanced **479.87 m in 11.66 s**（gps）；暂停漂移 0 m；恢复 32.47 m |
+| `8-steps` | **PASS** | `delta=33 over 4 sample(s) [oracle=steps-seam, verifier samples=2, seam window=4]`，monotonic=True |
+| `10-independent` | **FAIL** | 白名单外 **fake=True**（samples=3，吸收缓存回放 gps@31.23042）；白名单内 reached=True |
+| `11-favorites` | **PASS** | designed empty state（无收藏，空态提示存在） |
+
+### 12.2 序列 B：`.\e2e\run_matrix.ps1 -SkipUi -Only 8,10,11`
+| check | 状态 | 数字 |
+|---|---|---|
+| `8-steps` | **PASS** | `delta=33 over 4 sample(s) [oracle=steps-seam, verifier samples=2, seam window=4]` — **与 A 完全一致** |
+| `10-independent` | **FAIL** | **与 A 完全一致**（fake=True / samples=3 / 同一条回放） |
+| `11-favorites` | **PASS** | designed empty state |
+
+### 12.3 三处 harness 修复（只在 `e2e/run_matrix.ps1`）
+
+1. **`8-steps` 换主判据**：用 hook 自己的缝日志
+   `steps seam: engine steps=64 delta=4 cadence=120bpm sim=true running=true`（每次伪造一行，不会被节流）。
+   窗口前取**行数基线**，只解析窗口内新增的行；缝有 ≥2 点时以它为准，verifier 作次判据。
+   报告里写清判据来源（`oracle=steps-seam`、`seamSamples`、`verifierSamples`）。两次运行
+   verifier 只给了 1–2 个样本，缝给了 4 个、`delta=33` —— 这正是"数字不再取决于回调被节流了多少"。
+2. **`10-independent` 吸收缓存回放**：新起的 verifier 会立刻收到框架缓存的 last location，
+   **新行携带旧 fix**；在它之前取 mark，回放就被算成"白名单改动之后产生的样本"。
+   现在按 provider 吸收到 **gps** 那条落地、再等 4 s 排空，才取 mark，只数严格更新的样本；
+   吸收到的值写进 detail（`cached replay absorbed=gps@31.23042`）与 metrics。
+3. **`10-independent` 禁止空样本假绿**：白名单外窗口若**一条样本都没有**，说明这次根本判不了 ——
+   现在先重试一次（重启 streaming + 吸收回放 + 再测），仍然没有就报 **WARN "inconclusive"**，
+   绝不记 PASS。Lead 观察到的"单独跑 PASS"实际上就是 `samples=0` 的空转；
+   实测有样本时，非白名单 verifier 收到的是**假位置**（3 条 gps 样本），与 hook 侧
+   `pkg=UNRESOLVED (independent)` 的投递证据一致 ⇒ `10-independent` 应按**真实缺陷 FAIL** 记录。
+
+### 12.4 `11-favorites` 的自造前置（顺带修掉一个我自己引入的崩溃）
+设备被 `pm clear` 或 UI 截图轮次清空后没有收藏，原先直接 FAIL。现在的行为：
+计数为 0 或没有坐标行 ⇒ 点 `tapSave`/`actionFav` 造一条（`Get-UiElement -Name` 取的是 `$script:UiIds` 的键，
+不是裸 tag —— 第一版写成 `-Id` 会在"空收藏"这条路径上抛异常），重开收藏面再读；
+仍然为空则断言**设计空态**（`暂无|还没有|没有收藏|空空`），**没有空态提示的空列表依然 FAIL**，
+并在 detail 里区分"点了但计数仍为 0"与"收藏动作不在屏幕上"。
+另修：`$coordNodes[0]` 在空态分支上越界（`Index was outside the bounds of the array`），
+现在只在**确实存在坐标行**时才跑"快速返回"那一段。
+
+### 12.5 S1（收藏入口重复）与测试边界
+设计侧已定：♡ 保留并继续带 `e2e.action.favorite`，`收藏 N` 变成纯导航链接。
+所以自造前置的循环不用改。**注意**：`收藏` chip 与 ♡ 都能把计数从 0 变 1，
+**任何自动化检查都无法分辨点的是哪一个** —— 这正是 R3 属于设计评审、而不属于断言的原因。
+

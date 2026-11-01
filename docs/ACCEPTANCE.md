@@ -295,3 +295,25 @@ pwsh -NoProfile -File e2e\lint.ps1
 2. 步频模拟：app 注册的是**唤醒**计数器 `0xc0=192`，只推 `0xbf=191` 被 per-connection 过滤 → `8-steps`。
 3. 独立模拟：`pass through` 的"真实位置"其实是**我们改写过的假位置**（报告路径重写了 provider 缓存），
    非白名单 app 因此照收假点 → `10-independent`；改为替换成捕获到的真实 fix 或丢弃。
+
+## 11. 更正：`10-independent` 之前的 PASS 是**空判定**，真实缺陷仍在 2026-11-02 03:06
+
+qa-e2e 用两条序列（`-Only 5,8,10,11` 与 `-Only 8,10,11`，报告
+`e2e/out/report-5 8 10 11.json`、`e2e/out/report-8 10 11.json`）证明：
+
+* 我之前那次 `PASS outside-whitelist fake=False (samples=0)` 是**因为一条样本都没有**——判定为空，
+  不能区分"没有泄漏"和"流被饿死"。qa-e2e 已把该情形改成 **WARN inconclusive**，不再谎报 PASS。
+* 流真的在投递时，**非白名单的 verifier 仍然收到假点**（3 条 `gps` 样本落在模拟坐标上）。
+
+同时 hook 日志显示过滤确实在跑，但**没有覆盖到 verifier 实际收到的那条投递链**：
+
+```
+independent: substituted the last real gps fix for com.xiaomi.location.fused
+independent: dropped delivery to com.xiaomi.location.fused / com.google.android.gms / com.xiaomi.metoknlp / com.xiaomi.aicr
+independent: dropped fabricated delivery (unresolved package) on deliverOnLocationChanged
+independent: provider last-known restored to the real fix on fused
+```
+
+⇒ 结论：`10-independent` = **FAIL，真实投递过滤漏洞**。下一步要定位 verifier 收到 gps 投递的那条 seam
+（很可能是 `getCurrentLocation` 或 Android 15 的另一条 registration/lambda 路径），而不是继续改
+`deliverOnLocationChanged` 分支。**在修好并给出"非空判定下的 fake=False"之前，不得把它写成 PASS。**
