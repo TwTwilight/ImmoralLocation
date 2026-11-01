@@ -22,7 +22,8 @@ artifacts/
 *.log
 
 # Device harness: PowerShell / Python probes and the verifier app stay on this box, unpublished
-e2e/
+e2e/out/
+# The acceptance harness itself IS versioned: CI runs e2e/lint.ps1 and the matrix documents every
 hook/harness/
 verifier/
 *.ps1
@@ -73,3 +74,4 @@ keystore/
 /native/third_party/android-inline-hook/settings.gradle
 /native/third_party/android-inline-hook/checkstyle.xml
 /native/third_party/android-inline-hook/.clang-format
+
