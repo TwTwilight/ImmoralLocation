@@ -77,6 +77,7 @@ import com.immoral.location.core.route.RouteResult
 import com.immoral.location.core.route.RouteSource
 import com.immoral.location.core.route.SavedRoute
 import com.immoral.location.data.RecentPlace
+import com.immoral.location.net.CoordinateParser
 import com.immoral.location.ui.components.SheetHint
 import com.immoral.location.ui.components.SheetLabel
 import com.immoral.location.ui.components.SheetSupporting
@@ -730,6 +731,10 @@ private fun RouteSearchPage(controller: RoutePlannerController) {
     val recentPlaces by controller.recentPlaces.collectAsStateWithLifecycle()
     var localQuery by remember(query) { mutableStateOf(query) }
     val focusRequester = remember { FocusRequester() }
+    // A coordinate is an answer, not a query: the network search cannot return it, so the picker
+    // offers it as a first-class row — the same rule the map's search card follows. Without it the
+    // destination field accepted `31.2366,121.4803` and then showed nothing selectable at all.
+    val parsedQuery = remember(query) { CoordinateParser.parse(query.trim()) }
 
     // The search sheet opens focused: the user (and the e2e harness, which pipes `input text`
     // into the focused widget) must be able to type immediately without an extra tap.
@@ -745,6 +750,10 @@ private fun RouteSearchPage(controller: RoutePlannerController) {
         }
     }
 
+    // The picker's rows were drawn *under* the keyboard (IME visible height 894 px, results at
+    // y 1671-1847), so a destination could be searched and then never selected: the taps hit the
+    // IME. Lifting the whole page by the IME inset makes the list reachable while typing, which is
+    // required here (unlike the map gesture path, where the keyboard is dismissed instead).
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -822,6 +831,20 @@ private fun RouteSearchPage(controller: RoutePlannerController) {
                 .weight(1f),
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
+            parsedQuery?.let { coord ->
+                item(key = "coordinate") {
+                    PlaceRow(
+                        title = RoutePlannerStrings.coordinateLabel(coord),
+                        subtitle = stringResource(R.string.rp_pick_coordinate),
+                        onClick = {
+                            controller.pickPlace(
+                                RoutePlace(RoutePlannerStrings.coordinateLabel(coord), coord),
+                            )
+                        },
+                        modifier = Modifier.testTag("e2e.route.search.coord"),
+                    )
+                }
+            }
             if (results.isEmpty() && query.isBlank()) {
                 item {
                     SectionLabel(stringResource(R.string.rp_recent_places))
