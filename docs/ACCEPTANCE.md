@@ -473,3 +473,19 @@ per-package evidence = [getLastLocation->real, dropped-for-verifier, substituted
    （`onSelectFavorite = controller::jumpToFavorite` → `setPosition(place.point)`），所以要么是行的点击区、
    要么是"关闭 sheet 与 setPosition 的先后"，要么是 engine 命令没送达——已交给 UI 侧现场手测分辨。
 2. **`6-cells`**：12 s 轮询后仍不变才算产品问题；`polled N s` 已进 detail。
+
+## 19. `11b` 拆成两半（2026-11-02 08:25）
+
+**已证明修好的一半（UI）**：点击收藏行的坐标节点 → 面板关闭 → snackbar `已跳转到「收藏点 2」` →
+peek 显示收藏坐标 → 模块日志 `command decoded: SetPosition` + `ImmoralBridge: send 切换位置 (72B)`。
+即 行点击 → 回调 → `setPosition` → 桥 → 引擎解码 全链路通。
+
+**仍未解决的一半**：之后框架的 passive fix 在 10.6 s 内没有移动（`last passive 31.230416`，收藏点是
+31.23661）。已做但仍不足的改动：`AppController.setPosition` 不再信任缓存里的 `isRunning()`，每次跳转都
+幂等地重发 config + startEngine + setPosition（缓存可能是 stale-true 而引擎实际已停）。
+
+**下一步（有明确方向，不需要再猜）**：在跳转后 2 s 内抓三条证据——
+1. `tick` 行是否在跑（`mode=`/`running=`）；
+2. `ImmoralBridge` 的 prefs 命令是否被引擎消费（app 通道 vs 广播通道是否冲突）；
+3. `dumpsys location` 的 passive 是否被注入路径覆盖。
+若 1 为 running=true 而 2/3 不动，则问题在"app 的 prefs 通道在引擎已由广播通道配置过时不生效"。
