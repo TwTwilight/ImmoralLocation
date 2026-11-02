@@ -291,6 +291,52 @@ function Get-SetPositionCommandCount {
 #   (b) the file IS fresh but the app's poller stopped consuming it.
 # The file lives in the app's private dir, so this reads it as root and reports point, updatedAtMs and
 # the file's mtime age. Evidence only — the check's verdict does not depend on it.
+# Decode the framework layer's published cell set: `1|LTE,<mcc>,<mnc>,<tac>,<ci>,<pci>,…;LTE,…`.
+# The FIRST entry is the serving cell; the rest are neighbours. Used by the 6-cells oracle, which
+# compares what the ENGINE wrote against what the HOOK returns, instead of against a consumer view
+# (the verifier stream and `dumpsys telephony.registry` both have their own caching and were measured
+# stale on 2026-11-02 while the hook demonstrably returned the new set).
+function Get-CellSig {
+    param([string]$Encoded)
+    if (-not $Encoded) { return $null }
+    $body = ($Encoded -replace '^\s*\d+\|', '').Trim()
+    if (-not $body) { return $null }
+    $first = ($body -split ';')[0]
+    $f = $first -split ','
+    if ($f.Count -lt 5) { return $null }
+    return [pscustomobject]@{
+        Rat = $f[0]; Mcc = $f[1]; Mnc = $f[2]; Tac = $f[3]; Ci = $f[4]
+        Pci = $(if ($f.Count -gt 5) { $f[5] } else { '' })
+        Raw = $first
+    }
+}
+
+# Hook-side witness: `cells.probe CHANGED read #N … first=LTE/460/11/lac=50274/ci=129538244/…` lines
+# prove the hook was ENTERED and returned the new serving cell. Counting before/after the C move keeps
+# older lines from another phase out of the window.
+function Get-CellsProbeLines {
+    $out = @()
+    try {
+        $out = @(adb logcat -d -s LSPosedFramework:I 2>&1 | Select-String 'cells\.probe')
+    }
+    catch { }
+    return $out
+}
+
+function Get-CellsProbeSig {
+    param($Line)
+    if (-not $Line) { return $null }
+    $s = "$Line"
+    if ($s -notmatch 'lac=(\d+)') { return $null }
+    $tac = $matches[1]
+    # `ci=` must NOT match inside `pci=` — a bare `ci=(\d+)` matched the PCI (measured 2026-11-02:
+    # hook return parsed as ci=436, which is the PCI, while tas/ci matched perfectly otherwise).
+    # The probe line carries cid=<ci> (not ci=), e.g. irst=LTE/460/11/lac=50274/cid=129538244/pci=436.
+    # Accept ci= too, and never let pci= match: a bare ci=(\d+) parsed the PCI (measured 2026-11-02).
+    $ci = if ($s -match '(?<![A-Za-z])cid=(\d+)') { $matches[1] } elseif ($s -match '(?<![A-Za-z])ci=(\d+)') { $matches[1] } else { '' }
+    return [pscustomobject]@{ Tac = $tac; Ci = $ci }
+}
+
 function Get-FwStatusProbe {
     # The hook publishes engine state into `Settings.Global/immoral_state` at ~1 Hz (the transport that
     # replaced the app-private `fw_status.json`, which never existed: system_server could not write into
@@ -978,6 +1024,8 @@ if (Test-Selected '6') {
     Start-Sleep -Seconds 3
     $cellsT0 = @(Get-VerifySamples -Kind 'cell' -AfterTs $markT0)
     $sigT0 = ($cellsT0 | Where-Object { $_.registered } | Select-Object -First 1)
+    $settingsCellsT0 = ''
+    try { $settingsCellsT0 = (((Invoke-AdbShell 'settings get global immoral_cells' -AllowFailure).Output) -join '').Trim() } catch { }
     Invoke-SetPositionAndVerify -Lat $POINT_A.lat -Lon $POINT_A.lon | Out-Null
     Start-Sleep -Seconds 2
     # window the two snapshots: reading the whole buffer returns the same (first) cell twice
@@ -996,33 +1044,46 @@ if (Test-Selected '6') {
     $cellsA = @(Get-VerifySamples -Kind 'cell' -AfterTs $markA)
     $sigA = ($cellsA | Where-Object { $_.registered } | Select-Object -First 1)
     $markC = Get-VerifyMark
+    $cellSigA = Get-CellSig $settingsCellsA
+    # Hook-side window: how many `cells.probe` lines existed before the C move.
+    $probeBefore = @(Get-CellsProbeLines).Count
     Invoke-SetPositionAndVerify -Lat $POINT_C.lat -Lon $POINT_C.lon | Out-Null
+    # ORACLE (2026-11-02): poll the ENGINE's published key — authoritative — not the consumer stream.
+    # Measured that day: the hook returned C's set (`cells.probe CHANGED … lac=50274`) while both the
+    # verifier stream and `dumpsys telephony.registry` kept reporting A's set, i.e. the CONSUMER has its
+    # own caching. The assertion is therefore "the engine wrote a new set AND the hook returned it",
+    # which also catches a real hook regression that a consumer-based check cannot see.
     $settingsCellsC = ''
-    try { $settingsCellsC = (((Invoke-AdbShell 'settings get global immoral_cells' -AllowFailure).Output) -join '').Trim() } catch { }
-    # The engine publishes only when the encoded set changes and the phone process caches it for 500 ms,
-    # so a fixed 3 s wait is marginal under load (measured 2026-11-02: stand-alone run PASS, full run
-    # unchanged ci/tac). Poll up to 12 s: the move+apply+read chain has measured 4.9 s under a full
-    # matrix, so 8 s was too tight for what is a TIMING question; 12 s still fails loudly if the
-    # channel is genuinely broken (Lead's call, 2026-11-02).
-    $cellsC = @()
-    $sigC = $null
+    $cellSigC = $null
     $cellsCWait = 0
     $deadlineC = (Get-Date).AddSeconds(12)
     while ((Get-Date) -lt $deadlineC) {
         Start-Sleep -Milliseconds 700
         $cellsCWait += 0.7
-        $cellsC = @(Get-VerifySamples -Kind 'cell' -AfterTs $markC)
-        $sigC = ($cellsC | Where-Object { $_.registered } | Select-Object -First 1)
-        if ($sigC -and ((-not $sigA) -or ($sigC.ci -ne $sigA.ci) -or ($sigC.tac -ne $sigA.tac))) { break }
+        try { $settingsCellsC = (((Invoke-AdbShell 'settings get global immoral_cells' -AllowFailure).Output) -join '').Trim() } catch { }
+        $cellSigC = Get-CellSig $settingsCellsC
+        if ($cellSigC -and $cellSigA -and (($cellSigC.Tac -ne $cellSigA.Tac) -or ($cellSigC.Ci -ne $cellSigA.Ci))) { break }
     }
-    $present = $cellsA.Count -gt 0
-    $changed = ($sigA -and $sigC) -and (($sigA.ci -ne $sigC.ci) -or ($sigA.tac -ne $sigC.tac))
-    $plmnOk = ($sigA -and $sigA.mcc -eq '460')
-    # Probe text: A immediately after the move vs after the settle, plus the engine's own published key.
-    $cellsProbe = "A@0.8s ci=$(if ($sigAImm) { "$($sigAImm.ci)/tac=$($sigAImm.tac)" } else { 'none' }) A@settled ci=$(if ($sigA) { "$($sigA.ci)/tac=$($sigA.tac)" } else { 'none' }) settings[immoral_cells]: A=$(if ($settingsCellsA) { $settingsCellsA } else { 'unset' }) C=$(if ($settingsCellsC) { $settingsCellsC } else { 'unset' })"
-    Test-Result -Id '6-cells' -Name 'cell identity changes with position (基站模拟) [KNOWN-OPEN: hook-framework fixing]' -Condition ($present -and $changed) `
-        -Detail $(if ($sigA -and $sigC) { "t0(parked at B) ci=$(if ($sigT0) { $sigT0.ci } else { 'none' })/tac=$(if ($sigT0) { $sigT0.tac } else { 'none' }); A ci=$($sigA.ci)/tac=$($sigA.tac)/pci=$($sigA.pci) -> C ci=$($sigC.ci)/tac=$($sigC.tac); mcc=$($sigA.mcc)$($sigA.mnc) plmnOk=$plmnOk; polled $([Math]::Round($cellsCWait,1))s for the change; parkedOk=$($parked.Ok)$(if ($sigT0 -and $sigA -and $sigT0.ci -eq $sigA.ci) { ' [WARN: t0 already equals A — the channel did not follow the move]' } else { '' }); $cellsProbe" } elseif ($present) { "cells present but no registered cell line (count A=$($cellsA.Count) C=$($cellsC.Count), polled $([Math]::Round($cellsCWait,1))s); $cellsProbe" } else { "no cell lines in the verifier stream; $cellsProbe" }) `
-        -Metrics @{ countA = $cellsA.Count; countC = $cellsC.Count; pollSeconds = [Math]::Round($cellsCWait, 1); parkedOk = $parked.Ok; ciAImmediate = $(if ($sigAImm) { $sigAImm.ci } else { "n/a" }); tacAImmediate = $(if ($sigAImm) { $sigAImm.tac } else { "n/a" }); settingsCellsA = $settingsCellsA; settingsCellsC = $settingsCellsC; ciT0 = $(if ($sigT0) { $sigT0.ci } else { "n/a" }); ciA = $(if ($sigA) { $sigA.ci } else { "n/a" }); ciC = $(if ($sigC) { $sigC.ci } else { "n/a" }); tacA = $(if ($sigA) { $sigA.tac } else { "n/a" }); tacC = $(if ($sigC) { $sigC.tac } else { "n/a" }); mcc = $(if ($sigA) { $sigA.mcc } else { "n/a" }) }
+    # Consumer view — CONTEXT ONLY (it has its own caching and is not the oracle).
+    $cellsC = @(Get-VerifySamples -Kind 'cell' -AfterTs $markC)
+    $sigC = ($cellsC | Where-Object { $_.registered } | Select-Object -First 1)
+    $probeLines = @(Get-CellsProbeLines)
+    $probeNew = @()
+    if ($probeLines.Count -gt $probeBefore) { $probeNew = @($probeLines[$probeBefore..($probeLines.Count - 1)]) }
+    $probeChangedLines = @($probeNew | Where-Object { "$_" -match 'CHANGED' })
+    $probeLine = if ($probeChangedLines.Count -gt 0) { $probeChangedLines[-1] } else { $null }
+    $probeSig = Get-CellsProbeSig $probeLine
+    $settingsChanged = [bool](($cellSigA -and $cellSigC) -and (($cellSigC.Tac -ne $cellSigA.Tac) -or ($cellSigC.Ci -ne $cellSigA.Ci)))
+    $probeOk = [bool]($probeSig -and $cellSigC -and ($probeSig.Tac -eq $cellSigC.Tac) -and (($probeSig.Ci -ne '') -and ($probeSig.Ci -eq $cellSigC.Ci)))
+    $consumerStale = [bool]($sigC -and $sigA -and ($sigC.ci -eq $sigA.ci) -and ($sigC.tac -eq $sigA.tac) -and $settingsChanged)
+    $plmnOk = [bool]($cellSigA -and $cellSigA.Mcc -eq '460')
+    $cellText = {
+        param($s)
+        if (-not $s) { 'none' } else { "ci=$($s.Ci)/tac=$($s.Tac)/pci=$($s.Pci)" }
+    }
+    Test-Result -Id '6-cells' -Name 'cell identity changes with position (基站模拟)' -Condition ($settingsChanged -and $probeOk) `
+        -Detail "engine publish: A $(& $cellText $cellSigA) -> C $(& $cellText $cellSigC) (changed=$settingsChanged, polled $([Math]::Round($cellsCWait,1))s); hook return: $(if ($probeSig) { "lac=$($probeSig.Tac)/ci=$($probeSig.Ci) matchesC=$probeOk" } else { "no cells.probe CHANGED line in the window (before=$probeBefore after=$($probeLines.Count))" }); parkedOk=$($parked.Ok) t0 ci=$(if ($sigT0) { $sigT0.ci } else { 'none' }); plmnOk=$plmnOk; consumer view (context only): verifier A ci=$(if ($sigA) { $sigA.ci } else { 'none' }) C ci=$(if ($sigC) { $sigC.ci } else { 'none' })$(if ($consumerStale) { ' [STALE — reports A while the engine published C]' } else { '' })" `
+        -Metrics @{ settingsChanged = $settingsChanged; hookMatchedC = $probeOk; consumerStale = $consumerStale; pollSeconds = [Math]::Round($cellsCWait, 1); parkedOk = $parked.Ok; tacA = $(if ($cellSigA) { $cellSigA.Tac } else { 'n/a' }); ciA = $(if ($cellSigA) { $cellSigA.Ci } else { 'n/a' }); tacC = $(if ($cellSigC) { $cellSigC.Tac } else { 'n/a' }); ciC = $(if ($cellSigC) { $cellSigC.Ci } else { 'n/a' }); hookTac = $(if ($probeSig) { $probeSig.Tac } else { 'n/a' }); hookCi = $(if ($probeSig) { $probeSig.Ci } else { 'n/a' }); consumerCiA = $(if ($sigA) { $sigA.ci } else { 'n/a' }); consumerCiC = $(if ($sigC) { $sigC.ci } else { 'n/a' }); mcc = $(if ($cellSigA) { $cellSigA.Mcc } else { 'n/a' }); settingsCellsA = $settingsCellsA; settingsCellsC = $settingsCellsC; settingsCellsT0 = $settingsCellsT0 }
 }
 
 # ------------------------------------------------------------------------------------------------

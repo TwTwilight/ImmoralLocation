@@ -210,7 +210,7 @@ object TelephonyHooks {
             return lastParsed
         }
         val raw = read.raw
-        lastReadNote = "$via -> " + describeRaw(raw)
+        lastReadNote = "$via source=${read.source} -> " + describeRaw(raw)
         if (raw != lastRaw) {
             lastRaw = raw
             lastParsed = parseCells(raw)
@@ -219,24 +219,27 @@ object TelephonyHooks {
             Log.rate(
                 "cells.probe.changed",
                 1_000L,
-                "cells.probe CHANGED $via " + describeRaw(raw) +
+                "cells.probe CHANGED $via source=${read.source}" + read.skipped() + " " + describeRaw(raw) +
                     " first=" + servingLabel(lastParsed?.first) +
                     " count=" + (lastParsed?.first?.size ?: 0),
             )
-            // Cross-check the *other* read path on the same call: if the per-name provider query and
-            // `Settings.Global.getString` (the cross-process NameValueCache) disagree, the cache is
-            // the stale half and this line says so explicitly.
-            crossCheckCachedAccessor(raw)
+            // Cross-check the other read paths on the same call: if the provider query and the cached
+            // `Settings.Global` accessor disagree, the cache is the stale half and this line says so.
+            crossCheckReadPaths(raw)
         } else {
             Log.rate(
                 "cells.probe.steady",
                 10_000L,
-                "cells.probe steady $via " + describeRaw(raw) + " first=" + servingLabel(lastParsed?.first) +
+                "cells.probe steady $via source=${read.source}" + read.skipped() + " " + describeRaw(raw) +
+                    " first=" + servingLabel(lastParsed?.first) +
                     " count=" + (lastParsed?.first?.size ?: 0) + " (unchanged since the last change)",
             )
         }
         return lastParsed
     }
+
+    /** ` skipped=…` when a preferred read path had to be bypassed (never silent). */
+    private fun CellsReadResult.skipped(): String = if (error.isEmpty()) "" else " skipped=[" + error.trim() + "]"
 
     /** `uid:1000:android` — enough to tell the verifier apart from platform callers in the probe. */
     private fun callerLabel(uid: Int): String = "uid=$uid:" + (try {
@@ -291,75 +294,143 @@ object TelephonyHooks {
     }
 
     /**
-     * Compares the per-name provider read with the cached `Settings.Global` accessor.
+     * Three-way comparison of the read paths, run **on every change** of the channel payload.
      *
-     * The engine writes the row in `system_server`; if this process' `NameValueCache` is not
-     * invalidated on that write, `Settings.Global.getString` keeps answering the value it read first
-     * while a direct query already returns the new one. Only run on a change (cheap) and only for
-     * diagnosis — the value actually used comes from [readCellsSetting], which prefers the query.
+     * The engine writes the row in `system_server`; the reader here has three ways to see it, and
+     * they can disagree on a vendor build:
+     *  - `query`      — per-name provider query (`content://settings/global/immoral_cells`), no cache;
+     *  - `collection` — provider query with a `name=?` selection on `content://settings/global`;
+     *  - `settings`   — `Settings.Global.getString`, which goes through the cross-process
+     *    `NameValueCache` and is the one known to freeze when the write does not bump the generation.
+     *
+     * One line names exactly which half diverged, so "the phone side is stale" stops being an
+     * inference. Diagnostic only: the value actually served comes from [readCellsSetting].
      */
-    private fun crossCheckCachedAccessor(expected: String?) {
+    private fun crossCheckReadPaths(expected: String?) {
         val context = cachedContext ?: return
+        val collection = readCollectionQuery(context)
         val viaCache = try {
-            android.provider.Settings.Global.getString(context.contentResolver, "immoral_cells")
+            android.provider.Settings.Global.getString(context.contentResolver, CELLS_KEY)
         } catch (t: Throwable) {
             Log.once("cells.probe.crosscheck.err", "cells.probe cross-check failed: " + t.javaClass.simpleName)
             return
         }
-        val same = viaCache == expected
+        val agree = collection == expected && viaCache == expected
         Log.rate(
-            if (same) "cells.probe.crosscheck.agree" else "cells.probe.crosscheck.diverge",
+            if (agree) "cells.probe.paths.agree" else "cells.probe.paths.diverge",
             5_000L,
-            "cells.probe cross-check: providerQuery=" + describeRaw(expected) +
-                " Settings.getString=" + describeRaw(viaCache) +
-                (if (same) " (agree)" else " (DIVERGE — the cached accessor is the stale half)"),
+            "cells.probe read paths: query=" + describeRaw(expected) +
+                " collection=" + describeRaw(collection) +
+                " settings=" + describeRaw(viaCache) +
+                (
+                    if (agree) {
+                        " (all agree)"
+                    } else {
+                        " (DIVERGE: " +
+                            (if (collection != expected) "collection " else "") +
+                            (if (viaCache != expected) "Settings.Global.getString " else "") +
+                            "is the stale half)"
+                    }
+                    ),
         )
     }
 
-    /** Outcome of one state-channel read: the raw payload (null = row absent) or a failure. */
-    private class CellsReadResult(val raw: String?, val failed: Boolean, val error: String = "")
+    /** Provider query with an explicit `name=?` selection (second, independent path). */
+    private fun readCollectionQuery(context: android.content.Context): String? = try {
+        context.contentResolver.query(
+            android.provider.Settings.Global.CONTENT_URI,
+            arrayOf(android.provider.Settings.NameValueTable.VALUE),
+            android.provider.Settings.NameValueTable.NAME + "=?",
+            arrayOf(CELLS_KEY),
+            null,
+        )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+    } catch (t: Throwable) {
+        Log.rate("cells.read.collection.err", 30_000L, "collection cells read failed: " + t.javaClass.simpleName)
+        null
+    }
 
     /**
-     * Reads the cells state channel with a **direct provider query** on the per-name URI.
+     * Outcome of one state-channel read.
      *
-     * The value is written by `EngineRuntime.publishCells` in `system_server` and read here in
-     * `com.android.phone`. The per-name query goes straight to `SettingsProvider`; the cached
-     * `Settings.Global.getString` accessor (which served a frozen value while the engine kept
-     * writing) is only the fallback, because the harness assertion must track the engine.
+     * @property raw the payload, `null` when the row is absent (simulation off)
+     * @property failed `true` when no read path could answer at all
+     * @property source which path answered: `query`, `collection` or `settings`
+     * @property error why earlier paths were skipped, for the log line
+     */
+    private class CellsReadResult(
+        val raw: String?,
+        val failed: Boolean,
+        val source: String = "query",
+        val error: String = "",
+    )
+
+    /**
+     * Reads the cells state channel, preferring paths that cannot be cached.
+     *
+     * Order: per-name provider query → collection query with a selection → `Settings.Global.getString`
+     * (the `NameValueCache`, kept only as a last resort because it is the path that can freeze). The
+     * `source` field of the result is logged on every change, so a fallback is never silent.
      */
     private fun readCellsSetting(): CellsReadResult {
         val context = settingsContext()
-            ?: return CellsReadResult(null, true, "no Context in this process")
-        val uri = android.provider.Settings.Global.getUriFor("immoral_cells")
+            ?: return CellsReadResult(null, true, "none", "no Context in this process")
+        val notes = StringBuilder()
+        // 1) per-name URI — the cheapest provider round trip and the least likely to be cached.
         try {
             context.contentResolver.query(
-                uri,
+                android.provider.Settings.Global.getUriFor(CELLS_KEY),
                 arrayOf(android.provider.Settings.NameValueTable.VALUE),
                 null,
                 null,
                 null,
             )?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    return CellsReadResult(cursor.getString(0), false)
-                }
-                // Row deleted: simulation is off.
-                return CellsReadResult(null, false)
+                return CellsReadResult(
+                    if (cursor.moveToFirst()) cursor.getString(0) else null,
+                    false,
+                    "query",
+                )
             }
-            // A null cursor is not an expected answer for a settings query; treat it as a failure so
-            // the caller can fall back to the cached accessor instead of silently reporting "off".
-            Log.rate("cells.read.nullcursor", 60_000L, "cells channel: provider query returned a null cursor")
+            notes.append("per-name query returned a null cursor; ")
         } catch (t: Throwable) {
-            Log.rate("cells.read.direct.err", 30_000L, "direct cells read failed: " + t.javaClass.simpleName + ": " + t.message)
+            notes.append("per-name query ").append(t.javaClass.simpleName).append(": ").append(t.message).append("; ")
+            Log.rate("cells.read.query.err", 30_000L, "cells channel: per-name query failed: " + t.javaClass.simpleName + ": " + t.message)
         }
+        // 2) collection URI with an explicit selection.
+        try {
+            context.contentResolver.query(
+                android.provider.Settings.Global.CONTENT_URI,
+                arrayOf(android.provider.Settings.NameValueTable.VALUE),
+                android.provider.Settings.NameValueTable.NAME + "=?",
+                arrayOf(CELLS_KEY),
+                null,
+            )?.use { cursor ->
+                return CellsReadResult(
+                    if (cursor.moveToFirst()) cursor.getString(0) else null,
+                    false,
+                    "collection",
+                    notes.toString(),
+                )
+            }
+            notes.append("collection query returned a null cursor; ")
+        } catch (t: Throwable) {
+            notes.append("collection query ").append(t.javaClass.simpleName).append(": ").append(t.message).append("; ")
+        }
+        // 3) the cached accessor: last resort only.
         return try {
             CellsReadResult(
-                android.provider.Settings.Global.getString(context.contentResolver, "immoral_cells"),
+                android.provider.Settings.Global.getString(context.contentResolver, CELLS_KEY),
                 false,
+                "settings",
+                notes.toString(),
             )
         } catch (t: Throwable) {
-            CellsReadResult(null, true, "fallback read " + t.javaClass.simpleName + ": " + t.message)
+            notes.append("settings accessor ").append(t.javaClass.simpleName).append(": ").append(t.message)
+            CellsReadResult(null, true, "none", notes.toString())
         }
     }
+
+    /** The `Settings.Global` key the engine publishes into and this process reads. */
+    private const val CELLS_KEY = "immoral_cells"
 
     /**
      * A `Context` for this (**binder**) thread, resolved once and cached.

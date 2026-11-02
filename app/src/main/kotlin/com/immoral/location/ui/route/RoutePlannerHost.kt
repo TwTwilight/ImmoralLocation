@@ -40,9 +40,11 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -963,9 +965,12 @@ private fun PlaceRow(
 }
 
 /**
- * Destructive icon action for the planner footer: 48 dp target, error tint, label for screen readers
- * and a stable e2e tag. Kept next to its only caller rather than in the shared components until a
- * second surface needs it.
+ * Destructive icon action for the planner footer.
+ *
+ * §10.2.3 is specific: a destructive action is a `FilledTonalIconButton` on `errorContainer` with
+ * `onErrorContainer` content — not a bare error-tinted icon (that reads as decoration, and it was
+ * the last control in the sheet without a container of its own). 48 dp target, hairline border like
+ * every other tonal control, label for screen readers, stable e2e tag.
  */
 @Composable
 private fun DestructiveIconButton(
@@ -973,11 +978,21 @@ private fun DestructiveIconButton(
     contentDescription: String,
     testTag: String,
 ) {
-    IconButton(onClick = onClick, modifier = Modifier.size(48.dp).testTag(testTag)) {
+    FilledTonalIconButton(
+        onClick = onClick,
+        modifier = Modifier
+            .size(ActionHeight)
+            .border(1.dp, plannerBorderColor(), CircleShape)
+            .testTag(testTag),
+        colors = IconButtonDefaults.filledTonalIconButtonColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        ),
+    ) {
         Icon(
             imageVector = Icons.Filled.Delete,
             contentDescription = contentDescription,
-            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(20.dp),
         )
     }
 }

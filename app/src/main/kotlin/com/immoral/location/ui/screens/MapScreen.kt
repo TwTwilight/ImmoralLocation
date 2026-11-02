@@ -794,11 +794,20 @@ fun MapScreen(
         // role in dark where surfaceContainerLow sits within ~2 % of the dimmed tiles) plus the
         // 1dp hairline the contract asks for: without the stroke the dark sheet and the dark map
         // shared an edge and the sheet looked like a cut-out of the map rather than chrome on it.
+        // With the keyboard up the sheet must take the whole area above it, not just `sheetPx` minus
+        // the inset: the planner's own height is content-sized (~1 000 px), so subtracting the 894 px
+        // keyboard left ~130 px — room for the header and the search field but no result rows at all.
+        // Zero-inset (no keyboard) keeps `sheetPx` and every other state unchanged.
+        val layoutSheetPx = if (imeInsetPx > 0) {
+            (totalPx - imeInsetPx - navInsetTopPx).coerceAtLeast(halfPx)
+        } else {
+            sheetPx
+        }
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(with(density) { (sheetPx.toFloat() - imeInsetPx.toFloat()).coerceAtLeast(0f).toDp() })
+                .height(with(density) { layoutSheetPx.toDp() })
                 .offset(y = -(with(density) { imeInsetPx.toDp() }))
                 .testTag("e2e.sheet"),
             shape = SheetShape,

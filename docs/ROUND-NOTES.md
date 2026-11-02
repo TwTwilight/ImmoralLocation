@@ -1233,4 +1233,72 @@ globalState(immoral_state): t1=(31.23077,121.4737)@ts+0s running=True
 真正移动只发生在窗口末尾的 1–2 s。这不是 harness 的采样问题（同一窗口内 tick 连续、速率一致），
 而是**路线启动延迟**本身；若产品侧认为启动应在 1 s 内生效，这是一条独立的、可复现的观察。
 
+## 18. `10-independent` 与 `6-cells`：把断言从"消费者视角"换成"引擎 + Hook 视角"（2026-11-02 14:1x）
+
+### 18.1 `10-independent`：outside 值改成"一次冻结"
+
+全量跑里出现 `outside == POINT_C`（即白名单阶段之后的位置），原因是评估时才回读缓冲区，
+晚到的样本可以改写"outside 到底是什么"。现在：在 **B 广播之后、白名单配置之前**读取一次
+`lastKnown`，把 `lat/lon/ts` 存进变量；后续所有阶段只断言这组变量，**不再回读**。
+另外加了 `$staleFrom`：若冻结值落在 A/B/C 任一点的 100 m 内，detail 会点名该点，
+表示"provider 缓存里还留着上一检查的假点"（预处理污染），而不是"假点泄漏"。
+
+### 18.2 `6-cells`：断言 = 引擎发布值 与 Hook 返回值 一致
+
+之前的断言看的是 **verifier 的 cell 流**，而 Lead 的探针证明：Hook 本身返回了 C 的新集合
+（`cells.probe CHANGED … first=LTE/460/11/lac=50274/cid=129538244/pci=436`，三条读路径 hash 一致），
+**消费者**（verifier 流 / `dumpsys telephony.registry`）却仍报 A 的集合 —— 消费者有自己的缓存。
+
+新断言（更强，而非更弱）：
+
+1. 从 `settings get global immoral_cells` 解析 A 与 C 的 serving cell（`Get-CellSig`，取第一段
+   `1|LTE,<mcc>,<mnc>,<tac>,<cid>,<pci>,…`），要求 **A→C 的 tac 或 ci 发生变化**；
+2. 在同一窗口内，logcat 必须出现一条 `cells.probe CHANGED`，且其 `lac=`/`cid=` 与 C 的
+   **tac/ci 完全一致**（`matchesC=True`）；
+3. verifier 流只作为**上下文**记录，若它仍报 A 而引擎已发布 C，会标注
+   `[STALE — reports A while the engine published C]`，但不参与判定。
+
+这样，真正的 Hook 回归（hook 不返回新集合）会被抓住，而消费者缓存不会再把检查弄红。
+实测（build `14:08:41`）：
+
+```
+PASS 6-cells  engine publish: A ci=107084627/tac=46625/pci=336 -> C ci=129538244/tac=50274/pci=436
+              (changed=True, polled 0.7s); hook return: lac=50274/ci=129538244 matchesC=True;
+              parkedOk=True t0 ci=78748384; plmnOk=True; consumer view (context only): A ci=107084627 C ci=129538244
+```
+
+**解析陷阱**（实际踩到两次）：探针行里的字段是 `cid=`，不是 `ci=`；而裸写 `ci=(\d+)` 会命中
+`pci=436`，把 PCI 当成 CI。正则必须写成 `(?<![A-Za-z])cid=(\d+)`，并且 CI 必须非空才允许判定匹配。
+
+## 19. `6-cells` 结案：我们的读是对的，消费者视图才是旧的（2026-11-02 14:1x）
+
+三条读通道的探针给出了两行判决（cells-engineer 独立复跑，`e2e/out/report-6.json`，
+build `lastUpdateTime=14:16:54`）：
+
+```text
+cells.probe CHANGED read #111 via getAllCellInfo caller=uid=10168 source=query raw=hash=ddf59fb4 len=157 first=LTE/460/11/lac=50274/cid=129538244/…
+cells.probe read paths: query=ddf59fb4 collection=ddf59fb4 settings=ddf59fb4 (all agree)
+```
+
+⇒ 在 C 点 hook **确实被调用**，per-name provider 查询有应答（`source=query`，没有回退），三条读通道
+（per-name query / collection query / `Settings.Global.getString`）**完全一致**，返回的就是 C 的集合。
+「静默回退到冻结的 `NameValueCache`」这个假设被证伪；旧的是**消费者视图**（`dumpsys` 与 verifier 的流仍报 A）。
+所以 `6-cells` 的断言已改为 **引擎发布值 ∧ Hook 返回值**（见 §18.2），verifier 视角只作 `[STALE]` 上下文。
+本次独立复跑同样 `PASS`：`engine publish: A ci=107084627/tac=46625/pci=336 -> C ci=129538244/tac=50274/pci=436;
+hook return: lac=50274/ci=129538244 matchesC=True; consumer view (context only): verifier A ci=107084627 C ci=107084627 [STALE]`。
+
+**这两条探针是长期保留的**（新 oracle 会 grep 它们），不要当调试残留删掉：
+`cells.probe CHANGED/steady … source=… skipped=[…] raw=hash=… first=… count=… via=<method> caller=uid=…`、
+`cells.probe read paths: query=… collection=… settings=… (all agree|DIVERGE …)`，
+以及「进没进 hook」的 `cells.skip.self/scope/nostate/disabled/build/shape`。
+读侧现在**每次调用都读 provider、没有 TTL**：cell 读取不在热路径上，而一个无法失效的缓存与
+「引擎不跟随位置」在 app 视角完全无法区分 —— 这正是这一轮反复踩到的坑。
+
+**工具陷阱（代价 40 分钟，一次真实事故）**：不要对 `/data/adb/lspd/log/` 裸 `grep` 整份会话日志 ——
+`grep -n "cells" <modules_*.log>` 这次跑了 **2393 秒**（约 40 分钟），把整条调用链卡死：既读不到结论，
+也无法再向上层汇报进度，期间上层只能看到"沉默"。正确姿势：先
+`ls -t /data/adb/lspd/log/modules_*.log | head -1` 取最新一份，再
+`tail -n 4000 <file> | grep -E '…'`；确实需要全量历史时才用 `grep` 并配 `--max-count` 或时间窗。
+
+
 
