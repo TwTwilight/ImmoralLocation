@@ -337,7 +337,12 @@ fun MapScreen(
     LaunchedEffect(useAmap) {
         if (useAmap) {
             delay(3_000)
-            if (!amapLoaded.value) amapFailed = true
+            if (!amapLoaded.value) {
+                // Logged because the swap is otherwise invisible: the user keeps a working map and
+                // support has no way to tell which backend produced the frame they are looking at.
+                android.util.Log.i("MapScreen", "amap did not load within 3s - falling back to the tile backend")
+                amapFailed = true
+            }
         }
     }
 
