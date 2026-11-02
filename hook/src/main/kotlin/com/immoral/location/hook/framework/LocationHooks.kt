@@ -638,6 +638,9 @@ object LocationHooks {
             // provider cache and every non-whitelisted read keeps seeing the simulated point
             // (measured 2026-11-02: cache stayed fake after the mode switch although the restore ran).
             if (active != null && coordinatesMatchSnap(location, active)) continue
+            // A delayed report of an earlier fake can arrive after the engine has moved, so the
+            // current-snap test alone is not enough: check the recent fabricated set as well.
+            if (Fakes.matchesFabricatedPoint(location.latitude, location.longitude)) continue
             realLast[provider] = location
         }
     }
@@ -1065,6 +1068,7 @@ object LocationHooks {
         else -> value
     }
 }
+
 
 
 
