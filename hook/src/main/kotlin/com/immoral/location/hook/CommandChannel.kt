@@ -258,7 +258,9 @@ object StatusWriter {
      * module to every app on the device.
      */
     fun clearStaleRow() {
-        clearedWhileStopped = true
+        // Deliberately does NOT set clearedWhileStopped: at this point in system_server startup the
+        // host context may not be resolvable yet, so the clear can silently do nothing. Leaving the
+        // flag false lets the first idle publish retry it once a context exists.
         publishToSettingsGlobals("")
     }
 
@@ -272,11 +274,11 @@ object StatusWriter {
 
     fun setUiVisible(visible: Boolean) {
         uiVisible = visible
-        if (!visible) {
-            // Drop the row as soon as our own UI leaves the screen.
-            publishToSettingsGlobals("")
-            Log.i("status row removed: app UI is no longer visible")
-        }
+        // Always drop whatever row is there first: coming back to the foreground may reveal a row left
+        // by an earlier boot, and hiding must remove it immediately. The ticker republishes within a
+        // second when the engine is actually running.
+        publishToSettingsGlobals("")
+        if (!visible) Log.i("status row removed: app UI is no longer visible")
     }
 
     @Volatile
@@ -300,9 +302,11 @@ object StatusWriter {
                 clearedWhileStopped = true
                 publishToSettingsGlobals("")
             }
-        } else {
-            clearedWhileStopped = false
+            // Never re-create the row while idle: an idle engine has nothing worth exposing, and the
+            // previous version cleared it and then wrote it straight back.
+            return
         }
+        clearedWhileStopped = false
         try {
             val json = buildString(160) {
                 append("{\"running\":").append(state.running)
