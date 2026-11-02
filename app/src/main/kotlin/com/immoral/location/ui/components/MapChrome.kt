@@ -221,6 +221,9 @@ fun ChromeActionPill(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     tag: String? = null,
+    // In a row too narrow for search + label + FAB plate, the label is what goes: the entry
+    // must stay fully visible and tappable, and an icon-only pill does both (audit R1/R5).
+    showLabel: Boolean = true,
 ) {
     Surface(
         onClick = onClick,
@@ -243,12 +246,14 @@ fun ChromeActionPill(
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(20.dp),
             )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-            )
+            if (showLabel) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }

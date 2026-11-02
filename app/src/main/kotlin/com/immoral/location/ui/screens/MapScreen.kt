@@ -425,12 +425,7 @@ fun MapScreen(
         // Height of the live-search card, so the snackbar stacks *under* it instead of behind it.
         var suggestionsHeightPx by remember { mutableIntStateOf(0) }
         val totalPx = constraints.maxHeight.toFloat()
-        // Landscape puts the FAB plate in the same band as the top chrome, because the sheet claims
-        // most of the height and the plate is anchored just above it. One branch, one effect: the
-        // chrome row reserves the plate's width so the 工具 pill is never covered. Portrait is
-        // untouched by construction (`isLandscape == false` keeps the original paddings).
-        val configuration = androidx.compose.ui.platform.LocalConfiguration.current
-        val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
+        val totalWidthPx = constraints.maxWidth.toFloat()
         // Never constrain the very first layout to a guessed peek height: the measured value is
         // read back from PeekPanel *inside* the sheet, so a too-small guess would lock the sheet at
         // a height that clips the action row. 42 % of the screen is comfortably above the panel's
@@ -486,6 +481,22 @@ fun MapScreen(
             },
             label = "sheetHeight",
         )
+
+        // Whether the FAB plate can run into the top chrome is a fact about the *available space*,
+        // not about orientation: the plate is anchored just above the sheet, so a short window lifts
+        // its top into the chrome row (landscape, small phones, a split-screen pane), and a narrow
+        // window cannot hold search + 工具 + plate side by side. Both are measured here and drive one
+        // set of consequences, so every form factor takes the same code path.
+        val chromeRowDp = 56.dp + Dimens.chromeGap * 2
+        val plateDp = Dimens.fabSize * 3 + 2.dp
+        val bandDp = with(density) { (totalPx - sheetPx).coerceAtLeast(0f).toDp() }
+        val rowAvailDp = with(density) { totalWidthPx.toDp() } - Dimens.chromeMargin * 2
+        val rowNeeds = 140.dp + Dimens.chromeGap + 96.dp + Dimens.chromeGap + Dimens.fabGroupWidth
+        val plateReachesChromeRow = bandDp < plateDp + chromeRowDp
+        val reservePlateWidth = plateReachesChromeRow || rowAvailDp < rowNeeds
+        // With the plate reserved and the row still tight, the 工具 label is what gives way: the entry
+        // stays fully visible and tappable as an icon-only pill instead of being half covered.
+        val toolsIconOnly = reservePlateWidth && rowAvailDp < rowNeeds + 56.dp
         // The floating chrome steps aside whenever the sheet leaves the peek detent or a place
         // card is showing: the card owns the bottom third of the screen in that moment, and at
         // half/full the tools/route panel would otherwise collide with the FAB stack.
@@ -566,7 +577,7 @@ fun MapScreen(
                 .statusBarsPadding()
                 .padding(
                     start = Dimens.chromeMargin,
-                    end = if (isLandscape) {
+                    end = if (reservePlateWidth) {
                         Dimens.chromeMargin + Dimens.fabGroupWidth + Dimens.chromeGap
                     } else {
                         Dimens.chromeMargin
@@ -594,7 +605,10 @@ fun MapScreen(
                     onClick = onOpenTools,
                     // Floor width: the label must never be clipped to an icon-only sliver when the
                     // search pill is greedier than the row (landscape squeeze, audit R1/R5).
-                    modifier = Modifier.widthIn(min = 96.dp),
+                    // Icon-only keeps its natural 56 dp instead of holding a label-width floor, so
+                    // the freed 40 dp goes to the search pill rather than to empty space.
+                    modifier = Modifier.widthIn(min = if (toolsIconOnly) 56.dp else 96.dp),
+                    showLabel = !toolsIconOnly,
                     tag = "e2e.fab.tools",
                 )
             }
