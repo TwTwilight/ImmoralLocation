@@ -20,7 +20,7 @@ $script:ReleaseMapping = 'app\build\outputs\mapping\release\mapping.txt'
 # Tightened after the arm64-only ABI policy landed and the 高德 `assets/cfg` pack became a release-time
 # exclusion (measured 6.24 MiB with `-PimmoralAmapAssets` default). The budget exists to catch a
 # regression, not to rubber-stamp growth.
-$script:MaxReleaseMb = 7.5
+$script:MaxReleaseMb = 6.5
 
 # Reads a zip entry out of an APK without unzipping it to disk.
 function Get-ApkEntryText {
@@ -130,3 +130,4 @@ function Invoke-ReleaseChecks {
         catch { Add-Result -Id '24-apk-size' -Name 'release APK size' -Status 'FAIL' -Detail "$_" }
     }
 }
+
