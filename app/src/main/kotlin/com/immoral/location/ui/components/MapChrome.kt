@@ -424,7 +424,8 @@ fun PeekStatusText(
         ),
         label = "peekDotAlpha",
     )
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+    // Tagged so a check can assert the running state without text matching (模拟中/未开始).
+    Row(modifier = modifier.testTag("e2e.peek.status"), verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
                 .size(8.dp)

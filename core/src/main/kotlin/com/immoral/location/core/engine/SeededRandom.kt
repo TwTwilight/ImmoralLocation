@@ -73,8 +73,9 @@ internal const val SALT_SATELLITES: Long = 0x5a7e_11a7_0001L
 /** Salt for NMEA synthesis. */
 internal const val SALT_NMEA: Long = 0x5a7e_ab3e_0002L
 
-/** Salt for cellular synthesis. */
-internal const val SALT_CELLS: Long = 0x5a7e_ce11_0003L
+// Cellular synthesis no longer uses this single-position stream: cell identifiers are derived from
+// nested position grids (operator region / tracking area / eNodeB) so that they behave like a radio
+// network — see `CellSynth`. Its salts live next to that code.
 
 /** Salt for Wi-Fi synthesis. */
 internal const val SALT_WIFI: Long = 0x5a7e_c0de_0004L
