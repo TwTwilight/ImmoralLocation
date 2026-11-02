@@ -1392,3 +1392,32 @@ PASS  harness-completeness   12 expected check(s), every one produced a row (SKI
 - `11b`：`favourites sheet never became fully interactive (Close sheet + row); using the last dump` →
   随后按那份 dump 计算的坐标点空（`commands before=13 after=13`）。这是"面板未就绪仍继续点"的老问题，
   正确做法是**重新打开面板重试**而不是"用最后一份 dump"。
+## 23. `3-joystick` 的 0.42：外部推送的配置被 App 自己的持久化配置覆盖（2026-11-02 22:0x）
+
+Lead 报 `report-r25.json`：`3-joystick` 得到 `effective 1.4 m/s (RUN 3.3), ratio 0.42`，而同一次运行的
+`4-speed-levels` 里 RUN 测得精确的 3.30。`1.4 / 3.3 = 0.42` **正好等于 1**，说明引擎跑的是 WALK 这一行，
+不是速度抖动或部分生效 —— 是「配置没落到引擎」而不是能力问题。
+
+原因是我们今晚自己引入的顺序：`Measure-JoystickDrift` 为了保住广播通道会 `Force-Stop` 后
+**重新拉起 App**，而 App 在启动/恢复时会**推送自己持久化的配置（speed=WALK，正是矩阵跑完留下的状态）**；
+如果这次推送落在我们 `SetConfig` 之后，引擎就合法地跑 WALK。检查 4 每档都重发配置且窗口短，所以几乎不受影响。
+
+修法（"先确认前置条件，再测"）：
+1. 在测量窗口前做 pre-flight：短暂推一次摇杆（~1.2 s），读引擎 tick 中**运动 tick 的平均 speed**；
+2. 与目标速度偏差超过 20% → 重发一次配置（最多一次），并在 detail 记
+   `configReasserted=true`（`Get-DriftResult` 的兜底对象也带这个字段，避免又一次 "property not found"）；
+3. pre-flight 会消耗一部分运动，结束后重设 tickBase 并重新 `SetPosition`，保证被测量的窗口干净。
+
+**产品观察（记录，不在 App 侧修）**：需要 re-assert 就说明 **App 自己的持久化配置可以在同一秒内覆盖
+外部推送的配置**。对 App 而言它才是配置的所有者，可能无害；但对"启动后立刻改速度"的用户这是真实竞态。
+先在报告里可见几次运行，再决定 App 是否应该对自己的推送做 debounce。
+
+实测（`-SkipUi` 全量，build `20:54:39`）：
+```
+PASS 3-joystick         effective 3.3 m/s (RUN 3.3), ratio 1, ticks 16/50 moving
+PASS 4-speed-levels     all 6 levels within +-25%
+SKIP 10-independent     cannot judge: the outside read (…) sits on POINT_A …
+PASS harness-completeness  14 expected check(s), every one produced a row
+15 passed, 0 failed, 1 skipped
+```
+`10-independent` 的污染分支这次**真的被触发**了（此前只是"已实现未验证"），说明它按设计工作。

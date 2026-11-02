@@ -230,7 +230,7 @@ function Get-DriftResult {
     return [pscustomobject]@{
         Speed = "$($Params['Speed'])"; Samples = 0; RawSamples = 0; StaleSamples = 0
         Meters = 0.0; Seconds = 0.0; Rate = 0.0; Bearing = 0.0; Source = $fallbackSource
-        MedianSpeed = 0.0; TickMoving = 0; TickTotal = 0
+        MedianSpeed = 0.0; TickMoving = 0; TickTotal = 0; ConfigReasserted = $false
         DumpsysMeters = 0.0; DumpsysRate = 0.0; DumpsysVel = $null
         ExpectedBearing = 0.0; Expected = $null; Track = $null
     }
@@ -509,6 +509,44 @@ function Measure-JoystickDrift {
     $tickBase = 0
     $lastTick = @(Get-EngineTicks -TailLines 20 | Select-Object -Last 1)
     if ($lastTick.Count -gt 0) { $tickBase = [int]$lastTick[0].Applied }
+    # CONFIG-APPLIED PRE-FLIGHT (2026-11-02). This helper relaunches our app to keep the broadcast
+    # channel alive, and the app re-publishes ITS persisted config (speed=WALK) on start/resume — so our
+    # config can be overwritten within the same second. Measured: `effective 1.4 m/s (RUN 3.3), ratio
+    # 0.42`, exactly the WALK row, while `4-speed-levels` hit RUN at 3.30 in the same run. Push the
+    # vector briefly, read the engine's own tick speed, and re-assert the config once if the engine is
+    # running a different speed. Recorded in the row: needing this is a product observation (the app can
+    # override an externally pushed config right after launch), not just a harness detail.
+    $script:LastConfigReasserted = $false
+    $targetMps = switch ($Speed) {
+        'WALK' { 1.4 } 'RUN' { 3.3 } 'BIKE' { 5.5 } 'DRIVE' { 13.9 } 'PLANE' { 230.0 }
+        'CUSTOM' { $CustomMps } default { 0.0 }
+    }
+    if ($targetMps -gt 0.1) {
+        $preSpeed = 0.0
+        for ($attempt = 0; $attempt -lt 2; $attempt++) {
+            $preBase = 0
+            $lt = @(Get-EngineTicks -TailLines 20 | Select-Object -Last 1)
+            if ($lt.Count -gt 0) { $preBase = [int]$lt[0].Applied }
+            $preDeadline = (Get-Date).AddSeconds(1.2)
+            while ((Get-Date) -lt $preDeadline) {
+                Send-SetJoystick -X $X -Y $Y -Channel $Channel | Out-Null
+                Start-Sleep -Milliseconds 150
+            }
+            Send-ReleaseJoystick -Channel $Channel | Out-Null
+            Start-Sleep -Milliseconds 400
+            $preTicks = @(Get-EngineTicks -TailLines 60 | Where-Object { $_.Applied -gt $preBase -and $_.Speed -gt 0.05 })
+            if ($preTicks.Count -gt 0) { $preSpeed = ($preTicks | Measure-Object -Property Speed -Average).Average }
+            if ($preTicks.Count -gt 0 -and [Math]::Abs($preSpeed - $targetMps) -le (0.2 * $targetMps)) { break }
+            Set-EngineConfig $override | Out-Null
+            $script:LastConfigReasserted = $true
+            Write-Warn2 "     engine ran $([Math]::Round($preSpeed,2)) m/s but $Speed needs $targetMps — config re-asserted (the app republished its own config)"
+            Start-Sleep -Milliseconds 800
+        }
+        # the pre-flight consumed part of the engine's movement; rebaseline so the measured window is clean
+        $lastTick = @(Get-EngineTicks -TailLines 20 | Select-Object -Last 1)
+        if ($lastTick.Count -gt 0) { $tickBase = [int]$lastTick[0].Applied }
+        Invoke-SetPositionAndVerify -Lat $POINT_A.lat -Lon $POINT_A.lon | Out-Null
+    }
     # The UI streams SetJoystick continuously while the user holds the stick; a single command only
     # survives one engine tick, so hold the vector by re-sending it for the whole window.
     $deadline = (Get-Date).AddSeconds($Seconds)
@@ -608,6 +646,10 @@ function Measure-JoystickDrift {
         MedianSpeed      = if ($tickStats) { $tickStats.MedianSpeed } else { 0.0 }
         TickMoving       = if ($tickStats) { $tickStats.MovingTicks } else { 0 }
         TickTotal        = if ($tickStats) { $tickStats.Ticks } else { 0 }
+        # True when the app republished its own persisted config after launch and we had to re-assert.
+        # Kept in the row on purpose: it is a product observation (an external config push can be
+        # overridden within the same second), not merely a harness detail.
+        ConfigReasserted = [bool]$script:LastConfigReasserted
         Track            = $track
     }
 }
@@ -848,7 +890,7 @@ if (Test-Selected '3') {
     $ok = $usableSource -and ($ratio -ge 0.8 -and $ratio -le 1.2) -and $bearingOk
     $detail3 = if ($m.Source -eq 'channel-down') { 'control channel unavailable: the app/prefs could not be reached, so SetJoystick never landed — this is a harness/reset problem, not a speed measurement' }
     elseif ($m.Source -eq 'none') { 'measurement produced no usable samples (helper returned no result — see the log above)' }
-    else { "effective $eff m/s (RUN 3.3), moved $($m.Meters) m in $($m.Seconds)s, bearing $($m.Bearing)deg (expected ~$($m.ExpectedBearing)), ratio $([Math]::Round($ratio,2)), oracle=$($m.Source), samples $($m.Samples)/$($m.RawSamples) stale$($m.StaleSamples), ticks $($m.TickMoving)/$($m.TickTotal) moving" }
+    else { "effective $eff m/s (RUN 3.3), moved $($m.Meters) m in $($m.Seconds)s, bearing $($m.Bearing)deg (expected ~$($m.ExpectedBearing)), ratio $([Math]::Round($ratio,2)), oracle=$($m.Source), samples $($m.Samples)/$($m.RawSamples) stale$($m.StaleSamples), ticks $($m.TickMoving)/$($m.TickTotal) moving$(if ($m.ConfigReasserted) { ' [config re-asserted: the app republished its OWN persisted config after launch and overrode the external push within the same second — product observation, not a harness quirk]' } else { '' })" }
     Test-Result -Id '3-joystick' -Name 'joystick drift matches speed x time along reference bearing' -Condition $ok `
         -Detail $detail3 `
         -Metrics @{ effective = $eff; meters = $m.Meters; seconds = $m.Seconds; rate = $m.Rate; medianSpeed = $m.MedianSpeed; bearing = $m.Bearing; expectedBearing = $m.ExpectedBearing; ratio = [Math]::Round($ratio, 2); samples = $m.Samples; stale = $m.StaleSamples; source = $m.Source; tickMoving = $m.TickMoving; tickTotal = $m.TickTotal }
