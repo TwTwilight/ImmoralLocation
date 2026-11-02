@@ -89,26 +89,59 @@ object TelephonyHooks {
         for (m in methods) {
             val ok = Refl.hook(m, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
+                    val methodName = (param.method as? java.lang.reflect.Method)?.name ?: m.name
                     try {
+                        val caller = Scope.callingUid()
                         // Skip calls that originate inside this very process (platform internals):
                         // only answer cross-process requests from apps.
-                        if (Scope.callingUid() == android.os.Process.myUid()) return
-                        if (!Scope.isCallerSpoofed()) return
-                        val source = cellsFromEngine() ?: return
+                        if (caller == android.os.Process.myUid()) {
+                            Log.rate("cells.skip.self", 60_000L, "cells hook entered #$methodName but the caller is this process (uid=$caller)")
+                            return
+                        }
+                        if (!Scope.isCallerSpoofed()) {
+                            Log.rate("cells.skip.scope", 15_000L, "cells hook entered #$methodName but uid=$caller is outside the policy")
+                            return
+                        }
+                        val source = cellsFromEngine(caller, methodName) ?: run {
+                            Log.rate(
+                                "cells.skip.nostate",
+                                15_000L,
+                                "cells hook entered #$methodName uid=$caller but the state channel has no set " +
+                                    "(row absent or simulation off) — " + lastReadNote,
+                            )
+                            return
+                        }
                         val (cells, simulated) = source
-                        if (!simulated || cells.isEmpty()) return
+                        if (!simulated || cells.isEmpty()) {
+                            Log.rate(
+                                "cells.skip.disabled",
+                                15_000L,
+                                "cells hook entered #$methodName uid=$caller but simulation is off (simulated=$simulated count=${cells.size})",
+                            )
+                            return
+                        }
                         val infos = Fakes.cellInfos(cells)
-                        if (infos.isEmpty()) return
+                        if (infos.isEmpty()) {
+                            Log.rate(
+                                "cells.skip.build",
+                                15_000L,
+                                "cells hook entered #$methodName uid=$caller but no CellInfo could be built for ${cells.size} cells",
+                            )
+                            return
+                        }
                         val value = asReturnShape(param, infos)
-                        if (value === UNBUILDABLE) return
+                        if (value === UNBUILDABLE) {
+                            Log.rate("cells.skip.shape", 60_000L, "cells hook entered #$methodName but the return shape is unbuildable")
+                            return
+                        }
                         param.result = value
                         Log.rate(
                             "cell.replaced",
                             20_000L,
-                            "$className#${param.method?.name} -> ${infos.size} synthetic cells (${m.returnType.simpleName})",
+                            "$className#$methodName -> ${infos.size} synthetic cells (${m.returnType.simpleName}) serving=" + servingLabel(cells),
                         )
                     } catch (t: Throwable) {
-                        Log.rate("cell.replace", 15_000L, "cell replace failed: ${t.javaClass.simpleName}")
+                        Log.rate("cell.replace", 15_000L, "cell replace failed on #$methodName: ${t.javaClass.simpleName}")
                     }
                 }
             }, className.substringAfterLast('.') + "#" + m.name)
@@ -131,73 +164,172 @@ object TelephonyHooks {
      * reads it. The engine-present branch is kept because `system_server` also hosts cell getters on
      * some builds.
      */
-    private fun cellsFromEngine(): Pair<List<SimulatedCell>, Boolean>? {
+    private fun cellsFromEngine(callerUid: Int, method: String): Pair<List<SimulatedCell>, Boolean>? {
         val snap = EngineRuntime.activeSnap()
         if (snap != null) return snap.cells to snap.config.cellSimulation
         // Different process: the engine cannot be reached, so read the state channel that
         // `EngineRuntime.publishCells` writes into Settings.Global.
-        return cellsFromSettings()
+        return cellsFromSettings(callerUid, method)
     }
 
-    private var lastCellsReadAt = 0L
-    private var cachedCells: Pair<List<SimulatedCell>, Boolean>? = null
+    /** Last raw payload seen from the provider (`null` = row absent), and its parsed form. */
+    @Volatile
+    private var lastRaw: String? = null
 
-    /** Parses `immoral_cells` (`"<0|1>|type,mcc,mnc,lac,cid,pci,level,dbm,reg;…"`), cached 500 ms. */
-    private fun cellsFromSettings(): Pair<List<SimulatedCell>, Boolean>? {
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastCellsReadAt < 500L) return cachedCells
-        lastCellsReadAt = now
-        val raw = readCellsSetting()
-        val parsed = if (raw.isNullOrEmpty()) {
-            // No row at all means "cell simulation is off" (the engine deletes the key instead of
-            // writing `0|`, so nothing is left behind in a globally readable setting).
-            null
+    @Volatile
+    private var lastParsed: Pair<List<SimulatedCell>, Boolean>? = null
+
+    /** One line of state for the `cells.skip.nostate` log: what the last read actually saw. */
+    @Volatile
+    private var lastReadNote: String = "no read yet"
+
+    private val hookCalls = java.util.concurrent.atomic.AtomicLong()
+
+    /**
+     * Reads and parses the cells state channel for **every** hooked call.
+     *
+     * Deliberately **no TTL cache**. A 500 ms (or longer) cache here is indistinguishable, from the
+     * app's side, from "the engine does not follow the position" — the exact defect this channel
+     * exists to fix — and a cell read is not a hot path like location delivery (a few calls per
+     * second at most). What *is* cached is only the last successful parse, used when the provider
+     * read fails: falling back to the last synthetic set keeps the spoof closed instead of leaking
+     * the real cells.
+     */
+    private fun cellsFromSettings(callerUid: Int, method: String): Pair<List<SimulatedCell>, Boolean>? {
+        val calls = hookCalls.incrementAndGet()
+        val via = "read #$calls via $method caller=" + callerLabel(callerUid)
+        val read = readCellsSetting()
+        if (read.failed) {
+            Log.rate(
+                "cells.read.failed",
+                15_000L,
+                "cells channel: provider read FAILED ($via: ${read.error}) — keeping the last known set " +
+                    "instead of leaking real cells",
+            )
+            lastReadNote = "$via failed: ${read.error}"
+            return lastParsed
+        }
+        val raw = read.raw
+        lastReadNote = "$via -> " + describeRaw(raw)
+        if (raw != lastRaw) {
+            lastRaw = raw
+            lastParsed = parseCells(raw)
+            // One line per *change*: proves the phone process sees each new set as it is published,
+            // and when. `first=` is the serving cell, i.e. what an app will report.
+            Log.rate(
+                "cells.probe.changed",
+                1_000L,
+                "cells.probe CHANGED $via " + describeRaw(raw) +
+                    " first=" + servingLabel(lastParsed?.first) +
+                    " count=" + (lastParsed?.first?.size ?: 0),
+            )
+            // Cross-check the *other* read path on the same call: if the per-name provider query and
+            // `Settings.Global.getString` (the cross-process NameValueCache) disagree, the cache is
+            // the stale half and this line says so explicitly.
+            crossCheckCachedAccessor(raw)
         } else {
-            val parts = raw.split('|', limit = 2)
-            val enabled = parts[0] == "1"
-            val cells = if (!enabled || parts.size < 2 || parts[1].isBlank()) {
-                emptyList()
-            } else {
-                parts[1].split(';').mapNotNull { row ->
-                    val f = row.split(',')
-                    if (f.size < 9) {
-                        null
-                    } else {
-                        SimulatedCell(
-                            type = f[0],
-                            mcc = f[1],
-                            mnc = f[2],
-                            lac = f[3].toIntOrNull() ?: 0,
-                            cid = f[4].toLongOrNull() ?: 0L,
-                            pci = f[5].toIntOrNull() ?: 0,
-                            level = f[6].toIntOrNull() ?: 3,
-                            dbm = f[7].toIntOrNull() ?: -75,
-                            registered = f[8] == "1",
-                        )
-                    }
+            Log.rate(
+                "cells.probe.steady",
+                10_000L,
+                "cells.probe steady $via " + describeRaw(raw) + " first=" + servingLabel(lastParsed?.first) +
+                    " count=" + (lastParsed?.first?.size ?: 0) + " (unchanged since the last change)",
+            )
+        }
+        return lastParsed
+    }
+
+    /** `uid:1000:android` — enough to tell the verifier apart from platform callers in the probe. */
+    private fun callerLabel(uid: Int): String = "uid=$uid:" + (try {
+        Scope.packageForUid(uid) ?: "?"
+    } catch (_: Throwable) {
+        "?"
+    })
+
+    /**
+     * Parses `"<0|1>|type,mcc,mnc,lac,cid,pci,level,dbm,reg;…"`; `null` when there is no row (the
+     * engine deletes the key when simulation is off, so nothing is left behind in a globally readable
+     * setting).
+     */
+    private fun parseCells(raw: String?): Pair<List<SimulatedCell>, Boolean>? {
+        if (raw.isNullOrEmpty()) return null
+        val parts = raw.split('|', limit = 2)
+        val enabled = parts[0] == "1"
+        val cells = if (!enabled || parts.size < 2 || parts[1].isBlank()) {
+            emptyList()
+        } else {
+            parts[1].split(';').mapNotNull { row ->
+                val f = row.split(',')
+                if (f.size < 9) {
+                    null
+                } else {
+                    SimulatedCell(
+                        type = f[0],
+                        mcc = f[1],
+                        mnc = f[2],
+                        lac = f[3].toIntOrNull() ?: 0,
+                        cid = f[4].toLongOrNull() ?: 0L,
+                        pci = f[5].toIntOrNull() ?: 0,
+                        level = f[6].toIntOrNull() ?: 3,
+                        dbm = f[7].toIntOrNull() ?: -75,
+                        registered = f[8] == "1",
+                    )
                 }
             }
-            cells to enabled
         }
-        cachedCells = parsed
-        return parsed
+        return cells to enabled
+    }
+
+    /** `raw=hash=1a2b3c4d len=97` — short, stable and enough to tell two sets apart in a log line. */
+    private fun describeRaw(raw: String?): String =
+        if (raw == null) "raw=absent" else "raw=hash=" + Integer.toHexString(raw.hashCode()) + " len=" + raw.length
+
+    /** `LTE/460/11/lac=50274/cid=129538244/pci=436` for the serving cell, or `none`. */
+    private fun servingLabel(cells: List<SimulatedCell>?): String {
+        val serving = cells?.firstOrNull { it.registered } ?: return "none"
+        return serving.type + "/" + serving.mcc + "/" + serving.mnc + "/lac=" + serving.lac +
+            "/cid=" + serving.cid + "/pci=" + serving.pci
     }
 
     /**
-     * Reads the cells state channel.
+     * Compares the per-name provider read with the cached `Settings.Global` accessor.
+     *
+     * The engine writes the row in `system_server`; if this process' `NameValueCache` is not
+     * invalidated on that write, `Settings.Global.getString` keeps answering the value it read first
+     * while a direct query already returns the new one. Only run on a change (cheap) and only for
+     * diagnosis — the value actually used comes from [readCellsSetting], which prefers the query.
+     */
+    private fun crossCheckCachedAccessor(expected: String?) {
+        val context = cachedContext ?: return
+        val viaCache = try {
+            android.provider.Settings.Global.getString(context.contentResolver, "immoral_cells")
+        } catch (t: Throwable) {
+            Log.once("cells.probe.crosscheck.err", "cells.probe cross-check failed: " + t.javaClass.simpleName)
+            return
+        }
+        val same = viaCache == expected
+        Log.rate(
+            if (same) "cells.probe.crosscheck.agree" else "cells.probe.crosscheck.diverge",
+            5_000L,
+            "cells.probe cross-check: providerQuery=" + describeRaw(expected) +
+                " Settings.getString=" + describeRaw(viaCache) +
+                (if (same) " (agree)" else " (DIVERGE — the cached accessor is the stale half)"),
+        )
+    }
+
+    /** Outcome of one state-channel read: the raw payload (null = row absent) or a failure. */
+    private class CellsReadResult(val raw: String?, val failed: Boolean, val error: String = "")
+
+    /**
+     * Reads the cells state channel with a **direct provider query** on the per-name URI.
      *
      * The value is written by `EngineRuntime.publishCells` in `system_server` and read here in
-     * `com.android.phone`, so two caches sit between the two processes. The one that matters is
-     * `Settings.Global.getString`, which goes through the platform's cross-process
-     * `NameValueCache`: when that cache is not invalidated (a vendor build that does not bump
-     * `sys.settings_global_version`, a write that landed without a generation bump) this process
-     * keeps serving the value it read first, forever — an app then sees one frozen cell set while
-     * the engine publishes new ones. So the primary read is a **direct provider query** on the
-     * per-name URI, which has no cache in front of it, and the cached `Settings` accessor is only
-     * the fallback.
+     * `com.android.phone`. The per-name query goes straight to `SettingsProvider`; the cached
+     * `Settings.Global.getString` accessor (which served a frozen value while the engine kept
+     * writing) is only the fallback, because the harness assertion must track the engine.
      */
-    private fun readCellsSetting(): String? {
-        val context = settingsContext() ?: return null
+    private fun readCellsSetting(): CellsReadResult {
+        val context = settingsContext()
+            ?: return CellsReadResult(null, true, "no Context in this process")
         val uri = android.provider.Settings.Global.getUriFor("immoral_cells")
         try {
             context.contentResolver.query(
@@ -208,22 +340,24 @@ object TelephonyHooks {
                 null,
             )?.use { cursor ->
                 if (cursor.moveToFirst()) {
-                    val value = cursor.getString(0)
-                    Log.rate("cells.read.direct", 60_000L, "cells channel read via a direct provider query")
-                    return value
+                    return CellsReadResult(cursor.getString(0), false)
                 }
                 // Row deleted: simulation is off.
-                Log.rate("cells.read.absent", 60_000L, "cells channel: no " + "immoral_cells" + " row (simulation off)")
-                return null
+                return CellsReadResult(null, false)
             }
+            // A null cursor is not an expected answer for a settings query; treat it as a failure so
+            // the caller can fall back to the cached accessor instead of silently reporting "off".
+            Log.rate("cells.read.nullcursor", 60_000L, "cells channel: provider query returned a null cursor")
         } catch (t: Throwable) {
-            Log.once("cells.read.direct.err", "direct cells read failed: " + t.javaClass.simpleName)
+            Log.rate("cells.read.direct.err", 30_000L, "direct cells read failed: " + t.javaClass.simpleName + ": " + t.message)
         }
         return try {
-            android.provider.Settings.Global.getString(context.contentResolver, "immoral_cells")
+            CellsReadResult(
+                android.provider.Settings.Global.getString(context.contentResolver, "immoral_cells"),
+                false,
+            )
         } catch (t: Throwable) {
-            Log.once("cells.read.err", "cannot read the cells setting: " + t.javaClass.simpleName)
-            null
+            CellsReadResult(null, true, "fallback read " + t.javaClass.simpleName + ": " + t.message)
         }
     }
 
