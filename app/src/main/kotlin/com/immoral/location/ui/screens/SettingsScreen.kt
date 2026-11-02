@@ -97,7 +97,6 @@ fun SettingsScreen(
                 ),
                 value = config.updateIntervalMs.toFloat(),
                 valueRange = SimulationConfig.MIN_INTERVAL_MS.toFloat()..SimulationConfig.MAX_INTERVAL_MS.toFloat(),
-                steps = 98,
                 onValueChange = { raw ->
                     val snapped = (raw / 100f).roundToInt() * 100L
                     onUpdate { it.copy(updateIntervalMs = snapped) }
@@ -147,7 +146,6 @@ fun SettingsScreen(
                     valueText = stringResource(R.string.settings_step_cadence_value, config.stepCadenceBpm),
                     value = config.stepCadenceBpm.toFloat(),
                     valueRange = SimulationConfig.MIN_CADENCE_BPM.toFloat()..SimulationConfig.MAX_CADENCE_BPM.toFloat(),
-                    steps = 17,
                     onValueChange = { raw ->
                         onUpdate { it.copy(stepCadenceBpm = raw.roundToInt()) }
                     },
