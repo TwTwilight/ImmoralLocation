@@ -300,22 +300,19 @@ object LocationHooks {
      * This is what makes spoofing work without a real GPS fix.
      */
     private fun inject(snap: EngineRuntime.Snap) {
-        if (!snap.running) return
+        // Independent mode must still restore the provider cache when the engine is STOPPED -
+        // otherwise a fix injected by an earlier normal-mode run keeps being served to
+        // non-whitelisted readers (measured 2026-11-02: the outside read in a combined run
+        // returned a previous check's simulated point, 475 m from the current one).
+        if (!snap.running && !snap.config.independentMode) return
         if (reentrant.get() == true) return
         reentrant.set(true)
         try {
-            // IN INDEPENDENT MODE WE NEVER PUBLISH TO THE PROVIDER MANAGER.
-            //
-            // Publishing makes the fabricated fix the provider last-known location, and the framework
-            // replays that stored value to every new registration through paths we cannot intercept -
-            // that is what leaked the fake fix to the non-whitelisted app. In independent mode the fix
-            // is delivered directly, and only, to the whitelisted registrations.
             if (snap.config.independentMode) {
-                injectPerWhitelistedRegistration(snap)
-                // Keep the provider honest: publish the REAL last fix (when we have one) so our
-                // fabricated value cannot survive as the provider last-known location and get
-                // replayed to every new registration.
+                // Restore FIRST, even when the engine is stopped, so the platform cache cannot
+                // keep replaying our fabricated value to registrations we do not deliver to.
                 publishRealToManager(snap)
+                if (snap.running) injectPerWhitelistedRegistration(snap)
                 return
             }
             val method = injectMethod

@@ -204,11 +204,12 @@ function Get-DriftResult {
 function Get-EngineTicks {
     param([int]$TailLines = 1500)
     $list = @()
-    try {
-        $r = Invoke-AdbRoot "grep -h 'tick dt' /data/adb/lspd/log/verbose_*.log | tail -$TailLines" -AllowFailure
-        foreach ($line in $r.Output) {
-            if ($line -match 'tick dt=(\d+)ms.*appliedTicks=(\d+)\s+speed=([\d.]+)m/s\s+moved=([\d.]+)m\s+mode=(\w+)(?:\s+running=(\w+))?') {
-                $list += [pscustomobject]@{
+    $parse = {
+        param($lines)
+        $out = @()
+        foreach ($line in $lines) {
+            if ("$line" -match 'tick dt=(\d+)ms.*appliedTicks=(\d+)\s+speed=([\d.]+)m/s\s+moved=([\d.]+)m\s+mode=(\w+)(?:\s+running=(\w+))?') {
+                $out += [pscustomobject]@{
                     DtMs    = [int]$matches[1]
                     Applied = [int]$matches[2]
                     Speed   = [double]$matches[3]
@@ -217,6 +218,24 @@ function Get-EngineTicks {
                     Running = ($matches[6] -eq 'true')
                 }
             }
+        }
+        return $out
+    }
+    try {
+        $r = Invoke-AdbRoot "grep -h 'tick dt' /data/adb/lspd/log/verbose_*.log | tail -$TailLines" -AllowFailure
+        $list = @(& $parse $r.Output)
+    }
+    catch { }
+    # Union with logcat: the LSPosed file log can lag behind (measured 2026-11-02: a full matrix read
+    # `tkAdvance=null` because the file's newest tick was the baseline, while logcat had the new ones).
+    try {
+        $lc = @(adb logcat -d -s LSPosedFramework:I 2>&1 | Select-String 'tick dt=')
+        $fromLogcat = @(& $parse $lc)
+        if ($fromLogcat.Count -gt 0) {
+            $seen = @{}
+            foreach ($t in $list) { $seen[$t.Applied] = $t }
+            foreach ($t in $fromLogcat) { if (-not $seen.ContainsKey($t.Applied)) { $list += $t } }
+            $list = @($list | Sort-Object Applied)
         }
     }
     catch { }
@@ -736,12 +755,31 @@ if (Test-Selected '5') {
     # log showed moving at 6.0 m/s in ROUTE mode - a sampling artefact, not a product failure.
     $tkAdvance = Measure-EngineTicks -AfterApplied $tickAdvanceBase
     $samples = @(Get-LiveLocationSamples -AfterTs $mark)
-    $track = Measure-Track -Samples $samples
+    # The delivered stream can start with the platform's REAL fix and end with the simulated one; the
+    # distance between those two worlds is not "advance" and must never satisfy the assertion (measured
+    # 2026-11-02: `advanced 163195.27m in 11.99s (gps)` at a configured 6 m/s PASSED). Keep only samples
+    # that sit near the route's start, and cap the implied rate at 3x the configured speed.
+    $maxPlausibleMps = 20.0
+    $nearSamples = @($samples | Where-Object {
+            $null -ne $_ -and ([Math]::Abs([double]$_.lat) -le 90) -and
+            ((Get-GeoDistanceMeters -Lat1 $POINT_A.lat -Lon1 $POINT_A.lon -Lat2 $_.lat -Lon2 $_.lon) -le 3000)
+        })
+    $samplesRejected = $samples.Count - $nearSamples.Count
+    $track = Measure-Track -Samples $nearSamples
     $fixR1 = Get-DumpsysFix
     $dTrack = Measure-DumpsysTrack -Start $fixR0 -End $fixR1
-    if ($dTrack.ok -and $dTrack.meters -gt $track.meters) { $track = $dTrack }
-    $advancedMeters = [Math]::Max($(if ($tkAdvance) { $tkAdvance.Meters } else { 0.0 }), $track.meters)
-    $advanced = $advancedMeters -gt 5
+    if ($dTrack.ok -and $dTrack.meters -gt $track.meters -and $dTrack.seconds -gt 0.5 -and ($dTrack.meters / $dTrack.seconds) -le $maxPlausibleMps) {
+        $track = $dTrack
+    }
+    $streamRate = if ($track.seconds -gt 0.5) { $track.meters / $track.seconds } else { 0 }
+    # Far-away samples (the platform's real fix) are DROPPED rather than disqualifying the row: the
+    # artefact this guards against is a large distance between two worlds, and removing those samples
+    # removes the artefact. What must still hold is that the retained series is coherent and long enough.
+    $streamOk = ($track.meters -ge 5) -and ($streamRate -le $maxPlausibleMps) -and
+        ($nearSamples.Count -ge 2) -and ($track.seconds -ge 3.0)
+    $tickOk = [bool]($tkAdvance -and ($tkAdvance.Meters -ge 5) -and ($tkAdvance.Rate -le $maxPlausibleMps))
+    $advancedMeters = [Math]::Max($(if ($tkAdvance) { $tkAdvance.Meters } else { 0.0 }), $(if ($streamOk) { $track.meters } else { 0.0 }))
+    $advanced = [bool]($tickOk -or $streamOk)
     # pause: position must stop moving
     Send-PauseRoute -Channel $Channel | Out-Null
     Start-Sleep -Seconds 1
@@ -763,11 +801,15 @@ if (Test-Selected '5') {
     $fixQ1 = Get-DumpsysFix
     $resumeTrack = Measure-DumpsysTrack -Start $fixQ0 -End $fixQ1
     $resumedMeters = [Math]::Max($(if ($tkResume) { $tkResume.Meters } else { 0.0 }), $resumeTrack.meters)
-    $ok = $advanced -and ($pausedMeters -lt 3.0) -and ($resumedMeters -gt 3.0)
+    # 5 s at 6 m/s is ~30 m; anything past 150 m is the same two-worlds artefact, not a resume.
+    $resumeOk = ($resumedMeters -gt 3.0) -and ($resumedMeters -le 150.0)
+    $ok = $advanced -and ($pausedMeters -lt 3.0) -and $resumeOk
     Send-StopRoute -Channel $Channel | Out-Null
+    $advanceDetail = if ($advanced) { "advanced $advancedMeters m (oracle=$(if ($tickOk) { 'engine-tick' } else { 'verifier' }))" }
+    else { "ADVANCE NOT PROVEN — tkAdvance=$(if ($tkAdvance) { "$($tkAdvance.Meters)m@$($tkAdvance.Rate)m/s" } else { 'null' }); verifier $($track.meters)m in $($track.seconds)s = $([Math]::Round($streamRate,1))m/s, droppedFarSamples=$samplesRejected (ceiling ${maxPlausibleMps}m/s, samples within 3km of the start)" }
     Test-Result -Id '5-route' -Name 'route advances, pause holds, resume continues' -Condition $ok `
-        -Detail "advanced $($track.meters)m in $($track.seconds)s ($(if ($track.PSObject.Properties['provider']) { $track.provider } else { 'verifier' })); tick oracle tkAdvance=$(if ($tkAdvance) { "$($tkAdvance.Meters)m/$($tkAdvance.Ticks)t" } else { 'null' }) tkPause=$(if ($tkPause) { "$($tkPause.Meters)m" } else { 'null' }) tkResume=$(if ($tkResume) { "$($tkResume.Meters)m" } else { 'null' }); paused drift $($pausedTrack.meters)m; resumed $($resumeTrack.meters)m; tickBase=$tickAdvanceBase" `
-        -Metrics @{ advanceMeters = $track.meters; pausedMeters = $pausedTrack.meters; resumedMeters = $resumeTrack.meters; samples = $samples.Count }
+        -Detail "$advanceDetail; tkPause=$(if ($tkPause) { "$($tkPause.Meters)m" } else { 'null' }) tkResume=$(if ($tkResume) { "$($tkResume.Meters)m" } else { 'null' }); paused drift $($pausedTrack.meters)m; resumed $($resumeTrack.meters)m resumeOk=$resumeOk; verifier samples=$($samples.Count) droppedFar=$samplesRejected retained=$($nearSamples.Count) rate=$([Math]::Round($streamRate,1))m/s; tickBase=$tickAdvanceBase" `
+        -Metrics @{ advanceMeters = $advancedMeters; advanced = $advanced; tickOk = $tickOk; streamOk = $streamOk; streamRate = [Math]::Round($streamRate, 1); samples = $samples.Count; samplesRejected = $samplesRejected; pausedMeters = $pausedTrack.meters; resumedMeters = $resumeTrack.meters; resumeOk = $resumeOk }
 }
 
 # ------------------------------------------------------------------------------------------------
