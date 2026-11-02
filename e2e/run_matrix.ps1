@@ -1475,6 +1475,43 @@ if (Test-Selected '10') {
 # ------------------------------------------------------------------------------------------------
 # 11. favourites / quick return (收藏 / 快速返回) — UI level
 # ------------------------------------------------------------------------------------------------
+# RULE (the one 11b already learned): any check that started another app must put OUR app back in
+# front and CONFIRM it before looking for a UI node. The verifier stream takes the foreground, and the
+# peek card (with `e2e.peek.favorites`) only exists while our activity is resumed — measured
+# 2026-11-02: `e2e.peek.favorites [826,1861][1025,1993]` present on a cold launch, absent from every
+# check that had just started the verifier, which reported it as "surface not reachable".
+function Enter-OwnForeground {
+    param([int]$Tries = 8)
+    $pkg = Get-ModulePackageName
+    for ($i = 0; $i -lt $Tries; $i++) {
+        try { Start-App -Package $pkg | Out-Null } catch { }
+        Start-Sleep -Milliseconds 800
+        $d = Get-UiDump
+        if (-not $d) { continue }
+        # The first-run joystick-onboarding dialog covers the shell and carries NO e2e.* ids, and after
+        # a data clear it can arrive a second later than the activity itself — which is exactly how the
+        # check's own pre-pass missed it (measured 2026-11-02 21:1x: top=MainActivity, 21 nodes, 0 e2e
+        # ids, every node belonging to the overlay). Dismiss inside the loop, before judging foreground.
+        $dismissed = $false
+        foreach ($t in @('稍后再说', '以后再说', '暂不开启')) {
+            $dn = @($d.SelectNodes('//node') | Where-Object { $_.GetAttribute('text') -eq $t })
+            if ($dn.Count -eq 0) { continue }
+            if ($dn[0].GetAttribute('bounds') -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
+                $dx = [int](([int]$matches[1] + [int]$matches[3]) / 2)
+                $dy = [int](([int]$matches[2] + [int]$matches[4]) / 2)
+                Invoke-AdbShell "input tap $dx $dy" -AllowFailure | Out-Null
+                Write-Step "     dismissed first-run overlay ('$t') while entering the foreground"
+                $dismissed = $true
+            }
+        }
+        if ($dismissed) { Start-Sleep -Milliseconds 900; continue }
+        if (@($d.SelectNodes('//node') | Where-Object { $_.GetAttribute('resource-id') -match '^e2e\.' }).Count -gt 0) {
+            return [pscustomobject]@{ Ok = $true; Top = (Get-TopActivity) }
+        }
+    }
+    return [pscustomobject]@{ Ok = $false; Top = (Get-TopActivity) }
+}
+
 if (Test-Selected '11') {
     Write-Step '11) favourites / quick return (收藏/快速返回) — UI assertions'
     # A fresh install shows the floating-joystick onboarding dialog on first launch, and it covers the
@@ -1499,6 +1536,13 @@ if (Test-Selected '11') {
     # Try the tag first; fall back to the old text navigation so an older build still works, and say
     # which path was used — "SKIP: not reachable" must never be ambiguous about why.
     function Open-FavoritesSurface {
+        # Bring our own activity back to the front first (see the rule above): the peek card does not
+        # exist in the tree while the verifier or any other window is resumed.
+        $front = Enter-OwnForeground
+        if (-not $front.Ok) {
+            Write-Warn2 "     our app did not come to the front before looking for the peek card (top=$(($front.Top)))"
+        }
+        $script:FavTop = $front.Top
         $favEl = $null
         try { $favEl = Get-UiElement -Name 'peekFavorites' -Optional } catch { }
         if ($favEl) {
@@ -1512,7 +1556,7 @@ if (Test-Selected '11') {
             Write-Warn2 'e2e.peek.favorites was on screen but did not open the favourites surface — falling back to text navigation'
         }
         else {
-            Write-Warn2 'e2e.peek.favorites not on screen — falling back to text navigation (older build?)'
+            Write-Warn2 "e2e.peek.favorites not on screen (top=$(($front.Top))) — falling back to text navigation"
         }
         return Open-UiScreen -Names @('收藏地点', '收藏', '收藏夹')
     }
@@ -1565,7 +1609,7 @@ if (Test-Selected '11') {
         )
         if (-not $onFavorites) {
             Add-Result -Id '11-favorites' -Name 'favourites quick return (UI)' -Status 'SKIP' `
-                -Detail "favourites surface not reachable (navigation path: $($nav.Path))"
+                -Detail "favourites surface not reachable (navigation path: $($nav.Path); topResumedActivity=$(if ($script:FavTop) { $script:FavTop } else { Get-TopActivity }))"
         }
         else {
             $countBefore = Get-FavoriteCount $before
@@ -1582,8 +1626,21 @@ if (Test-Selected '11') {
             $created = $false
             if (($countBefore -lt 1) -or ($coordNodes.Count -lt 1)) {
                 Write-Step '     no saved favourite yet — creating the precondition'
-                # `Get-UiElement -Name` takes a key from $script:UiIds, not a raw tag string.
-                foreach ($favName in @('tapSave', 'actionFav')) {
+                # The save controls live on the MAP (place chip `e2e.tap.save` / place card
+                # `e2e.action.favorite`), never inside the favourites sheet — which is why this seeding
+                # never worked: it looked for them while the sheet was open, found nothing, and left the
+                # list at zero (measured 2026-11-02 21:1x). Close the sheet, drop a chip on the map, save.
+                $sheetClose = @((Get-UiDump).SelectNodes('//node') | Where-Object { $_.GetAttribute('content-desc') -match 'Close sheet' }) | Select-Object -First 1
+                if ($sheetClose -and $sheetClose.GetAttribute('bounds') -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
+                    $cx0 = [int](([int]$matches[1] + [int]$matches[3]) / 2)
+                    $cy0 = [int](([int]$matches[2] + [int]$matches[4]) / 2)
+                    Invoke-AdbShell "input tap $cx0 $cy0" -AllowFailure | Out-Null
+                    Start-Sleep -Seconds 1
+                }
+                # a single tap on the map shows the place chip (does not move the simulated position)
+                Invoke-UiTapPoint -X 540 -Y 1250
+                Start-Sleep -Seconds 2
+                foreach ($favName in @('tapSave', 'actionFav', 'placeSave')) {
                     $el = Get-UiElement -Name $favName -Optional
                     if (-not $el) { continue }
                     Invoke-UiTapPoint -X $el.Cx -Y $el.Cy
@@ -1622,6 +1679,16 @@ if (Test-Selected '11') {
                     elseif ($countBefore -eq 0 -and -not $emptyHint) { "no favourites and no empty-state hint (precondition could not be created: $(if ($created) { 'action tapped but count still 0' } else { 'favourite action not on screen' }))" }
                     else { "共 N 个收藏: $countBefore, coordinate rows: $($coordNodes.Count)" }) `
                 -Metrics @{ count = $countBefore; rows = $coordNodes.Count; created = $created; emptyState = $emptyHint }
+
+            # A sub-check that silently VANISHES is worse than a SKIP: the table would read "11 green"
+            # while the quick-return assertion never executed (measured 2026-11-02 21:16 — `-Only
+            # 11,11b` produced exactly one row, because with zero favourites there is nothing to return
+            # to). Emit the row explicitly so absence is never mistaken for a pass.
+            if ($countBefore -eq 0) {
+                Add-Result -Id '11b-favorite-return' -Name 'quick return jumps back to the saved favourite' -Status 'SKIP' `
+                    -Detail "no saved favourite exists (empty-state path), so there is nothing to return to — 11b did not execute. Seed one favourite and re-run to exercise the quick return." `
+                    -Metrics @{ skipped = 'no-favourite'; count = $countBefore; created = $created }
+            }
 
             # 3) quick return: move the engine somewhere else, tap the favourite row, expect the
             #    engine (and therefore the verifier) back at the saved coordinates.
