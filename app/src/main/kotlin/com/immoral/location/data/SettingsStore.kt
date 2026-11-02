@@ -2,6 +2,7 @@ package com.immoral.location.data
 
 import android.content.Context
 import androidx.core.content.edit
+import com.immoral.location.core.geo.GeoMath
 import com.immoral.location.core.model.GeoPoint
 import com.immoral.location.core.model.SimulationConfig
 import com.immoral.location.core.route.RouteProfile
@@ -219,7 +220,15 @@ class SettingsStore(context: Context) {
         _routeDestination.value = if (stops.size >= 2) stops.last() else null
         _routeWaypoints.value = request.validWaypoints
         _routeProfile.value = request.profile
-        _routePath.value = clean
+        // Providers do not all return the polyline origin-first: measured 2026-11-02, starting the
+        // simulation on a 3 km planned route teleported to the destination and stayed there. Normalise
+        // the direction so the player always begins at the origin.
+        val origin = _routeOrigin.value
+        val ordered = if (
+            origin != null && clean.size >= 2 &&
+            GeoMath.distanceMeters(clean.first(), origin) > GeoMath.distanceMeters(clean.last(), origin)
+        ) clean.reversed() else clean
+        _routePath.value = ordered
         // Keep the editable waypoint list in sync so the legacy 路线 panel and GPX export still
         // describe the same route.
         _routePoints.value = stops
@@ -237,7 +246,15 @@ class SettingsStore(context: Context) {
     /** Geometry-only update (e.g. a re-plan that kept the same stops). */
     fun setRoutePath(points: List<GeoPoint>) {
         val clean = points.filter { it.isValidLatLon() }
-        _routePath.value = clean
+        // Providers do not all return the polyline origin-first: measured 2026-11-02, starting the
+        // simulation on a 3 km planned route teleported to the destination and stayed there. Normalise
+        // the direction so the player always begins at the origin.
+        val origin = _routeOrigin.value
+        val ordered = if (
+            origin != null && clean.size >= 2 &&
+            GeoMath.distanceMeters(clean.first(), origin) > GeoMath.distanceMeters(clean.last(), origin)
+        ) clean.reversed() else clean
+        _routePath.value = ordered
         writePoints(KEY_ROUTE_PATH, clean)
     }
 
@@ -545,3 +562,5 @@ class SettingsStore(context: Context) {
         const val RECENT_PLACE_LIMIT: Int = 8
     }
 }
+
+
