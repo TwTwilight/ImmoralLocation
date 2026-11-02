@@ -228,6 +228,7 @@ object EngineRuntime {
         try {
             when (command) {
                 is Command.Ping -> Unit
+                is Command.SetUiVisible -> StatusWriter.setUiVisible(command.visible)
                 is Command.GetState -> publish(buildSnap())
                 is Command.SetConfig -> {
                     engine.config = command.config

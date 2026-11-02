@@ -135,6 +135,9 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                 }
 
                 androidx.lifecycle.Lifecycle.Event.ON_START -> {
+                    // Tell the framework our UI is on screen so it may publish the engine status row
+                    // (that row is world-readable; it must not keep updating in the background).
+                    controller.setUiVisible(true)
                     // The floating pad is for *other* apps. While ours is in front the in-app FAB is
                     // the control; the bubble would otherwise float over our own sheet (it covered
                     // the switch that turns it off). Suspending keeps the user's preference intact.
@@ -144,6 +147,7 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                 }
 
                 androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
+                    controller.setUiVisible(false)
                     // Leaving the app: bring the floating pad back for wherever the user goes next.
                     SimulationService.command(app, SimulationService.ACTION_RESUME_OVERLAY)
                 }
