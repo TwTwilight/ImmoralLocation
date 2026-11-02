@@ -734,6 +734,16 @@ if (Test-Selected '5') {
     # isolation: park the UI app; the verifier stream is kept alive for the whole run
     Force-Stop (Get-ModulePackageName)
     Ensure-VerifierStream
+    # ORDERING/RESET (2026-11-02, full-matrix failure): with earlier checks having left the engine at or
+    # near the route's END (POINT_C), the first sample of the window was already 475 m along the route,
+    # producing "475.41m in 13.72s = 34.7m/s". Put the engine back on the route ORIGIN and prove delivery
+    # before the route starts — the route then begins where the assertion assumes it does.
+    Send-Stop -Channel $Channel | Out-Null
+    Start-Sleep -Milliseconds 400
+    Set-EngineConfig @{ mode = 'STATIC'; updateIntervalMs = 500 } | Out-Null
+    $originReady = Invoke-SetPositionAndVerify -Lat $POINT_A.lat -Lon $POINT_A.lon -TimeoutSec 15
+    if (-not $originReady.Ok) { Write-Warn2 '     the engine did not confirm the route origin before starting the route' }
+    Start-Sleep -Milliseconds 500
     Set-EngineConfig @{ mode = 'ROUTE'; updateIntervalMs = 500; routeSpeedMps = 6.0; routeRepeat = $false } | Out-Null
     $points = @(
         @{ lat = $POINT_A.lat; lon = $POINT_A.lon; alt = 50.0 },
@@ -772,11 +782,18 @@ if (Test-Selected '5') {
         $track = $dTrack
     }
     $streamRate = if ($track.seconds -gt 0.5) { $track.meters / $track.seconds } else { 0 }
+    # The window must START at the route origin: a first sample hundreds of metres in means the engine
+    # was still parked at the previous check's position when the route began.
+    $firstDist = -1.0
+    if ($nearSamples.Count -gt 0) {
+        $firstDist = Get-GeoDistanceMeters -Lat1 $POINT_A.lat -Lon1 $POINT_A.lon -Lat2 $nearSamples[0].lat -Lon2 $nearSamples[0].lon
+    }
+    $firstNearStart = ($firstDist -ge 0) -and ($firstDist -le 100)
     # Far-away samples (the platform's real fix) are DROPPED rather than disqualifying the row: the
     # artefact this guards against is a large distance between two worlds, and removing those samples
     # removes the artefact. What must still hold is that the retained series is coherent and long enough.
     $streamOk = ($track.meters -ge 5) -and ($streamRate -le $maxPlausibleMps) -and
-        ($nearSamples.Count -ge 2) -and ($track.seconds -ge 3.0)
+        ($nearSamples.Count -ge 2) -and ($track.seconds -ge 3.0) -and $firstNearStart
     $tickOk = [bool]($tkAdvance -and ($tkAdvance.Meters -ge 5) -and ($tkAdvance.Rate -le $maxPlausibleMps))
     $advancedMeters = [Math]::Max($(if ($tkAdvance) { $tkAdvance.Meters } else { 0.0 }), $(if ($streamOk) { $track.meters } else { 0.0 }))
     $advanced = [bool]($tickOk -or $streamOk)
@@ -806,7 +823,7 @@ if (Test-Selected '5') {
     $ok = $advanced -and ($pausedMeters -lt 3.0) -and $resumeOk
     Send-StopRoute -Channel $Channel | Out-Null
     $advanceDetail = if ($advanced) { "advanced $advancedMeters m (oracle=$(if ($tickOk) { 'engine-tick' } else { 'verifier' }))" }
-    else { "ADVANCE NOT PROVEN — tkAdvance=$(if ($tkAdvance) { "$($tkAdvance.Meters)m@$($tkAdvance.Rate)m/s" } else { 'null' }); verifier $($track.meters)m in $($track.seconds)s = $([Math]::Round($streamRate,1))m/s, droppedFarSamples=$samplesRejected (ceiling ${maxPlausibleMps}m/s, samples within 3km of the start)" }
+    else { "ADVANCE NOT PROVEN — tkAdvance=$(if ($tkAdvance) { "$($tkAdvance.Meters)m@$($tkAdvance.Rate)m/s" } else { 'null' }); verifier $($track.meters)m in $($track.seconds)s = $([Math]::Round($streamRate,1))m/s, firstSampleD=$([Math]::Round($firstDist))m (must be <=100m: window has to start at the origin), originConfirmed=$($originReady.Ok), droppedFarSamples=$samplesRejected" }
     Test-Result -Id '5-route' -Name 'route advances, pause holds, resume continues' -Condition $ok `
         -Detail "$advanceDetail; tkPause=$(if ($tkPause) { "$($tkPause.Meters)m" } else { 'null' }) tkResume=$(if ($tkResume) { "$($tkResume.Meters)m" } else { 'null' }); paused drift $($pausedTrack.meters)m; resumed $($resumeTrack.meters)m resumeOk=$resumeOk; verifier samples=$($samples.Count) droppedFar=$samplesRejected retained=$($nearSamples.Count) rate=$([Math]::Round($streamRate,1))m/s; tickBase=$tickAdvanceBase" `
         -Metrics @{ advanceMeters = $advancedMeters; advanced = $advanced; tickOk = $tickOk; streamOk = $streamOk; streamRate = [Math]::Round($streamRate, 1); samples = $samples.Count; samplesRejected = $samplesRejected; pausedMeters = $pausedTrack.meters; resumedMeters = $resumeTrack.meters; resumeOk = $resumeOk }
@@ -817,8 +834,22 @@ if (Test-Selected '5') {
 # ------------------------------------------------------------------------------------------------
 if (Test-Selected '6') {
     Write-Step '6) cell simulation (基站模拟)'
+    # RESET (2026-11-02, full-matrix failure): an earlier check had left the engine at one of the two
+    # points this check compares, so the cell channel still held that set and the row read A==C after
+    # 7 s of polling. Park the engine at a THIRD point (POINT_B) first, confirm delivery, and record
+    # the serving cell there as t0 — if t0 already equals A's value the channel never updated, which is
+    # a different diagnosis from "the publish is slow".
+    Send-Stop -Channel $Channel | Out-Null
+    Start-Sleep -Milliseconds 400
     Set-EngineConfig @{ mode = 'STATIC'; cellSimulation = $true; updateIntervalMs = 500 } | Out-Null
     Send-Start -Channel $Channel | Out-Null
+    $parked = Invoke-SetPositionAndVerify -Lat $POINT_B.lat -Lon $POINT_B.lon -TimeoutSec 15
+    Start-Sleep -Seconds 2
+    $markT0 = Get-VerifyMark
+    Invoke-SetPositionAndVerify -Lat $POINT_B.lat -Lon $POINT_B.lon | Out-Null
+    Start-Sleep -Seconds 3
+    $cellsT0 = @(Get-VerifySamples -Kind 'cell' -AfterTs $markT0)
+    $sigT0 = ($cellsT0 | Where-Object { $_.registered } | Select-Object -First 1)
     Invoke-SetPositionAndVerify -Lat $POINT_A.lat -Lon $POINT_A.lon | Out-Null
     Start-Sleep -Seconds 2
     # window the two snapshots: reading the whole buffer returns the same (first) cell twice
@@ -849,8 +880,8 @@ if (Test-Selected '6') {
     $changed = ($sigA -and $sigC) -and (($sigA.ci -ne $sigC.ci) -or ($sigA.tac -ne $sigC.tac))
     $plmnOk = ($sigA -and $sigA.mcc -eq '460')
     Test-Result -Id '6-cells' -Name 'cell identity changes with position (基站模拟) [KNOWN-OPEN: hook-framework fixing]' -Condition ($present -and $changed) `
-        -Detail $(if ($sigA -and $sigC) { "A ci=$($sigA.ci)/tac=$($sigA.tac)/pci=$($sigA.pci) -> C ci=$($sigC.ci)/tac=$($sigC.tac); mcc=$($sigA.mcc)$($sigA.mnc) plmnOk=$plmnOk; polled $([Math]::Round($cellsCWait,1))s for the change" } elseif ($present) { "cells present but no registered cell line (count A=$($cellsA.Count) C=$($cellsC.Count), polled $([Math]::Round($cellsCWait,1))s)" } else { 'no cell lines in the verifier stream' }) `
-        -Metrics @{ countA = $cellsA.Count; countC = $cellsC.Count; pollSeconds = [Math]::Round($cellsCWait, 1); ciA = $(if ($sigA) { $sigA.ci } else { "n/a" }); ciC = $(if ($sigC) { $sigC.ci } else { "n/a" }); tacA = $(if ($sigA) { $sigA.tac } else { "n/a" }); tacC = $(if ($sigC) { $sigC.tac } else { "n/a" }); mcc = $(if ($sigA) { $sigA.mcc } else { "n/a" }) }
+        -Detail $(if ($sigA -and $sigC) { "t0(parked at B) ci=$(if ($sigT0) { $sigT0.ci } else { 'none' })/tac=$(if ($sigT0) { $sigT0.tac } else { 'none' }); A ci=$($sigA.ci)/tac=$($sigA.tac)/pci=$($sigA.pci) -> C ci=$($sigC.ci)/tac=$($sigC.tac); mcc=$($sigA.mcc)$($sigA.mnc) plmnOk=$plmnOk; polled $([Math]::Round($cellsCWait,1))s for the change; parkedOk=$($parked.Ok)$(if ($sigT0 -and $sigA -and $sigT0.ci -eq $sigA.ci) { ' [WARN: t0 already equals A — the channel did not follow the move]' } else { '' })" } elseif ($present) { "cells present but no registered cell line (count A=$($cellsA.Count) C=$($cellsC.Count), polled $([Math]::Round($cellsCWait,1))s)" } else { 'no cell lines in the verifier stream' }) `
+        -Metrics @{ countA = $cellsA.Count; countC = $cellsC.Count; pollSeconds = [Math]::Round($cellsCWait, 1); parkedOk = $parked.Ok; ciT0 = $(if ($sigT0) { $sigT0.ci } else { "n/a" }); ciA = $(if ($sigA) { $sigA.ci } else { "n/a" }); ciC = $(if ($sigC) { $sigC.ci } else { "n/a" }); tacA = $(if ($sigA) { $sigA.tac } else { "n/a" }); tacC = $(if ($sigC) { $sigC.tac } else { "n/a" }); mcc = $(if ($sigA) { $sigA.mcc } else { "n/a" }) }
 }
 
 # ------------------------------------------------------------------------------------------------

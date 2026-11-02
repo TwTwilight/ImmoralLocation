@@ -188,20 +188,54 @@ object NativeBridge {
         return null
     }
 
+    private var privateDir: File? = null
+
     /**
-     * A directory the current process can actually execute from. In `system_server` that is
-     * usually `/data/local/tmp`; elsewhere the app's own cache dir works. Falls back to the
-     * platform temp dir.
+     * A private, randomly named directory the current process can execute from.
+     *
+     * A predictable path is a fingerprint: any app can stat `/data/local/tmp/libimmoralhook-*.so`
+     * and learn that a framework-level spoofer is installed. Instead we extract into a 0700
+     * directory with a random name, created once per process, and prune directories left behind by
+     * earlier boots. `system_server` runs as `system`, so 0700 keeps the library unreadable and
+     * unexecutable for every other uid.
      */
     private fun tempDir(): File {
-        val candidates = listOf(
-            File("/data/local/tmp"),
-            File(System.getProperty("java.io.tmpdir") ?: "/data/local/tmp"),
-        )
-        for (dir in candidates) {
-            if (dir.isDirectory && dir.canWrite()) return dir
+        privateDir?.let { return it }
+        val root = File("/data/local/tmp")
+        if (root.isDirectory && root.canWrite()) {
+            pruneStaleDirs(root)
+            val dir = File(root, "l" + java.lang.Long.toHexString(java.security.SecureRandom().nextLong()))
+            if (dir.mkdirs()) {
+                dir.setReadable(false, false)
+                dir.setWritable(false, false)
+                dir.setExecutable(false, false)
+                dir.setReadable(true, true)
+                dir.setWritable(true, true)
+                dir.setExecutable(true, true)
+                privateDir = dir
+                return dir
+            }
         }
-        return File("/data/local/tmp").also { it.mkdirs() }
+        val fallback = File(System.getProperty("java.io.tmpdir") ?: "/data/local/tmp")
+        if (fallback.isDirectory && fallback.canWrite()) return fallback
+        return root.also { it.mkdirs() }
+    }
+
+    /** Best effort: remove `l<hex>` directories from earlier boots that still hold our library. */
+    private fun pruneStaleDirs(root: File) {
+        try {
+            for (candidate in root.listFiles() ?: return) {
+                if (!candidate.isDirectory) continue
+                if (!candidate.name.matches(Regex("l[0-9a-f]{8,16}"))) continue
+                val children = candidate.listFiles() ?: continue
+                // Only touch a directory that is unambiguously ours.
+                if (children.none { it.name.startsWith("lib$LIB_NAME") }) continue
+                children.forEach { it.delete() }
+                candidate.delete()
+            }
+        } catch (t: Throwable) {
+            // A leftover directory is cosmetic; never let cleanup break loading.
+        }
     }
 
     // ---------------------------------------------------------------- native
