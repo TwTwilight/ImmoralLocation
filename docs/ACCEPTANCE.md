@@ -842,3 +842,23 @@ harness-liveness / 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 11 / 11b / 23 / 24  �
 （`ageMs=8613` 的普通模式缓存注入），其余三个真实。修法是在**读取时**过滤（fabricated / 当前快照 / 最近合成点），
 沿链回退，全被拒则返回 null——与簿记无关，未来写路径漏守卫也不会重新泄漏。设备验证：非白名单读者四 provider
 全部 `30.27635,120.176233`，白名单读者仍经 `onLocationChanged` 收到模拟值。
+
+## 39. ROUTE-at-PEEK 可见移动：**已验证**（2026-11-02 19:10）
+
+三次尝试失败的原因全都不是产品：规划器 detent 下 peek 行显示的是路线的**起点/终点**（不是实时位置），
+而 `keyevent 4` 会直接退出 app。用 `e2e.peek.collapse` 收起到 PEEK 后用**新加的 `e2e.peek.position` 标签**取样：
+
+```
+FG1 = …MainActivity   P1 = 31.2334, 121.4820
+FG2 = …MainActivity   P2 = 31.2328, 121.4826
+引擎同窗口          tick speed=13.9m/s moved=14.6m mode=ROUTE running=true appliedTicks=99
+```
+
+Δlat 0.0006° ≈ 66.8 m、Δlon 0.0006°·cos(31.23) ≈ 57.2 m → **约 88 m**；两次取样实际间隔约 6 s（含 dump 时间），
+6 × 13.9 = 83 m —— **位移与速度预测完全吻合**。帧 `_peek-moving.png`。
+
+**方法沉淀**：PEEK 下唯一可靠的 oracle 是 `e2e.peek.position` 标签；`Settings.Global` 的状态行在自家 UI 不可见时
+**故意**为 null，而规划器 detent 下 peek 行是路线端点——这两个都会被误读成"位置冻结"。
+
+**顺带关闭**：`decodeLoose` 修复（严格反序列化返回 (0,0)）之后，app 确实在消费通道；此前"app 不跟随通道"的
+结论只对"看错了控件"的情形成立。
