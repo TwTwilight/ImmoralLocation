@@ -717,3 +717,25 @@ cells.probe read paths: query=hash=ddf59fb4 len=157 collection=hash=ddf59fb4 len
 因此这是 **harness oracle 的问题**：该行应当比对"引擎写了什么（`settings get global immoral_cells`）"
 与"hook 返回了什么（`cells.probe CHANGED`）"，而不是比对带自己缓存的消费视图。已交回 E2E 负责人，
 并明确要求：**判据只能变强不能变弱**（改成上面两条会比今天更强，因为它能抓到真正的 hook 回归）。
+
+## 32. 全量矩阵 **15/16**（2026-11-02 14:38，`report-r11.json`），唯一红行已被点名
+
+```
+PASS harness-liveness / 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 11 / 11b / 23 / 24
+FAIL 10-independent  outside=31.23042,121.4737 d=475m
+     [POINT_A: the provider cache still holds a simulated point used earlier in this run —
+      precondition contamination, not a leak]
+```
+
+`6-cells` 首次以**更强的判据**通过：
+`engine publish A->C changed=True polled 0.7s; hook return lac=50274/ci=129538244 matchesC=True`，
+消费者视图降级为 context 并带 `[STALE]` 标注。
+
+**`10-independent` 的准确状态**：结构性冻结（outside 只取一次、在 C 之前）已经生效，
+但**缓存里本来就是上一条检查留下的 POINT_A**，而独立模式下室内没有真实定位可以覆盖它。
+这是产品限制（无法在不掌握真实定位时清空缓存），不是判定缺陷。下一步要么在"进入独立模式"时
+主动把缓存置为真实值（需要真实定位在手），要么把该行定义为"需在干净会话中运行"。
+
+**peek 跟随路线**：仍未验证，但原因是**测量**——规划器打开时 peek 行显示的是路线的起点/终点，
+不是实时位置（ui-polish 用 `SetPosition` 对照证明了两者都不动）。已批准的修法：给 peek 的坐标 `Text`
+加 `testTag("e2e.peek.position")`，让取样不再有歧义。
