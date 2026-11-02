@@ -1003,3 +1003,20 @@ peek 行上的收藏链接自然不在树里。**手动冷启动 dump 证明标�
 **一个从表格里消失的子检查，比一个 SKIP 更危险**——它让总结行读起来像"11 绿了"，而断言从未执行。
 
 **设备验证**：`-Only 11,11b` → 3 passed / 0 failed / 0 skipped，`共 1 个收藏`，`11b` 在 0.8 s 内到达收藏点。
+
+## 30. 完整性账本落地 + 两个已知缺陷（2026-11-02 21:50，`report-r25.json`）
+
+**新增 `harness-completeness`（通过）**：期望的检查 id 集合**从 dispatch 里扫出来**（`run_matrix.ps1` 全部、
+`checks_ui.ps1`（除非 `-SkipUi`）、`checks_release.ps1`），不是手写第二份清单——新建检查在 dispatch 出现的瞬间就被纳入审计，
+删掉 id 也会自动不再期望，因此**不可能像 `pci=436` 那样漂移**。`-Only` 豁免；SKIP 行算"已产出"，只有**缺席**才算失败。
+第一版曾把条件性的 `harness*` 行也期望进去，在健康运行上误报 4 行——**"在正确代码上报警的检查比没有检查更糟"**，已按此校准。
+负数验证：把 `5-route` 从期望集里去掉 → `Ok=False missing=5-route`。
+
+**本轮矩阵 14 PASS / 2 FAIL**
+| 行 | 详情 | 定性 |
+|---|---|---|
+| `3-joystick` | `effective 1.4 m/s (RUN 3.3), ratio 0.42, ticks 17/21 moving` | **新出现的可疑项**：同一次运行里 `4-speed-levels` 测到 RUN 正好 3.30，说明**配置晚一拍生效**（检查设 RUN 后立刻推摇杆，引擎还在 WALK），属前置条件而非产品缺陷；已交 harness 增加"配置已生效"确认 |
+| `10-independent` | `outside=… d=475m [POINT_A: 缓存里是本 run 早先检查的假点]` | 前置污染，**应当 SKIP 而不是红**（与"无真实定位"同类），已批准改 |
+
+另有一项被点名：`11b` 在"surface 未完全可交互"时会**用上一份 dump**继续点——这是今晚唯一一处"用更差的输入悄悄顶替"的地方
+（`commands before=13 after=13`，即点空了还照常报告）。已要求改为"重开一次再试，仍不行就带着 `topResumedActivity` 失败"。
