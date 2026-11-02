@@ -1283,11 +1283,45 @@ if (Test-Selected '11') {
                 Start-Sleep -Seconds 2
                 Start-Verifier -Count 20 -IntervalMs 1000 -Stream
                 Start-Sleep -Seconds 2
+                # Start-Verifier starts the VERIFIER app, i.e. it takes the foreground away from ours.
+                # Every tap below would then land on the verifier while the dump still showed our sheet
+                # (so the row bounds looked right and the tap silently did nothing). Bring our app back
+                # and confirm it by looking for one of our own tags before touching anything.
+                Start-App -Package $modulePkg | Out-Null
+                Start-Sleep -Seconds 2
+                $frontOk = $false
+                for ($ft = 0; $ft -lt 6; $ft++) {
+                    $fd = Get-UiDump
+                    if ($fd -and @($fd.SelectNodes('//node') | Where-Object { $_.GetAttribute('resource-id') -match '^e2e\.' }).Count -gt 0) { $frontOk = $true; break }
+                    Start-App -Package $modulePkg | Out-Null
+                    Start-Sleep -Milliseconds 700
+                }
+                if (-not $frontOk) { Write-Warn2 '     our app is not in front after starting the verifier — the tap below may hit the wrong window' }
                 # Re-dump IMMEDIATELY before tapping: the previous dump could predate the sheet finishing
                 # its animation, which makes the bounds stale and the tap land on nothing. The Lead proved
                 # this from the module log: a manual tap produced `command decoded: SetPosition`, the
                 # harness tap produced nothing at all — so "position never moved" was hiding a missed tap.
-                $tapDump = Get-UiDump
+                # (1) Wait until the sheet is INTERACTIVE, not merely present: the row title AND the
+                # sheet's `Close sheet` affordance must both be in the dump. Then locate the row on a
+                # dump taken AFTER that point, so the bounds cannot come from a still-animating sheet.
+                # The Lead proved by hand that peek-link → sheet → title-line tap does produce
+                # `command decoded: SetPosition`, so the app and the entry path are fine and the
+                # remaining difference is the check's tap synthesis or its timing.
+                $tapDump = $null
+                $readyDeadline = (Get-Date).AddSeconds(6)
+                while ((Get-Date) -lt $readyDeadline) {
+                    $probeDump = Get-UiDump
+                    if ($probeDump) {
+                        $hasClose = @($probeDump.SelectNodes('//node') | Where-Object { $_.GetAttribute('content-desc') -match 'Close sheet' }).Count -gt 0
+                        $hasCoord = @($probeDump.SelectNodes('//node') | Where-Object { $_.GetAttribute('text') -match '^\s*-?\d+\.\d+,\s*-?\d+\.\d+\s*$' }).Count -gt 0
+                        if ($hasClose -and $hasCoord) { $tapDump = $probeDump; break }
+                    }
+                    Start-Sleep -Milliseconds 400
+                }
+                if (-not $tapDump) {
+                    Write-Warn2 '     favourites sheet never became fully interactive (Close sheet + row); using the last dump'
+                    $tapDump = Get-UiDump
+                }
                 $row = @($tapDump.SelectNodes('//node') | Where-Object {
                         $_.GetAttribute('text') -match '^\s*-?\d+\.\d+,\s*-?\d+\.\d+\s*$'
                     }) | Select-Object -First 1
@@ -1337,7 +1371,9 @@ if (Test-Selected '11') {
                         Write-Step "     no title node found; tapping 45 px above the coordinate line at $cx,$cy"
                     }
                     $cmdBefore = Get-SetPositionCommandCount
-                    Invoke-AdbShell "input tap $cx $cy" -AllowFailure | Out-Null
+                    # Zero-length swipe instead of `input tap`: it is delivered as a full down/up
+                    # sequence and has fixed Compose click-target misses in this harness before.
+                    Invoke-AdbShell "input swipe $cx $cy $cx $cy 120" -AllowFailure | Out-Null
                     $tapTried = $true
                     # The tap counts as landed only when the app actually reacted: a SetPosition command
                     # reached the engine, or the 已跳转到 snackbar appeared. Anything else is a missed tap,
@@ -1349,10 +1385,34 @@ if (Test-Selected '11') {
                         $snackDump = Get-UiDump
                         if (@($snackDump.SelectNodes('//node') | Where-Object { $_.GetAttribute('text') -match '已跳转' }).Count -gt 0) { $landed = $true; break }
                     }
+                    # One retry: a sheet can still be settling when the first tap arrives, and the exact
+                    # same coordinates work seconds later (measured: manual tap OK, harness tap silent).
+                    if (-not $landed) {
+                        Write-Step '     first tap produced no command — settling 1.5 s and retrying once'
+                        Start-Sleep -Milliseconds 1500
+                        $retryDump = Get-UiDump
+                        $retryNode = @($retryDump.SelectNodes('//node') | Where-Object {
+                                $_.GetAttribute('text') -match '^\s*-?\d+\.\d+,\s*-?\d+\.\d+\s*$'
+                            }) | Select-Object -First 1
+                        if ($retryNode -and $retryNode.GetAttribute('bounds') -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
+                            $rx = [int]$matches[1] + 40
+                            $ry = [int]$matches[2] - 45
+                            $cmdBefore2 = Get-SetPositionCommandCount
+                            Invoke-AdbShell "input swipe $rx $ry $rx $ry 120" -AllowFailure | Out-Null
+                            $landDeadline2 = (Get-Date).AddSeconds(3)
+                            while ((Get-Date) -lt $landDeadline2) {
+                                Start-Sleep -Milliseconds 500
+                                if ((Get-SetPositionCommandCount) -gt $cmdBefore2) { $landed = $true; break }
+                                $snackDump2 = Get-UiDump
+                                if (@($snackDump2.SelectNodes('//node') | Where-Object { $_.GetAttribute('text') -match '已跳转' }).Count -gt 0) { $landed = $true; break }
+                            }
+                        }
+                    }
                 }
                 if (-not $landed) {
+                    $cmdAfter = Get-SetPositionCommandCount
                     Test-Result -Id '11b-favorite-return' -Name 'quick return jumps back to the saved favourite' -Condition $false `
-                        -Detail "tap did not land on the favourite row: no 'SetPosition' command reached the engine and no 已跳转到 snackbar appeared within 3 s (row bounds: $rowBounds$(if (-not $tapTried) { '; no tappable coordinate row was present in the fresh dump' } else { '' }))"
+                        -Detail "tap did not land on the favourite row: no 'SetPosition' command reached the engine and no 已跳转到 snackbar appeared within 3 s (row bounds: $rowBounds; commands before=$cmdBefore after=$cmdAfter$(if (-not $tapTried) { '; no tappable coordinate row was present in the fresh dump' } else { '' }))"
                     Stop-Verifier
                 }
                 else {

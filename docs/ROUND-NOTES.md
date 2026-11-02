@@ -1076,7 +1076,55 @@ FAIL 11b-favorite-return  tap did not land on the favourite row: no 'SetPosition
 （`Set-UiText` 参数名写错、且当时界面停在收藏面板），所以那只是读代码得到的**假设**，不是结论；
 需要一次 3 分钟的实测（点 `e2e.searchbar` → 输入 → 每 2 s 采样 `正在搜索…` 共 12 s → grep 请求日志）。
 
+### 16.1 根因找到：检查点在了**错误的窗口**上（2026-11-02 08:4x，已修，`11b` PASS）
+
+> **harness 规则（不是故事）：任何检查在合成输入之前启动了别的 App，都必须先把自己的前台拿回来并确认
+> ——否则点击会静默落在别人的窗口上，而 dump 仍然描述我们自己的界面，bounds 看起来完美。**
+> 确认方式：轮询 dump 直到出现任意属于本 App 的 `e2e.*` id；确认失败就打警告，不要继续点。
+> 这一条如果今晚早就写下，可以省掉整整一轮。
+
+Lead 亲自做了那个决定性实验：从 peek 链接打开面板 → 点标题行 `313,1750` → 命令计数 21→22。
+App 与入口都正常，问题在检查侧。继续排查后定位到**真正的根因**：
+
+> `11b` 在点击之前调用了 `Start-Verifier`，而**启动 verifier 会把前台从我们的 App 抢走**。
+> 于是 `input tap 313 1750` 打在了 VerifierActivity 上，而紧接着的 dump 描述的仍是我们的收藏面板 ——
+> 行 bounds 看起来完全正确，点击却静默落空。这也是"手工点同一坐标有效、检查里无效"的全部原因：
+> 手工操作时 verifier 不在前台。
+
+修法（`e2e/run_matrix.ps1`，五条都在同一段）：
+1. `Start-Verifier` 之后 **`Start-App` 把我们的 App 拉回前台**，并用"屏幕上出现任意 `e2e.*` id"的轮询确认；
+   确认失败会打警告 —— 这条警告就是这次 bug 以后不会再隐身的原因。
+2. 等待面板**真正可交互**（同一份 dump 里既有行标题、又有 `content-desc=Close sheet`），
+   然后在这之后的 dump 上定位行。
+3. 点**标题行**（坐标行是死区，已由计数 3→4 / 不变证明）。
+4. 用零长度 swipe（`input swipe x y x y 120`）代替 `input tap`，首次与重试都用。
+5. 失败行现在打印 `commands before=N after=M`，下次一眼可分三类。
+
+最终：
+```
+PASS harness-liveness     appliedTicks=184 … lastUpdateTime=2026-11-02 08:42:55
+PASS 11-favorites         共 2 个收藏, 2 row(s) with coordinates
+PASS 11b-favorite-return  tap landed; reached the favourite (gps 31.23661,121.4803 (d=0m)) after 0.9s
+```
+手工复核（与 Lead 的数字一致）：刚打开面板 2 s 后点标题行 → 计数 4→5；同一坐标、面板开久一点 → 3→4。
+**结论：既不是时序也不是点击合成，而是点击落到了哪个窗口。**
 
 
 
+
+
+
+
+## 脚本改代码的两个陷阱（2026-11-02 夜）
+
+1. **嵌套 KDoc**：在 `/** … */` 注释里再写 `/** … */` 会提前结束注释，后面的代码变成注释或语法错误（`app/build.gradle.kts` 曾被这样弄坏一次，构建直接失败）。
+2. **CRLF vs LF**：用 LF 字符串去 `Replace` 一个 **CRLF** 文件会**静默不匹配**——脚本成功返回、构建绿、改动却没落地（`RootScreen.kt` 的搜索超时守卫第一次就是这样"改"的，只有事后 grep `search_timeout` 才发现文件里根本没有）。规则：脚本改完代码**必须 grep 一次改动标记**，并按文件自己的换行风格拼字符串。
+
+```powershell
+$t = [System.IO.File]::ReadAllText((Resolve-Path $p))
+$nl = if ($t.Contains("`r`n")) { "`r`n" } else { "`n" }
+$t = $t.Replace($oldLine, $newLine)   # $oldLine / $newLine 都用 $nl 拼接
+[System.IO.File]::WriteAllText((Resolve-Path $p), $t)
+Select-String -Path $p -Pattern '<改动标记>'   # 必须能 grep 到，否则就是没改上
+```
 

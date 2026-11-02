@@ -281,6 +281,21 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                 is SearchOutcome.Failure -> SearchUiState(query = text, error = outcome.message)
             }
         }
+        // The provider call is callback-based, so nothing drives the UI out of the loading state if
+        // the request simply never answers (qa-e2e saw `正在搜索…` for 8 s+ with network up). This is
+        // the only place that can turn that silent hang into a visible outcome.
+        //
+        // It must not fake a timeout for a *successful* empty result: `没有找到匹配的地点` arrives as
+        // Success(emptyList), which clears `loading`, so the condition below is false. Typing again
+        // cancels this coroutine through the `(query, searchArmed)` keys, so the guard can never fire
+        // for a query the user has already replaced.
+        delay(SEARCH_TIMEOUT_MS)
+        if (searchState.loading && searchState.query == text) {
+            searchState = SearchUiState(
+                query = text,
+                error = context.getString(R.string.search_timeout),
+            )
+        }
     }
 
     // e2e / 调试入口：`am start -n <pkg>/.ui.MainActivity --es search 北京大学` 直接跑一次搜索。

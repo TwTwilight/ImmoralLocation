@@ -509,3 +509,30 @@ after  = 22   ← 命令确实发出
 
 **方法论**：`RootScreen.kt` 已是 CRLF，用 LF here-string 做的脚本化替换会"编译通过但什么都没改"——与之前的
 嵌套 KDoc 陷阱同类，脚本化编辑后必须 grep 验证。
+
+## 21. 首次全绿矩阵（2026-11-02 09:00）：**16 PASS / 0 FAIL**
+
+`e2e/out/report-full-r9b.json`，build `lastUpdateTime=2026-11-02 08:42:55`。
+
+```
+harness-liveness PASS  appliedTicks=546 … apk=… lastUpdateTime=08:42:55
+0-config-hygiene PASS   1-framework-spoof PASS (四 provider mock=False)
+2-fast-switch    PASS (3135ms)          3-joystick PASS (3.3 m/s, ratio 1, oracle=engine-tick)
+4-speed-levels   PASS (六档 ratio 全 1.00) 5-route PASS (见下方警告)
+6-cells PASS (polled 0.7s)              7-wifi PASS (5→6 APs changed=True)
+8-steps PASS (delta=43, oracle=steps-seam) 9-gnss PASS (61 颗, usedInFix=7)
+10-independent PASS (outside 真实位置 163.5 km / inside 模拟点 d=0)
+11-favorites PASS (共 2 个收藏, 2 rows)   11b-favorite-return PASS (tap landed, d=0m after 0.9s)
+23-module-integrity PASS                 24-apk-size PASS (6.25 MB)
+```
+
+**必须修掉的一条"假绿"**：`5-route advanced 163195.27m in 11.99s` —— 6 m/s 不可能在 12 秒走 163 km。
+几乎肯定是窗口首样本是**真实 GPS 位置**（30.27…）、末样本是模拟点，差值是两个世界的距离；而判据
+`advanced > 5 m` 被垃圾数据满足。已要求：窗口内样本必须都靠近路线起点（≤3 km），否则作废；
+tick oracle 可用时优先，不用时在 detail 里写 `null` 并取消该轮判定。
+
+**本轮方法论沉淀（已写进 E2E.md / ROUND-NOTES.md）**
+1. 任何"先启动别的 app 再合成输入"的检查，必须**先恢复并确认自己的前台**（否则 tap 命中另一个窗口，
+   而 dump 仍描述我们的界面——坐标完全对得上，点击静默失效）。
+2. 点击是否生效必须由**效果**证明（`command decoded` / snackbar / 新样本），不能由"没有报错"证明。
+3. 每条失败信息都要带 splitter：`oracle=`、`polled N s`、`commands before/after`。
