@@ -925,3 +925,29 @@ SKIP 10-independent  no real last-known fix on this device（诚实前置条件�
 要覆盖那部分需要给 `activate_module.ps1` 加一个包名参数——已记入待办。
 
 **收尾**：卸载 release、装回 debug、重新激活并复跑 `1-framework-spoof` PASS，设备回到可用状态。
+
+## 43. **发布产物通过完整验收**：14 PASS / 0 FAIL / 1 SKIP（2026-11-02 20:05，`report-release.json`）
+
+这是补上的最后一块"用户拿到的产物没被验证"的缺口。此前所有验收都跑 debug 包，而 release 包才是用户装的，
+且它才是**资源裁剪 + R8 混淆**真正生效的形态。
+
+**之前的阻塞原因**：`activate_module.ps1` 与 `bridge.ps1` 都按硬编码的 debug 包名解析模块，
+所以 release 包**根本无法**被激活为 LSPosed 模块。现在两处都接受 release id（debug 优先，保持既有行为）。
+
+**结果**（`module under test: io.github.twtwilight.immorallocation v1.0.0`，6 229 952 B）：
+
+```
+PASS harness-liveness / 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 11 / 23 / 24
+SKIP 10-independent（诚实前置条件）
+14 passed, 0 failed, 1 skipped
+```
+
+值得单独点出的几行：
+- `6-cells … hook return: lac=33272/ci=153773081 matchesC=True`——R8 之后 hook 逻辑与基站元组不变；
+- `8-steps … counter delta=44`——**原生库在 R8/release 打包下仍然可用**；
+- `9-gnss … usedInFix=7`；`23-module-integrity` 通过（`xposed_init` 与 5 个 hook 类都活过 R8）；
+- `24-apk-size 5.94 MB`；
+- `11-favorites 设计的空态`——因为卸载 debug 时数据被清空，顺带验证了空态。
+
+**收尾**：装回 debug、重新激活并 `VERIFIED`，设备回到开发基线。
+以后要复验发布产物，只需装 `app-release.apk` 再 `activate_module.ps1`（现在能自动识别）+ `run_matrix.ps1`。
