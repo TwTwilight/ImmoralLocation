@@ -115,6 +115,35 @@ function Test-Selected([string]$Id) {
     return $true
 }
 
+# Completeness ledger: the set of result ids the harness is SUPPOSED to emit in this mode, derived from
+# the code itself (every `-Id '…'` literal in the files that will actually run) instead of a second
+# hand-maintained list, which would drift exactly like the `pci=436` regex did.
+#   * `-SkipUi` runs run_matrix only; without it the UI and release suites are in play too.
+#   * A filtered run (`-Only`) is expected to produce a subset, so the ledger is not asserted there.
+# A deliberately skipped check still emits a row, so SKIP counts as produced; only ABSENT fails.
+function Get-ExpectedCheckIds {
+    param([string]$Root, [bool]$IncludeUi, [bool]$IncludeRelease)
+    $files = @((Join-Path $Root 'run_matrix.ps1'))
+    if ($IncludeUi) { $files += (Join-Path $Root 'lib\checks_ui.ps1') }
+    if ($IncludeRelease) { $files += (Join-Path $Root 'lib\checks_release.ps1') }
+    $ids = [System.Collections.Generic.List[string]]::new()
+    foreach ($f in $files) {
+        if (-not (Test-Path $f)) { continue }
+        foreach ($line in [System.IO.File]::ReadAllLines($f)) {
+            if ($line.TrimStart().StartsWith('#')) { continue }
+            foreach ($m in [regex]::Matches($line, "-Id\s+'([A-Za-z0-9][A-Za-z0-9\.\-]*)'")) {
+                $v = $m.Groups[1].Value
+                # `harness-*` rows are conditional by design (liveness is always emitted, but
+                # build-stable / control-channel only exist in their failure modes, and
+                # completeness cannot expect itself). Auditing them would make the ledger cry wolf.
+                if ($v -like 'harness*') { continue }
+                if (-not $ids.Contains($v)) { $ids.Add($v) }
+            }
+        }
+    }
+    return $ids
+}
+
 function New-SimConfig {
     param([hashtable]$Override = @{})
     $base = [ordered]@{
@@ -1967,6 +1996,31 @@ if ([int]$script:ChannelFallbacks -gt 0) {
     Add-Result -Id 'harness-control-channel' -Name 'commands reached the engine over the broadcast channel (DEGRADED)' -Status 'WARN' `
         -Detail "$([int]$script:ChannelFallbacks) command(s) fell back to the SharedPreferences channel (first at $($script:ChannelFirstFallbackAt), last at $($script:ChannelLastFallbackAt)) because the broadcast receiver was down. Every result row is stamped channel=prefs-fallback($([int]$script:ChannelFallbacks)) from that point on — do NOT read those rows as broadcast-channel results." `
         -Metrics @{ fallbacks = [int]$script:ChannelFallbacks; firstAt = $script:ChannelFirstFallbackAt; lastAt = $script:ChannelLastFallbackAt }
+}
+
+# COMPLETENESS: a sub-check that vanishes while the summary still reads green is the worst failure mode
+# of the round — `11b` produced no row at all and "11 green" was printed anyway. The expected set is
+# derived from the code that actually ran (see Get-ExpectedCheckIds), never from a second list. A SKIP
+# row exists and counts as produced; only an ABSENT id fails. `-Only` runs are a deliberate subset.
+if ($selected.Count -eq 0) {
+    try {
+        # Release checks (23/24) run under -SkipUi too, so they always belong to the expected set; the UI
+        # suite is the only part that is genuinely absent when -SkipUi is passed.
+        $expectedIds = Get-ExpectedCheckIds -Root (Split-Path -Parent $PSCommandPath) -IncludeUi (-not $SkipUi) -IncludeRelease $true
+        $producedIds = @($script:E2eResults | ForEach-Object { $_.id })
+        $verdict = Get-CompletenessVerdict -Expected @($expectedIds) -Produced $producedIds
+        if ($verdict.Ok) {
+            Add-Result -Id 'harness-completeness' -Name 'every expected check produced a row' -Status 'PASS' `
+                -Detail "$($verdict.Expected) expected check(s), every one produced a row (SKIP counts as produced)." `
+                -Metrics @{ expected = $verdict.Expected; produced = $verdict.Produced }
+        }
+        else {
+            Add-Result -Id 'harness-completeness' -Name 'every expected check produced a row' -Status 'FAIL' `
+                -Detail "$($verdict.Missing.Count) expected check(s) produced no row: $($verdict.Missing -join ', ') — A missing row means the assertion never ran - the summary would otherwise read green." `
+                -Metrics @{ missing = @($verdict.Missing); expected = $verdict.Expected; produced = $verdict.Produced }
+        }
+    }
+    catch { Write-Warn2 "completeness ledger failed: $_" }
 }
 
 $summary = Save-E2eReport -Suite 'matrix' -Path $Report -Environment @{

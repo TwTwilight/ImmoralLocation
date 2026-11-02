@@ -3,6 +3,20 @@
 $script:E2eResults = [System.Collections.Generic.List[object]]::new()
 $script:E2eStartedAt = (Get-Date).ToString('o')
 
+# Completeness verdict, kept as a pure function so it can be exercised without running the matrix:
+# a sub-check that vanishes while the summary still reads green was tonight's worst failure mode
+# (11b produced no row and "11 green" was printed anyway). SKIP counts as produced — the row exists.
+function Get-CompletenessVerdict {
+    param([string[]]$Expected = @(), [string[]]$Produced = @())
+    $missing = @($Expected | Where-Object { $Produced -notcontains $_ })
+    return [pscustomobject]@{
+        Ok       = ($missing.Count -eq 0)
+        Missing  = $missing
+        Expected = @($Expected).Count
+        Produced = @($Produced).Count
+    }
+}
+
 # Which control channel a row was measured through. bridge.ps1 increments $script:ChannelFallbacks
 # whenever a command degrades to the SharedPreferences path; a prefs-fallback run must never be read as
 # a broadcast-channel run, so the stamp lives on EVERY row and cannot be absorbed by a PASS.

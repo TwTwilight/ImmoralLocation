@@ -1361,3 +1361,34 @@ harness 侧只做了两件事（不改判定）：
 
 
 
+
+## 22. `harness-completeness`：消失的子检查变成一行 FAIL（2026-11-02 21:4x）
+
+今晚最坏的失败模式是**子检查悄悄消失而汇总仍然全绿**：`11b` 一行都没产出，表格却只显示 11 绿。
+现在结构性地堵住：
+
+- **期望集合从代码本身派生**（`Get-ExpectedCheckIds` 扫描 `run_matrix.ps1` / `checks_ui.ps1` /
+  `checks_release.ps1` 里所有 `-Id '…'` 字面量），不维护第二份列表——第二份列表会像 `pci=436` 那样漂移；
+- `-Only` 运行**豁免**（本来就是子集）；`harness*` 行被排除（它们是条件性产出：liveness 常驻，
+  build-stable / control-channel 只在失败时出现，completeness 无法期望自己）；
+- **SKIP 仍是一行，算"已产出"**；只有**完全缺失**才 FAIL。
+
+实测（`-SkipUi` 全量，build `20:54:39`）：
+
+```
+PASS  harness-completeness   12 expected check(s), every one produced a row (SKIP counts as produced).
+```
+
+**反证**（不动共享脚本，只测纯函数 `Get-CompletenessVerdict`）：用同一段扫描得到 12 个真实 id，
+去掉 `5-route` 后 `Ok=False missing=5-route`；补齐后 `Ok=True`。即"缺一行 → FAIL 并点名该 id"。
+
+第一版把 `harness-*` 也当成期望项，结果在**正常**全量跑里报 FAIL 并点名 4 个 id ——
+一个对着正确代码喊狼来了的检查，比没有更糟；这也是"排除条件性行"这条规则的来由。
+
+### 同一轮暴露的两条已知未决（与 ledger 无关）
+
+- `10-independent`：`lastKnown outside=31.23042,121.4737 d=475m [POINT_A: …]` —— provider 缓存里
+  还是本次运行早前用过的模拟点，属于**预处理污染**，不是泄漏；`inside` 那次读到 null。
+- `11b`：`favourites sheet never became fully interactive (Close sheet + row); using the last dump` →
+  随后按那份 dump 计算的坐标点空（`commands before=13 after=13`）。这是"面板未就绪仍继续点"的老问题，
+  正确做法是**重新打开面板重试**而不是"用最后一份 dump"。
