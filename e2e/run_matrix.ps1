@@ -292,34 +292,31 @@ function Get-SetPositionCommandCount {
 # The file lives in the app's private dir, so this reads it as root and reports point, updatedAtMs and
 # the file's mtime age. Evidence only — the check's verdict does not depend on it.
 function Get-FwStatusProbe {
-    $pkg = Get-ModulePackageName
-    $path = "/data/data/$pkg/files/fw_status.json"
-    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    $mtime = 0
-    $text = ''
+    # The hook publishes engine state into `Settings.Global/immoral_state` at ~1 Hz (the transport that
+    # replaced the app-private `fw_status.json`, which never existed: system_server could not write into
+    # the app's dir — EACCES — so the file probe reported a permanent "missing" about a retired path).
+    # `FrameworkStatus` reads this key first and uses the payload's `ts` for freshness.
+    $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $raw = ''
     try {
-        $r = Invoke-AdbRoot "stat -c %Y $path 2>/dev/null; echo ---; cat $path 2>/dev/null" -AllowFailure
-        $lines = @($r.Output)
-        $sep = [Array]::IndexOf($lines, '---')
-        if ($sep -gt 0 -and $lines[0] -match '^(\d{9,})$') {
-            $mtime = [long]$matches[1]
-            $text = ($lines[($sep + 1)..($lines.Count - 1)] -join '')
-        }
+        $r = Invoke-AdbShell 'settings get global immoral_state' -AllowFailure
+        $raw = ((@($r.Output) -join '') -replace '\s+$', '').Trim()
     }
     catch { }
-    if (-not $text) { return [pscustomobject]@{ Present = $false; Lat = $null; Lon = $null; UpdatedAtMs = $null; AgeSec = $null } }
-    $lat = $null; $lon = $null; $upd = $null
-    $clean = $text.Trim()
-    if ($clean.StartsWith('{')) {
-        try {
-            $j = $clean | ConvertFrom-Json
-            if ($j.point) { $lat = [double]$j.point.lat; $lon = [double]$j.point.lon }
-            if ($j.PSObject.Properties['updatedAtMs']) { $upd = [long]$j.updatedAtMs }
-        }
-        catch { }
+    if (-not $raw -or $raw -eq 'null') {
+        return [pscustomobject]@{ Present = $false; Lat = $null; Lon = $null; Ts = $null; AgeSec = $null; Running = $null; Raw = $raw }
     }
-    $age = if ($mtime -gt 0) { [Math]::Max(0, $now - $mtime) } else { $null }
-    return [pscustomobject]@{ Present = $true; Lat = $lat; Lon = $lon; UpdatedAtMs = $upd; AgeSec = $age }
+    $lat = $null; $lon = $null; $ts = $null; $running = $null
+    if ($raw -match '"lat"\s*:\s*(-?\d+(?:\.\d+)?)') { $lat = [double]$matches[1] }
+    if ($raw -match '"lon"\s*:\s*(-?\d+(?:\.\d+)?)') { $lon = [double]$matches[1] }
+    if ($raw -match '"ts"\s*:\s*(\d+)') { $ts = [long]$matches[1] }
+    if ($raw -match '"running"\s*:\s*(true|false)') { $running = ($matches[1] -eq 'true') }
+    $age = $null
+    if ($null -ne $ts) {
+        # `ts` is epoch milliseconds when the payload carries a 13-digit value, seconds otherwise.
+        $age = if ($ts -gt 100000000000) { [Math]::Max(0, [Math]::Round(($nowMs - $ts) / 1000.0, 1)) } else { [Math]::Max(0, [Math]::Round(($nowMs / 1000.0) - $ts, 1)) }
+    }
+    return [pscustomobject]@{ Present = ($null -ne $lat); Lat = $lat; Lon = $lon; Ts = $ts; AgeSec = $age; Running = $running; Raw = $raw }
 }
 
 # After a deliberate Force-Stop the broadcast receiver is gone, and the bridge silently degrades to the
@@ -821,6 +818,10 @@ if (Test-Selected '5') {
     $mark = Get-VerifyMark
     $fixR0 = Get-DumpsysFix
     $tickAtStart = @(Get-EngineTicks | Select-Object -Last 1)
+    # Count of ROUTE ticks seen BEFORE this route starts: the advance window is "route start -> pause",
+    # not a fixed time window (a drifting figure — 47.83 / 23.43 / 6.91 m across runs while the resumed
+    # leg stayed at 32.6/38.9/39.7 m — reads as "the route barely moved", which is not what it measured).
+    $routeSeenBefore = @(Get-EngineTicks | Where-Object { $_.Mode -eq 'ROUTE' }).Count
     Send-StartRoute -Points $points -SpeedMps 6.0 -Repeat $false -Channel $Channel | Out-Null
     Send-Start -Channel $Channel | Out-Null
     Start-Sleep -Seconds 6
@@ -834,13 +835,13 @@ if (Test-Selected '5') {
     $fw2 = Get-FwStatusProbe
     $fwFmt = {
         param($s)
-        if (-not $s -or -not $s.Present) { 'missing' }
-        elseif ($null -eq $s.Lat) { "unparsed@mtime+$($s.AgeSec)s" }
-        else { "($([Math]::Round($s.Lat,5)),$([Math]::Round($s.Lon,5)))@mtime+$($s.AgeSec)s" }
+        if (-not $s) { 'null' }
+        elseif (-not $s.Present) { if ($s.Raw -eq 'null') { 'unset' } else { 'absent' } }
+        else { "($([Math]::Round($s.Lat,5)),$([Math]::Round($s.Lon,5)))@ts+$($s.AgeSec)s running=$($s.Running)" }
     }
     $fwMoved = ($fw1 -and $fw2 -and $fw1.Present -and $fw2.Present -and $null -ne $fw1.Lat -and $null -ne $fw2.Lat -and
         ((Get-GeoDistanceMeters -Lat1 $fw1.Lat -Lon1 $fw1.Lon -Lat2 $fw2.Lat -Lon2 $fw2.Lon) -gt 0.5))
-    $fwDetail = "fwStatus: t1=$(& $fwFmt $fw1) t2=$(& $fwFmt $fw2) moved=$fwMoved"
+    $fwDetail = "globalState(immoral_state): t1=$(& $fwFmt $fw1) t2=$(& $fwFmt $fw2) moved=$fwMoved"
     # Primary oracle: the engine's own applied ticks. The verifier's delivered stream is throttled while
     # it is backgrounded, and on 2026-11-02 that made this row read "advanced 0 m" for a route the engine
     # log showed moving at 6.0 m/s in ROUTE mode - a sampling artefact, not a product failure.
@@ -848,21 +849,32 @@ if (Test-Selected '5') {
     $tkAdvanceSource = 'applied-window'
     if (-not $tkAdvance -or $tkAdvance.Meters -lt 5) {
         # Stop/Start can RESET appliedTicks to 0, and an Applied-based baseline then matches almost
-        # nothing for the whole window (measured 2026-11-02: tkAdvance=3.27 m for a 65 m route, while
-        # `tkResume` measured 32 m in the leg right after). ROUTE is used by this check alone, so fall
-        # back to the LAST 20 ROUTE ticks (~10 s at a 500 ms interval, i.e. the advance window).
-        # NOT every ROUTE tick in the buffer: summing the whole buffer counted the pause/resume phases
-        # too and reported 746 m for a 500 m route (2026-11-02) — a number that would have been quoted.
-        # Take ticks from the END until they cover the ~10 s advance window, so the figure means
-        # "distance covered in the measured window" and not "distance ever covered in ROUTE mode".
-        $routeAll = @(Get-EngineTicks | Where-Object { $_.Mode -eq 'ROUTE' } | Select-Object -Last 60)
+        # The advance window is "route start -> pause": take the ROUTE ticks that appeared after the
+        # route was started ($routeSeenBefore), NOT every ROUTE tick in the buffer (that summed the
+        # pause/resume phases too and reported 746 m for a 500 m route) and NOT a fixed "last 10 s"
+        # window (that made the figure drift 47.83 / 23.43 / 6.91 m depending on when the engine
+        # restarted, while the resumed leg stayed at 32.6/38.9/39.7 m).
+        $routeAll = @(Get-EngineTicks | Where-Object { $_.Mode -eq 'ROUTE' })
         $routeTicks = @()
-        $accDt = 0.0
-        for ($ri = $routeAll.Count - 1; $ri -ge 0; $ri--) {
-            $routeTicks = @($routeAll[$ri]) + $routeTicks
-            $accDt += ($routeAll[$ri].DtMs / 1000.0)
-            if ($accDt -ge 10.0) { break }
+        if ($routeAll.Count -gt $routeSeenBefore) {
+            for ($ri = $routeSeenBefore; $ri -lt $routeAll.Count; $ri++) { $routeTicks += $routeAll[$ri] }
         }
+        # Sanity bound: route start -> pause is ~10 s. If the slice covers far more than that, the tick
+        # log order is unreliable (an appliedTicks reset reorders the merge), so fall back to the tail.
+        $sliceDt = 0.0
+        foreach ($rt in $routeTicks) { $sliceDt += ($rt.DtMs / 1000.0) }
+        if ($routeTicks.Count -lt 2 -or $sliceDt -gt 15.0) {
+            $routeTicks = @()
+            $accDt = 0.0
+            $tailAll = @($routeAll | Select-Object -Last 60)
+            for ($ri = $tailAll.Count - 1; $ri -ge 0; $ri--) {
+                $routeTicks = @($tailAll[$ri]) + $routeTicks
+                $accDt += ($tailAll[$ri].DtMs / 1000.0)
+                if ($accDt -ge 10.0) { break }
+            }
+            $tkAdvanceSource = 'route-mode-tail-fallback'
+        }
+        else { $tkAdvanceSource = 'route-start-to-pause' }
         if ($routeTicks.Count -ge 2) {
             $rtMoved = 0.0; $rtDt = 0.0
             foreach ($rt in $routeTicks) { $rtMoved += $rt.Moved; $rtDt += ($rt.DtMs / 1000.0) }
@@ -875,7 +887,6 @@ if (Test-Selected '5') {
                 MedianSpeed = 0.0
                 Modes       = 'ROUTE'
             }
-            $tkAdvanceSource = 'route-mode-sum'
         }
     }
     $samples = @(Get-LiveLocationSamples -AfterTs $mark)
@@ -936,7 +947,7 @@ if (Test-Selected '5') {
     $resumeOk = ($resumedMeters -gt 3.0) -and ($resumedMeters -le 150.0)
     $ok = $advanced -and ($pausedMeters -lt 3.0) -and $resumeOk
     Send-StopRoute -Channel $Channel | Out-Null
-    $advanceDetail = if ($advanced) { "advanced $advancedMeters m (oracle=$(if ($tickOk) { 'engine-tick' } else { 'verifier' }))" }
+    $advanceDetail = if ($advanced) { "advanced $advancedMeters m (oracle=$(if ($tickOk) { 'engine-tick' } else { 'verifier' }), window=$tkAdvanceSource; advanced = route start -> pause, not a fixed time window)" }
     else { "ADVANCE NOT PROVEN — tkAdvance=$(if ($tkAdvance) { "$($tkAdvance.Meters)m@$($tkAdvance.Rate)m/s" } else { 'null' }); verifier $($track.meters)m in $($track.seconds)s = $([Math]::Round($streamRate,1))m/s, firstSampleD=$([Math]::Round($firstDist))m (must be <=100m: window has to start at the origin), originConfirmed=$($originReady.Ok), droppedFarSamples=$samplesRejected" }
     Test-Result -Id '5-route' -Name 'route advances, pause holds, resume continues' -Condition $ok `
         -Detail "$advanceDetail; tkPause=$(if ($tkPause) { "$($tkPause.Meters)m" } else { 'null' }) tkResume=$(if ($tkResume) { "$($tkResume.Meters)m" } else { 'null' }); paused drift $($pausedTrack.meters)m; resumed $($resumeTrack.meters)m resumeOk=$resumeOk; verifier samples=$($samples.Count) droppedFar=$samplesRejected retained=$($nearSamples.Count) rate=$([Math]::Round($streamRate,1))m/s; tickBase=$tickAdvanceBase; $fwDetail" `
