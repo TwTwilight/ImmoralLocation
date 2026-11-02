@@ -962,7 +962,7 @@ fun OverlayPromptContent(onEnable: () -> Unit, onDismiss: () -> Unit) {
     Column(modifier = Modifier.padding(horizontal = Dimens.sheetPadding, vertical = 8.dp)) {
         SheetTitle(stringResource(R.string.overlay_prompt_title))
         Spacer(modifier = Modifier.height(8.dp))
-        SheetSupporting(stringResource(R.string.overlay_prompt_body))
+        SheetSupporting(stringResource(R.string.overlay_prompt_body), maxLines = 5)
         Spacer(modifier = Modifier.height(20.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             // 48 dp primary + secondary rhythm, same hierarchy as every other surface (audit S6).

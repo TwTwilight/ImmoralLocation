@@ -51,12 +51,14 @@ fun SheetTitle(text: String, modifier: Modifier = Modifier) {
 
 /** One line of help right under a [SheetTitle]. */
 @Composable
-fun SheetSupporting(text: String, modifier: Modifier = Modifier) {
+fun SheetSupporting(text: String, modifier: Modifier = Modifier, maxLines: Int = 2) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        maxLines = 2,
+        // Callers that carry an explanation rather than a caption pass a higher ceiling: a body cut
+        // mid-clause ("…适合在导航、运动类应用…") is a fragment, not brevity (R7 third step).
+        maxLines = maxLines,
         overflow = TextOverflow.Ellipsis,
         modifier = modifier,
     )
