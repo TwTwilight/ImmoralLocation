@@ -62,6 +62,9 @@ import com.immoral.location.ui.sheets.ToolsPanel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+private const val SEARCH_TIMEOUT_MS = 8_000L
+
+
 /** Secondary sheets that still deserve a real modal (they are not part of the map IA). */
 private enum class ModalSheet { NONE, STATUS, LAYERS, HEADING, SETTINGS, FAVORITES, APPS, OVERLAY_PROMPT }
 
@@ -78,6 +81,7 @@ private enum class ModalSheet { NONE, STATUS, LAYERS, HEADING, SETTINGS, FAVORIT
  *  * nothing outside the clipboard/notification permissions touches Android APIs directly.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
+
 @Composable
 fun RootScreen(app: App, initialSearch: String? = null) {
     val scope = rememberCoroutineScope()
@@ -505,3 +509,4 @@ fun RootScreen(app: App, initialSearch: String? = null) {
 private fun canDrawOverlays(context: android.content.Context): Boolean =
     Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
         android.provider.Settings.canDrawOverlays(context)
+

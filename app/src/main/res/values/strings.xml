@@ -319,4 +319,7 @@
     <string name="action_collapse_sheet">收起路线面板</string>
     <string name="route_import_hint">从 GPX 文件读取路径点</string>
     <string name="route_export_hint">把当前路径点导出为 GPX</string>
+    <!-- A search that never answers must not leave the card stuck on 正在搜索… forever. -->
+    <string name="search_timeout">搜索超时，请检查网络或换个关键词</string>
 </resources>
+
