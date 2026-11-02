@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -118,8 +119,10 @@ fun SearchPill(
                 modifier = Modifier.size(22.dp),
             )
             Spacer(modifier = Modifier.width(12.dp))
-            Box(modifier = Modifier.weight(1f)) {
-                if (query.isEmpty()) {
+            // A placeholder ellipsised to a lone "..." is worse than no placeholder: it reads as a broken
+            // field (frame at 720x1280). Below this width the icon alone carries the affordance.
+            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                if (query.isEmpty() && maxWidth >= 120.dp) {
                     Text(
                         text = stringResource(R.string.map_search_placeholder),
                         style = MaterialTheme.typography.bodyLarge,
@@ -789,3 +792,6 @@ private fun ChipAction(
         )
     }
 }
+
+
+
