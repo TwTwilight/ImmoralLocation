@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -506,6 +507,14 @@ fun MapScreen(
                 ),
         )
 
+        // Which direction the veil must go depends on the theme: light needs a white veil (the system
+        // icons are dark), dark needs a black one — `surface` in dark mode is *lighter* than the
+        // night map tiles, so a surface veil brightened the top strip and broke the full-bleed look
+        // (that was the dark sweep's finding, photographed before this change).
+        val statusVeilDark = MaterialTheme.colorScheme.surface.luminance() < 0.2f
+        val statusVeil = if (statusVeilDark) androidx.compose.ui.graphics.Color.Black else MaterialTheme.colorScheme.surface
+        val statusVeilTopAlpha = if (statusVeilDark) 0.55f else 0.62f
+        val statusVeilMidAlpha = if (statusVeilDark) 0.20f else 0.26f
         // Status-bar legibility band. The map is deliberately full-bleed, but on pale tiles the
         // system clock and battery sit on light POI labels and stop being readable (R1/R6). One
         // short gradient in the *surface* role to the status-bar height: a white veil in light
@@ -518,9 +527,9 @@ fun MapScreen(
                 .height(with(density) { navInsetTopPx.toDp() })
                 .background(
                     androidx.compose.ui.graphics.Brush.verticalGradient(
-                        0f to MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
-                        0.75f to MaterialTheme.colorScheme.surface.copy(alpha = 0.26f),
-                        1f to MaterialTheme.colorScheme.surface.copy(alpha = 0f),
+                        0f to statusVeil.copy(alpha = statusVeilTopAlpha),
+                        0.75f to statusVeil.copy(alpha = statusVeilMidAlpha),
+                        1f to statusVeil.copy(alpha = 0f),
                     ),
                 ),
         )

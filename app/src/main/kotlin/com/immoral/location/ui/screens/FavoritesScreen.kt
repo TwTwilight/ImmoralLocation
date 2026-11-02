@@ -269,9 +269,9 @@ private fun FavoriteRow(
                 Icon(
                     Icons.Filled.Edit,
                     contentDescription = stringResource(R.string.action_rename),
-                    // Destructive controls look destructive (§10.2): neutral here read as
-                    // just another row action.
-                    tint = MaterialTheme.colorScheme.error,
+                    // Rename is not destructive: it stays neutral so only the trash reads as
+                    // a delete (the earlier patch tinted both icons by accident).
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp),
                 )
             }
