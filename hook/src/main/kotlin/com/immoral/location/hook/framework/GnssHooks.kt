@@ -77,9 +77,14 @@ object GnssHooks {
     private var lastNmeaMs: Long = 0L
 
     /** Last framework-built GnssStatus we mutated successfully: guaranteed readable, so it can
-     *  be replayed to listeners that register later instead of constructing a new object. */
+     *  be replayed to listeners that register later instead of constructing a new object.
+     *  Cleared whenever `gpsSignalSimulation` turns on: it carries the real constellation shape. */
     @Volatile
     private var lastMutatedStatus: Any? = null
+
+    /** Edge detector for "gpsSignalSimulation just turned on" (see [push]). */
+    @Volatile
+    private var lastSimOn: Boolean = false
 
     /** Cache for [statusFromSatellites]: (satellite set, status) so a stationary engine builds once. */
     @Volatile
@@ -482,34 +487,43 @@ object GnssHooks {
             if (!snap.config.gpsSignalSimulation) return
             val incoming = param.args.getOrNull(0)
             val realCount = Fakes.readbackStatus(incoming)?.first ?: 0
-            // Preferred: mutate the framework-built status (vendor representation + parcelling intact).
+            // CONSTRUCT FIRST, mutate only as a fallback.
+            //
+            // Mutating the framework-built status keeps the *real* constellation shape - on this ROM
+            // that is 51 satellites flagged `usedInFix = 0` indoors, and the mutation path does not
+            // win the `usedInFix` bits back, so apps read "51 sats, none used in fix". Standalone the
+            // check passed (`usedInFix=7`) because nothing had polluted the real status yet; in a full
+            // matrix run it failed (`satellites=51 usedInFix=0`) with exactly that signature
+            // (report-9.json). A simulation must own the whole status, not inherit it.
+            val constructed = statusFromSatellites(snap.satellites) ?: Fakes.gnssStatus(snap.satellites)
+            val readback = constructed?.let { Fakes.readbackStatus(it) }
+            if (constructed != null && readback != null && readback.first == snap.satellites.size) {
+                param.args[0] = constructed
+                Log.rate(
+                    "gnss.constructed",
+                    30_000L,
+                    "gnss: branch=construct (owns the status) realCount=" + realCount +
+                        " sats=" + snap.satellites.size + " readback=" + readback,
+                )
+                return
+            }
+            // Construction could not round-trip on this ROM: mutate the real one and accept that it
+            // keeps the real constellation shape.
             if (realCount > 0 && Fakes.mutateStatus(incoming, snap.satellites)) {
-                // Remember the ROM own (now mutated) status: it is guaranteed readable, so it can be
-                // replayed to listeners that register later instead of constructing a new one.
                 lastMutatedStatus = incoming
                 Log.rate(
                     "gnss.mutated",
                     30_000L,
-                    "gnss: branch=mutate realCount=" + realCount + " sats=" + snap.satellites.size,
+                    "gnss: branch=mutate (construct unavailable) realCount=" + realCount +
+                        " sats=" + snap.satellites.size,
                 )
                 return
             }
-            // No real sky view to mutate (indoors: 0 sats) - construct our own and hand it over.
-            val status = statusFromSatellites(snap.satellites) ?: Fakes.gnssStatus(snap.satellites)
-            if (status == null) {
-                Log.rate(
-                    "gnss.construct.fail",
-                    60_000L,
-                    "gnss: branch=construct FAILED realCount=" + realCount + " sats=" + snap.satellites.size,
-                )
-                return
-            }
-            param.args[0] = status
             Log.rate(
-                "gnss.constructed",
-                30_000L,
-                "gnss: branch=construct realCount=" + realCount + " sats=" + snap.satellites.size +
-                    " readback=" + Fakes.readbackStatus(status),
+                "gnss.construct.fail",
+                60_000L,
+                "gnss: branch=construct FAILED realCount=" + realCount + " sats=" + snap.satellites.size +
+                    " readback=" + readback,
             )
         } catch (t: Throwable) {
             Log.rate("gnss.status", 15_000L, "gnss status replace failed: " + t.javaClass.simpleName)
@@ -633,6 +647,17 @@ object GnssHooks {
     // ------------------------------------------------------------------ push
 
     private fun push(snap: EngineRuntime.Snap) {
+        // Turning the simulation on must not inherit anything from the real receiver: on this ROM the
+        // real status carries 51 satellites with `usedInFix = 0` indoors, and a cached copy of it
+        // (`lastMutatedStatus`) was being replayed to listeners that registered later. Dropping it on
+        // the off->on edge makes the precondition explicit instead of accidental (the same fix shape
+        // that made `6-cells` honest).
+        val simOn = snap.running && snap.config.gpsSignalSimulation
+        if (simOn && !lastSimOn) {
+            lastMutatedStatus = null
+            Log.i("gnss: gpsSignalSimulation ON — dropped any inherited real constellation/status")
+        }
+        lastSimOn = simOn
         if (!snap.running) return
         if (!snap.config.gpsSignalSimulation) return
         val status = statusListeners.let { list ->
