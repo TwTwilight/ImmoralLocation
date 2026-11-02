@@ -291,23 +291,35 @@ fun extrasEnabled(): Boolean {              // Log.kt
   **实测为假**：`ReadyAMapSDK v1.0.4` + `3dmap 10.0.600` 用 AAR 自带 key 就能初始化出图，
   应用进程日志里有 `I AmapHost: amap map loaded (tiles rendered)`，截图是高德 样式地图。
   osmdroid 只是**初始化失败时**的兜底（S11/S13 的 osmdroid 相关结论仍然成立，只是它不是默认路径）。
-* 由此做的四臂 A/B（同一设备、同一缩放、冷启动；每臂 uninstall → install → 18–20 s → 截图 + 应用进程 logcat）：
+* 由此做的 A/B（同一设备、冷启动；每臂 uninstall → install → 20 s → 截图 + 应用进程 logcat）。
+  第一轮（资产全留的控制组基础上）：`cfg` 可去、`ae` 黑屏、六组全丢黑屏。
+  第二轮（2026-11-02 上午，**一个 APK 只改一个变量**，基线 = 已丢 `cfg` 的发布配置）：
 
-  | arm | APK 字节 | 截图 | `AmapHost: amap map loaded` | 结论 |
-  |---|---|---|---|---|
-  | 对照（资产全留） | 8 165 765 | 1 021 801 B | **有** | 正常 |
-  | **只丢 `assets/cfg`** | 6 542 016 | 1 020 639 B | **有** | **与对照一致** |
-  | 只丢 `assets/ae` | 7 827 484 | 130 276 B | 有（很晚） | **黑屏**：`FileNotFoundException: ae/res.zip` → `NullPointerException … GLMapState.setMapZoomer` |
-  | 六组全丢 | 5 274 854 | 130 197 B | 无 | **黑屏** |
+  | arm | APK 字节 | MiB | Δ | 截图 | `AmapHost: amap map loaded` | 结论 |
+  |---|---|---|---|---|---|---|
+  | 控制（发布配置） | 6 555 623 | 6.25 | — | 955 530 B | 有 | 参照 |
+  | **丢 `map_assets`** | 5 953 561 | 5.68 | −602 062 | 190 877 B | **有（！）** | **拒绝：地图空白** |
+  | 丢 `map_custom` | 6 471 563 | 6.17 | −84 060 | 954 033 B | 有 | 接受 |
+  | 丢 `offlinemapv4.png` + `amap_resource1_0_0.png` | 6 312 872 | 6.02 | −242 751 | 1 445 606 B | 有 | 接受 |
+  | **三组一起（= 现在的发布配置）** | **6 229 074** | **5.94** | −326 549 | 1 445 518 B | 有 | 与对照同视口逐像素一致 |
+  | （第一轮）丢 `ae` | 7 827 484 | 7.46 | −338 281 | 130 276 B | 有（很晚） | **黑屏**：`FileNotFoundException: ae/res.zip` → `NullPointerException … GLMapState.setMapZoomer` |
+  | （第一轮）六组全丢 | 5 274 854 | 5.03 | −2 890 866 | 130 197 B | 无 | **黑屏** |
 
-* **落地**：release 构建默认丢弃 `assets/cfg`（aapt2 `--ignore-assets`，Variant API 区分 debug），
-  `-PimmoralAmapAssets=true` 可放回。7.78 → **6.24 MiB**。
-* **未落地**：`assets/map_assets`、`assets/map_custom`、`offlinemapv4.png`、`amap_resource1_0_0.png`
-  只在"六组全丢"这个黑屏臂里被试过，**没有单独证据**；任何一个要动，都必须先有它自己的
-  install + 截图（否则就是"包变小了、地图悄悄坏了"，比 4 MB 更糟）。
-* **证据边界**：两组都是同一个后端（高德）、同一台设备/ROM、同一缩放、冷启动。因此结论仅限
-  "**出厂配置下**，去掉 `cfg` 用户看不出差别"；不覆盖室内地图（`cfg/idrres` 在丢弃集合里）、
-  其它 ROM、真实 key、后续 高德 SDK 版本。
+  同视口对照：`pair-control1.png`（控制 1 446 140 B）与 `pair-shipping1.png`（发布 5.94 MiB 1 445 202 B）
+  是同一张图 —— 视野、标注、POI 图标、样式、标记、chrome 全同，只有状态栏时钟不同。
+
+* **落地**：release 默认丢弃 `assets/cfg` + `assets/map_custom` + `offlinemapv4.png` +
+  `amap_resource1_0_0.png`（aapt2 `--ignore-assets`，Variant API 区分 debug）；`assets/ae` 与
+  `assets/map_assets` **必须留**。`-PimmoralAmapAssets=true` 可全部放回。7.78 → **5.94 MiB**。
+* **教训（比数字更重要）**：`map_assets` 那一臂**打印了 `amap map loaded` 却画出空白面** ——
+  所以"日志行"不能当渲染证据，**必须把帧读回来看**。资产类改动一律以帧为准。
+* **`map_custom` / 两个 png 接受的双重依据**：帧不变，且 `app/`+`core/` 里没有任何
+  `OfflineMap*` / particle / fog / `CustomMapStyleOptions` 调用（grep 0 命中）。残余风险：若将来启用
+  粒子/天气图层或离线地图占位 UI，这两类资源缺失会露馅 —— 目前产品从不启用它们。
+* **证据边界**：所有臂都是同一个后端（高德）、同一台设备/ROM、冷启动。结论仅限
+  "**出厂配置下**用户看不出差别"；不覆盖室内地图（`cfg/idrres` 已丢）、其它 ROM、真实 key、
+  后续 高德 SDK 版本。另外实测**装/卸之间地图视野会漂**（同一控制 APK 前后两帧分别落在上海/北京），
+  所以跨臂比较只能靠"同视口的帧 + 目视读回"，不能靠帧字节数。
 
 ---
 

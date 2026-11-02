@@ -233,6 +233,9 @@ delivery hook: … pkg=com.xiaomi.aicr / com.google.android.gms / com.xiaomi.met
 | 2 | **R8：去掉 `-keep class org.osmdroid.** { *; }`**，改成只钉反射面 | 8 159 408 | **7.78** | **−185 012** | 旧的毯式 keep 把 osmdroid 全部 330 个类（1.09 MB class 文件）连同每个成员钉进 dex；本工程是直接实例化 osmdroid（`MapHost`/`TileSources`），R8 自己就能算出可达闭包。dex 2 197 011 → 2 089 368 |
 | 3 | （同轮其它人的 UI 改动） | 8 164 366 | 7.79 | +5 KB | 记录当前树的状态，便于复核 |
 | 4 | **去掉 `assets/cfg`（高德 样式/室内包）** | 6 542 016 | **6.24** | **−1 623 749** | 设备实测：地图与对照同屏一致（四臂表见 §7.3）；`ae/` 等其它包**不能**一起去 |
+| 5 | **再按"一个 APK 一个变量"补测三组**：接受 `map_custom` + 两个 png，拒绝 `map_assets` | **6 229 074** | **5.94** | **−326 549** | 每臂单独 install+帧（见 §7.3 第二轮表）；`map_assets` 那一臂**日志说 loaded 但画面空白**，故拒绝 |
+
+（第 4、5 行之间还有几 KB 的同轮他人改动，所以 5.94 与"6.24 − 326 549"不完全相等，属于正常树漂移。）
 
 **device-free 验收（改完立刻跑）**：`23-module-integrity` **PASS**（`assets/xposed_init=com.immoral.location.hook.XposedEntry`、
 mapping 里 hook 类 5 个、dex 里确实有 `com/immoral/location/hook/XposedEntry`）、
@@ -267,20 +270,49 @@ Lead 会在本轮收尾时收到 **7.5**，以便卡住 6.24 MiB 的回归。
 | 只丢 `ae` | 7 827 484 | 130 276 B | 有（很晚） | **黑屏**：`java.io.FileNotFoundException: ae/res.zip` → `NullPointerException … GLMapState.setMapZoomer` |
 | 六组全丢 | 5 274 854 | 130 197 B | 无 | **黑屏** |
 
-⇒ 结论：**`assets/cfg`（1 623 749 B）可去；`assets/ae/res.zip` 是硬依赖，必须留**；
-`map_assets/`（−602 041）、`map_custom/`（−84 047）、`offlinemapv4.png` + `amap_resource1_0_0.png`
-（−242 742）**只**在黑屏的"六组全丢"臂里被一起拿掉过，**没有单独验证**，因此**不落地**；
-每一个都需要自己的一次 install+截图才能算数（`-PimmoralAmapAssets=false` 就是这个实验开关）。
+⇒ 第一轮结论：**`assets/cfg`（1 623 749 B）可去；`assets/ae/res.zip` 是硬依赖，必须留**；
+`map_assets/`、`map_custom/`、两个 png 只在黑屏的"六组全丢"臂里一起被拿掉过，**没有单独验证**，
+所以第一轮**不落地**。
+
+#### 7.3.1 第二轮：一个 APK 只改一个变量（2026-11-02 上午，2026-11-02 09:18–09:23）
+
+基线 = 已丢 `cfg` 的发布配置；每臂 uninstall → install → 冷启动 → 20 s → **帧读回目视** + `logcat --pid`：
+
+| arm | APK 字节 | MiB | Δ | 帧 | `AmapHost: amap map loaded` | 结论 |
+|---|---|---|---|---|---|---|
+| 控制（发布配置） | 6 555 623 | 6.25 | — | 955 530 B | 有 | 参照 |
+| **丢 `map_assets`** | 5 953 561 | 5.68 | −602 062 | 190 877 B | **有（！）** | **拒绝：地图空白** |
+| 丢 `map_custom` | 6 471 563 | 6.17 | −84 060 | 954 033 B | 有 | **接受** |
+| 丢 `offlinemapv4.png` + `amap_resource1_0_0.png` | 6 312 872 | 6.02 | −242 751 | 1 445 606 B | 有 | **接受** |
+| **三组一起（= 现在的发布配置）** | **6 229 074** | **5.94** | **−326 549** | 1 445 518 B | 有 | 通过 |
+
+**同视口对照（最硬的证据）**：`pair-control1.png`（控制，1 446 140 B）与 `pair-shipping1.png`
+（发布 5.94 MiB，1 445 202 B）是同一张图 —— 视野、路名标注、POI 图标、配色样式、位置标记、chrome
+全部一致，唯一差别是状态栏时钟（9:22 vs 9:23）。
+
+**两条教训**：
+1. **`amap map loaded` 不是渲染证据**。`map_assets` 那一臂打印了这一行，画面却是空白 ——
+   资产类改动必须以**读回的帧**为准。这一条已写进 `app/build.gradle.kts` 的注释里防止后人踩。
+2. **装/卸之间地图视野会漂**：同一个控制 APK 前后两帧分别落在上海/北京，帧字节数 1 446 140 vs 957 109。
+   所以跨臂比较只能"同视口截图 + 目视读回"，不能用帧字节数当判据。
+
+**`map_custom` / 两个 png 被接受的双重依据**：帧不变，且 `app/`+`core/` 里没有任何 `OfflineMap*`、
+particle、fog、`CustomMapStyleOptions` 调用（grep 0 命中）。残余风险：如果将来启用粒子/天气图层或
+离线地图占位 UI，这两类资源缺失会显形 —— 当前产品从不启用。
 
 **落地的形态**（`app/build.gradle.kts`）：
 
 ```kotlin
-val amapAssetPatterns = listOf("cfg")
+val amapAssetPatterns = listOf("cfg", "map_custom", "offlinemapv4.png", "amap_resource1_0_0.png")
 val amapAssetsRequested = (project.findProperty("immoralAmapAssets") as String?)?.toBoolean()
 
 androidComponents { onVariants { variant ->
     val keepAmapAssets = amapAssetsRequested ?: (variant.buildType != "release")   // release 丢，debug 留
-    if (!keepAmapAssets) variant.androidResources?.ignoreAssetsPatterns?.addAll(amapAssetPatterns)
+    val patterns = buildList {
+        if (!keepAmapAssets) addAll(amapAssetPatterns)
+        addAll(amapAssetExperimentPatterns)      // -PimmoralAmapDropAssets=…，实验专用，默认空
+    }
+    if (patterns.isNotEmpty()) variant.androidResources?.ignoreAssetsPatterns?.addAll(patterns)
 } }
 ```
 
@@ -288,11 +320,12 @@ androidComponents { onVariants { variant ->
   "release 丢 / debug 留"；模块级 `androidResources` 是 variant 无关的。
 * **不要**用 `packaging.resources.excludes`：AGP 9 上它对 `assets/` 不生效（实测同样 glob，
   `assets/cfg` 15 个条目一个没少）。
-* 逃生口：`-PimmoralAmapAssets=true` 把 `cfg` 放回去。
+* 逃生口：`-PimmoralAmapAssets=true` 全部放回；`-PimmoralAmapDropAssets=<aapt2 模式>` 是下一轮
+  做"一变量一 APK"实验用的开关（属性不写 ⇒ 与发布配置逐字节一致）。
 
-**证据边界（必须一起写）**：两组都跑在**同一个后端（高德）**、同一台设备/ROM、同一缩放、冷启动，
-所以这次 A/B 证明的是"**出厂配置下**去掉 `cfg` 用户看不出差别"，**不**证明室内地图
-（`cfg/idrres/ResPackIndoorMap.sdkrs` 在被丢掉的那份里）也没影响，也不证明其它 ROM、真实 key、
+**证据边界（必须一起写）**：所有臂都跑在**同一个后端（高德）**、同一台设备/ROM、冷启动，
+所以这些 A/B 证明的是"**出厂配置下**用户看不出差别"，**不**证明室内地图
+（`cfg/idrres/ResPackIndoorMap.sdkrs` 已丢）也没影响，也不证明其它 ROM、真实 key、
 或后续 高德 SDK 版本上仍然等价。
 
 **踩坑（值得记住，害了全组 20 分钟）**：Kotlin 的块注释是**可嵌套**的（和 Java 不同）。我在这个文件的
@@ -324,10 +357,12 @@ KDoc 里写了 `assets/cfg/**` 这类路径，里面的 `/*` 开了**嵌套注�
 .\gradlew.bat --offline :app:assembleRelease
 (Get-Item app\build\outputs\apk\release\app-release.apk).Length
 
-# 资产策略（release 默认丢 assets/cfg；debug 默认留）
-.\gradlew.bat --offline :app:assembleRelease                          # 6.24 MiB，cfg 不在包里
-.\gradlew.bat --offline :app:assembleRelease -PimmoralAmapAssets=true # 7.78 MiB，四臂 A/B 的对照臂
-# 验证 cfg 确实没被打进去：
+# 资产策略（release 默认丢四组：cfg / map_custom / 两个 png；debug 默认全留）
+.\gradlew.bat --offline :app:assembleRelease                          # 6.23 MB ≈ 5.94 MiB
+.\gradlew.bat --offline :app:assembleRelease -PimmoralAmapAssets=true # 7.78 MiB，A/B 的对照臂
+# 一变量一 APK 的实验臂（默认空，不写就等于发布配置）
+.\gradlew.bat --offline :app:assembleRelease -PimmoralAmapDropAssets=map_assets
+# 验证某组确实没被打进去（把 cfg 换成想查的那组）：
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 ([System.IO.Compression.ZipFile]::OpenRead("$PWD\app\build\outputs\apk\release\app-release.apk")).Entries.FullName -like 'assets/cfg/*'
 

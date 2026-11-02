@@ -46,32 +46,41 @@ val requestedAbis: List<String> =
 val abiSplitsEnabled = (project.findProperty("immoralAbiSplits") as String?)?.toBoolean() ?: false
 
 /**
- * 高德 style + indoor packs (`assets/cfg`, 1 623 749 B compressed) are dropped from release builds.
+ * 高德 asset groups dropped from release builds. Every entry below was proven on a device with its
+ * own install + frame; anything unproven stays in the APK.
  *
  * **The in-app map is 高德.** `ReadyAMapSDK v1.0.4` + `3dmap 10.0.600` initialises with the key the
- * AAR ships and renders — device log `I AmapHost: amap map loaded (tiles rendered)`, screenshot
- * identical with and without `assets/cfg`. The osmdroid raster view is only the fallback for ROMs
- * where the SDK cannot initialise.
+ * AAR ships and renders (`I AmapHost: amap map loaded (tiles rendered)`); the osmdroid raster view is
+ * only the fallback for ROMs where the SDK cannot initialise.
  *
- * Measured on device, four arms, each installed fresh (uninstall → install → cold start → frame):
- *   arm                            APK bytes   screenshot   `amap map loaded`   verdict
- *   control (assets in)            8 165 765   1 021 801 B  yes                 map renders
- *   cfg dropped                    6 542 016   1 020 639 B  yes                 renders identically
- *   ae dropped                     7 827 484     130 276 B  late               BLACK map
- *   all six dropped                5 274 854     130 197 B  no                 BLACK map
+ * Per-group A/B (one variable per APK, base = `cfg` already dropped; each arm uninstall → install →
+ * cold start → 20 s → frame read back + `logcat --pid`):
+ *   arm                        APK bytes   frame bytes   amap map loaded   verdict
+ *   control                    6 555 623       955 530   yes               renders
+ *   map_assets dropped         5 953 561       190 877   yes (!)           BLANK map — rejected
+ *   map_custom dropped         6 471 563       954 033   yes               renders identically
+ *   offlinemapv4 + res png     6 312 872     1 445 606   yes               renders identically
  *
- * `assets/ae/res.zip` is load-bearing (`java.io.FileNotFoundException: ae/res.zip` →
- * `NullPointerException … GLMapState.setMapZoomer` → black surface), so it stays. `map_assets`
- * (−602 041 B), `map_custom` (−84 047 B) and `offlinemapv4.png` + `amap_resource1_0_0.png`
- * (−242 742 B) were only ever tested inside the black-screen all-six arm, so they are NOT dropped;
- * each needs its own install + frame before it can be considered. `-PimmoralAmapAssets=false`
- * (release) / `=true` (debug, or any build that wants the packs back) switches the whole set.
+ * Two lessons are encoded in that table:
+ *  1. `assets/map_assets` (style + icon `.data`) is load-bearing — its arm still logged "amap map
+ *     loaded" while painting a blank surface, so **the log line alone is not proof; the frame is**.
+ *  2. `assets/ae/res.zip` is load-bearing as well (earlier arm: `FileNotFoundException: ae/res.zip`
+ *     → `NullPointerException … GLMapState.setMapZoomer` → black map), so it is not in this list.
+ *
+ * `map_custom/particle/fog.png` (weather/particle layer) and the two pngs are accepted because the
+ * frame is unchanged **and** nothing in `app/`/`core/` touches `OfflineMap*`, particle, fog or
+ * `CustomMapStyleOptions` APIs (grep: 0 hits).
+ *
+ * `-PimmoralAmapAssets=true` restores everything (debug builds do that by default).
  *
  * Mechanism: aapt2 `--ignore-assets`, applied per variant below. `packaging.resources.excludes` does
  * NOT touch `assets/` on AGP 9 (measured: same glob, all 15 `assets/cfg` entries still packaged).
  */
 val amapAssetPatterns: List<String> = listOf(
-    "cfg",
+    "cfg",                    // 1 623 749 B  style + indoor packs
+    "map_custom",             //    84 060 B  particle/weather art
+    "offlinemapv4.png",       //   217 597 B  offline-map placeholder (stored uncompressed)
+    "amap_resource1_0_0.png", //    24 691 B  SDK skin resource
 )
 val amapAssetsRequested = (project.findProperty("immoralAmapAssets") as String?)?.toBoolean()
 
