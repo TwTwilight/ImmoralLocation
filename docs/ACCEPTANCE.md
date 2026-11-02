@@ -651,3 +651,18 @@ oracle 才能真正求和。
 **同时发现一个真 bug（已批准修）**：`EngineRuntime:279` 在"同一份点集已加载"时**静默忽略** `StartRoute`，
 于是第二次规划同一路线会"没反应"，或在 FINISHED 状态下 `PlayRoute` 恢复旧进度导致位置跳变。
 修法：当请求到达而状态不是 PLAYING（FINISHED/IDLE）时视为重新开始（进度归零），并把忽略路径打 info 日志。
+
+## 28. `5-route` 数值修复后（build 11:58:14，`report-5c.json`）
+
+```
+PASS 5-route advanced 29.18 m (window=applied-window); tkResume=32.55m; resumed 32.58m resumeOk=True;
+     verifier samples=8 droppedFar=8 retained=0 rate=5.3m/s; tickBase=15;
+     globalState(immoral_state): t1=(31.23077,121.4737)@ts+0s t2=(31.231,121.4737)@ts+0s moved=True
+```
+
+把 `tick.diag` 的 5 s 节流降到 tick 间隔后，`advanced` 不再是"1–2 个样本"的结果；同时
+`globalState … moved=True` 在路线运行期间持续证明状态通道在动。窗口定义写进了 detail（`applied-window`，
+"route start → pause"），`resumed/tkResume` 作为稳定见证并列。
+
+**正确性提醒（写给自己）**：这一轮我一度把"oracle 稀疏"误判为"引擎启动慢"，并已让 core 负责人去查。
+真正的教训是——**先怀疑测量，再怀疑产品**。
