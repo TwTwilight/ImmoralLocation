@@ -590,3 +590,27 @@ moved=14.8m`，`appliedTicks 171→191`（20 s），而 peek 19 s 内两次采�
 
 **仍开（UI）**：规划器候选列表的 IME 遮挡——`imePadding()` 加在 page 上会把列表压成 0 高（已回退），
 正确位置是 sheet 根节点。
+
+## 25. 首次单次全绿：**16 PASS / 0 FAIL**（2026-11-02 11:38，`report-r10c.json`）
+
+build `lastUpdateTime=2026-11-02 11:27:58`；含新增的 `harness-build-stable`（运行期间安装包被换掉直接 FAIL）。
+
+```
+harness-liveness PASS   0-config-hygiene PASS   1-framework-spoof PASS   2-fast-switch PASS (3169ms)
+3-joystick PASS (3.3 m/s, ratio 1, oracle=engine-tick)   4-speed-levels PASS (六档 ratio 全 1.00)
+5-route PASS (advanced 23.43 m; resumed 38.92 m; tickBase=409)   6-cells PASS (t0 ci=78748384/tac=18403, polled 0.7s)
+7-wifi PASS (5→6 APs)   8-steps PASS (delta=44, oracle=steps-seam)   9-gnss PASS (49 颗, usedInFix=7)
+10-independent PASS (outside 真实位置 163.5 km / inside 模拟点 d=0)
+11-favorites PASS   11b-favorite-return PASS (tap landed, 0.9s d=0)
+23-module-integrity PASS   24-apk-size PASS (5.94 MB / 6.5 MB)
+```
+
+**关键修复（本轮）**
+1. **状态通道**：`system_server` 在本 ROM 上**无法写入 app 私有目录**（`open failed: EACCES`），
+   所以 `filesDir/fw_status.json` 从未存在过；app 只能靠广播回复刷新位置，于是**路线运行时**（没有命令）
+   UI 冻在起点。现在 hook 以 1 Hz 把同样的 JSON 写进 `Settings.Global/immoral_state`，app 优先读它
+   （用 `ts` 判新鲜度）。设备验证：`settings get global immoral_state` 返回
+   `{"running":true,"lat":31.231431…,"ts":…}`。
+2. **路线起点**：polyline 不保证起点在前，播放器只走 `routePath[0]` → 从终点开始；两个写入点现在会按
+   起点距离反转几何（已验证 peek 读回起点）。
+3. **`harness-build-stable`**：运行中途换包会直接 FAIL，配上 `harness-liveness`，两种"旧设备"陷阱都被堵住。
