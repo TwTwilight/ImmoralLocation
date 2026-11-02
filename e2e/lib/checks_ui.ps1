@@ -1071,32 +1071,44 @@ function Invoke-RouteClearCheck {
     # --- clear, then wait out the transition -----------------------------------------------------
     $clearBtn = $beforeNodes | Where-Object { $_.Id -eq 'e2e.route.clear' } | Select-Object -First 1
     $cleared = $false
+    $snackSeen = $false
+    $settlePolls = 0
     $snackState = 'not-cleared'
     if ($clearBtn) {
         Invoke-UiTapPoint -X $clearBtn.Cx -Y $clearBtn.Cy
-        # The snackbar IS the transition marker: if it is up, the frame is mid-animation and any layout
-        # judged from it is wrong (both of ui-polish's planner "defects" were exactly that). Distinguish
-        # "no snackbar appeared" from "appeared and drained" from "still visible" — a bare boolean read
-        # as a failure last time round.
-        $immediate = @(Get-UiNodes -Dump (Get-UiXml) | Where-Object { $_.Id -eq 'e2e.snackbar' }).Count -gt 0
-        if ($immediate) {
-            $gone = Wait-UiGone -Id 'e2e.snackbar' -TimeoutSec 10
-            $snackState = if ($gone) { 'drained' } else { 'STILL-VISIBLE' }
+        # CAPTURE RULE (docs/E2E.md): a snackbar in the frame means the dump is MID-TRANSITION, and both
+        # of ui-polish's planner "defects" were exactly that. `e2e.snackbar` cannot be used as "is it
+        # gone": the host container stays in the tree with empty text after the snackbar animates out
+        # (measured 2026-11-02 — a bare Wait-UiGone on that id never returns). So the criterion is the
+        # one that matters: TWO CONSECUTIVE DUMPS AGREE and no snackbar text is showing.
+        $prevSig = ''
+        $deadline = (Get-Date).AddSeconds(10)
+        while ((Get-Date) -lt $deadline) {
+            $d = Get-UiXml
+            $settlePolls++
+            $n = @(Get-UiNodes -Dump $d)
+            $snackShown = @($n | Where-Object { $_.Id -eq 'e2e.snackbar' -and ($_.Text -or $_.Desc) }).Count -gt 0
+            if ($snackShown) { $snackSeen = $true }
+            $sig = "p=$(@($n | Where-Object { $_.Id -eq 'e2e.route.plan' }).Count)" +
+            ";c=$(@($n | Where-Object { $_.Id -eq 'e2e.route.clear' }).Count)" +
+            ";h=$(@($n | Where-Object { $_.Text -match '选择终点后即可规划路线' }).Count)"
+            if (-not $snackShown -and $sig -eq $prevSig) { break }
+            $prevSig = $sig
+            Start-Sleep -Milliseconds 350
         }
-        else { $snackState = 'none' }
-        Start-Sleep -Milliseconds 600
         $cleared = $true
     }
+    $snackState = if (-not $clearBtn) { 'not-cleared' } elseif ($snackSeen) { 'seen-then-drained' } else { 'not-shown' }
     $afterNodes = @(Get-UiNodes -Dump (Get-UiXml))
     $planAfter = @($afterNodes | Where-Object { $_.Id -eq 'e2e.route.plan' }).Count
     $clearAfter = @($afterNodes | Where-Object { $_.Id -eq 'e2e.route.clear' }).Count
     $hintAfter = @($afterNodes | Where-Object { $_.Text -match '选择终点后即可规划路线' }).Count
     $ok = $destSet -and ($planBefore -gt 0) -and $cleared -and ($planAfter -eq 0) -and ($hintAfter -gt 0)
     $detail = "destination set=$destSet; before clear: plan=$planBefore clear=$clearBefore; " +
-    "after clear (post-transition): plan=$planAfter clear=$clearAfter hint=$hintAfter snackbar=$snackState"
+    "after clear (post-transition): plan=$planAfter clear=$clearAfter hint=$hintAfter snackbar=$snackState settledAfter=$settlePolls poll(s)"
     Test-Result -Id '15d-route-clear' -Name 'clearing the route returns the planner to its fresh shape' -Condition $ok `
         -Detail $detail `
-        -Metrics @{ destinationSet = $destSet; planBefore = $planBefore; clearBefore = $clearBefore; planAfter = $planAfter; clearAfter = $clearAfter; hintAfter = $hintAfter; snackbar = $snackState }
+        -Metrics @{ destinationSet = $destSet; planBefore = $planBefore; clearBefore = $clearBefore; planAfter = $planAfter; clearAfter = $clearAfter; hintAfter = $hintAfter; snackbar = $snackState; settlePolls = $settlePolls }
 }
 
 # ------------------------------------------------------------------------------------------------
