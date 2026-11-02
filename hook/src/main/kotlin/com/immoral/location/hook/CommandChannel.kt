@@ -261,10 +261,7 @@ object StatusWriter {
         val now = System.currentTimeMillis()
         if (!force && now - lastWriteMs < 1000L) return
         lastWriteMs = now
-        if (writeDenied) return
         try {
-            val dir = appFiles ?: resolveAppFilesDir() ?: return
-            val file = File(dir, FILE_NAME)
             val json = buildString(160) {
                 append("{\"running\":").append(state.running)
                 append(",\"lat\":").append(state.point.lat)
@@ -279,6 +276,13 @@ object StatusWriter {
                 append(",\"ts\":").append(now)
                 append(",\"moduleVersion\":\"").append(ModuleInfo.version).append("\"}")
             }
+            // system_server cannot write into the app's private directory on this ROM (open failed:
+            // EACCES, measured 2026-11-02), so the file below is only a fallback. Settings.Global is
+            // the transport that actually works cross-uid - the cells channel already proves it.
+            publishToSettingsGlobals(json)
+            if (writeDenied) return
+            val dir = appFiles ?: resolveAppFilesDir() ?: return
+            val file = File(dir, FILE_NAME)
             file.writeText(json)
             lastPath = file.absolutePath
             if (didFail) {
@@ -295,6 +299,19 @@ object StatusWriter {
                         "app should display state from its own engine. path=${lastPath ?: "unresolved"}",
                 )
             }
+        }
+    }
+
+    /** `Settings.Global` key carrying the status JSON; any app can read it, unlike our private files. */
+    const val STATE_KEY = "immoral_state"
+
+    private fun publishToSettingsGlobals(json: String) {
+        try {
+            val context = BridgeServer.hostContext() ?: return
+            android.provider.Settings.Global.putString(context.contentResolver, STATE_KEY, json)
+        } catch (t: Throwable) {
+            // Swallowed on purpose: a failed status publish must never stop the ticker.
+            Log.once("status.globals", "Settings.Global publish failed: ${t.javaClass.simpleName}")
         }
     }
 

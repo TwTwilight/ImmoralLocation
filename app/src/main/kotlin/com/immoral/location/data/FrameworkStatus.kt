@@ -30,6 +30,7 @@ import kotlinx.serialization.json.longOrNull
  */
 class FrameworkStatus(context: Context) {
 
+    private val resolver = context.contentResolver
     private val statusFile = File(context.filesDir, STATUS_FILE)
     private val heartbeatFile = File(context.filesDir, HEARTBEAT_FILE)
     private val json = Json {
@@ -63,7 +64,27 @@ class FrameworkStatus(context: Context) {
         Long.MAX_VALUE
     }
 
+    /**
+     * The transport that actually works cross-uid: system_server cannot write into our private
+     * directory on this ROM (EACCES), so the hook publishes the same JSON into Settings.Global and
+     * we read it here. Without this the UI freezes whenever no command is being sent - which is
+     * exactly what happens while a planned route drives the engine on its own.
+     */
+    private fun readGlobalState(nowMs: Long): EngineState? {
+        val raw = try {
+            android.provider.Settings.Global.getString(resolver, STATE_KEY_GLOBAL)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Settings.Global read failed: " + t.javaClass.simpleName, t)
+            return null
+        } ?: return null
+        if (raw.isBlank()) return null
+        val ts = GLOBAL_TS.find(raw)?.groupValues?.get(1)?.toLongOrNull() ?: nowMs
+        if (nowMs - ts > STATUS_FRESH_MS) return null
+        return decodeState(raw) ?: decodeReplyState(raw) ?: decodeLoose(raw)
+    }
+
     private fun readStatusState(nowMs: Long): EngineState? {
+        readGlobalState(nowMs)?.let { return it }
         return try {
             if (!statusFile.exists()) return null
             if (nowMs - statusFile.lastModified() > STATUS_FRESH_MS) return null
@@ -147,6 +168,11 @@ class FrameworkStatus(context: Context) {
         /** Heartbeat file name; must match `:hook`'s client layer. */
         const val HEARTBEAT_FILE = "hook_heartbeat"
 
+    /** Settings.Global key the hook publishes the same status JSON into (works cross-uid). */
+    const val STATE_KEY_GLOBAL = "immoral_state"
+
+    val GLOBAL_TS = Regex("\"ts\"\\s*:\\s*(\\d{10,})")
+
         /** A status file older than this is ignored (the framework polls at 1 Hz). */
         const val STATUS_FRESH_MS = 3_500L
 
@@ -154,3 +180,8 @@ class FrameworkStatus(context: Context) {
         const val HEARTBEAT_FRESH_MS = 30_000L
     }
 }
+
+
+
+
+

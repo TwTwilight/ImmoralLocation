@@ -285,6 +285,43 @@ function Get-SetPositionCommandCount {
     catch { return 0 }
 }
 
+# Diagnostic only (never an assertion): read the framework layer's own state file twice so a "route runs
+# but the app's position does not move" report can be split into
+#   (a) the hook is not refreshing fw_status.json (point frozen), or
+#   (b) the file IS fresh but the app's poller stopped consuming it.
+# The file lives in the app's private dir, so this reads it as root and reports point, updatedAtMs and
+# the file's mtime age. Evidence only — the check's verdict does not depend on it.
+function Get-FwStatusProbe {
+    $pkg = Get-ModulePackageName
+    $path = "/data/data/$pkg/files/fw_status.json"
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $mtime = 0
+    $text = ''
+    try {
+        $r = Invoke-AdbRoot "stat -c %Y $path 2>/dev/null; echo ---; cat $path 2>/dev/null" -AllowFailure
+        $lines = @($r.Output)
+        $sep = [Array]::IndexOf($lines, '---')
+        if ($sep -gt 0 -and $lines[0] -match '^(\d{9,})$') {
+            $mtime = [long]$matches[1]
+            $text = ($lines[($sep + 1)..($lines.Count - 1)] -join '')
+        }
+    }
+    catch { }
+    if (-not $text) { return [pscustomobject]@{ Present = $false; Lat = $null; Lon = $null; UpdatedAtMs = $null; AgeSec = $null } }
+    $lat = $null; $lon = $null; $upd = $null
+    $clean = $text.Trim()
+    if ($clean.StartsWith('{')) {
+        try {
+            $j = $clean | ConvertFrom-Json
+            if ($j.point) { $lat = [double]$j.point.lat; $lon = [double]$j.point.lon }
+            if ($j.PSObject.Properties['updatedAtMs']) { $upd = [long]$j.updatedAtMs }
+        }
+        catch { }
+    }
+    $age = if ($mtime -gt 0) { [Math]::Max(0, $now - $mtime) } else { $null }
+    return [pscustomobject]@{ Present = $true; Lat = $lat; Lon = $lon; UpdatedAtMs = $upd; AgeSec = $age }
+}
+
 # After a deliberate Force-Stop the broadcast receiver is gone, and the bridge silently degrades to the
 # SharedPreferences channel — which is unreachable when the app is down, so motion rows read "no-sample"
 # for a reason that has nothing to do with the product (measured 2026-11-02: DRIVE=no-sample alongside
@@ -788,10 +825,22 @@ if (Test-Selected '5') {
     Send-Start -Channel $Channel | Out-Null
     Start-Sleep -Seconds 6
     $progressMark = Get-VerifyMark
+    # Diagnostic pair (see Get-FwStatusProbe): t1 now, t2 ~4 s later, while the route is driving.
+    $fw1 = Get-FwStatusProbe
     $tickAdvanceBase = if ($tickAtStart.Count -gt 0) { $tickAtStart[0].Applied } else { 0 }
     $tickAdvanceFrom = @(Get-EngineTicks | Select-Object -Last 1)
     if ($tickAdvanceFrom.Count -gt 0) { $tickAdvanceBase = $tickAdvanceFrom[0].Applied }
     Start-Sleep -Seconds 4
+    $fw2 = Get-FwStatusProbe
+    $fwFmt = {
+        param($s)
+        if (-not $s -or -not $s.Present) { 'missing' }
+        elseif ($null -eq $s.Lat) { "unparsed@mtime+$($s.AgeSec)s" }
+        else { "($([Math]::Round($s.Lat,5)),$([Math]::Round($s.Lon,5)))@mtime+$($s.AgeSec)s" }
+    }
+    $fwMoved = ($fw1 -and $fw2 -and $fw1.Present -and $fw2.Present -and $null -ne $fw1.Lat -and $null -ne $fw2.Lat -and
+        ((Get-GeoDistanceMeters -Lat1 $fw1.Lat -Lon1 $fw1.Lon -Lat2 $fw2.Lat -Lon2 $fw2.Lon) -gt 0.5))
+    $fwDetail = "fwStatus: t1=$(& $fwFmt $fw1) t2=$(& $fwFmt $fw2) moved=$fwMoved"
     # Primary oracle: the engine's own applied ticks. The verifier's delivered stream is throttled while
     # it is backgrounded, and on 2026-11-02 that made this row read "advanced 0 m" for a route the engine
     # log showed moving at 6.0 m/s in ROUTE mode - a sampling artefact, not a product failure.
@@ -800,9 +849,20 @@ if (Test-Selected '5') {
     if (-not $tkAdvance -or $tkAdvance.Meters -lt 5) {
         # Stop/Start can RESET appliedTicks to 0, and an Applied-based baseline then matches almost
         # nothing for the whole window (measured 2026-11-02: tkAdvance=3.27 m for a 65 m route, while
-        # `tkResume` measured 32 m in the leg right after). ROUTE is used by this check alone, so the
-        # movement of this route is the sum over mode=ROUTE ticks in the current log window.
-        $routeTicks = @(Get-EngineTicks | Where-Object { $_.Mode -eq 'ROUTE' })
+        # `tkResume` measured 32 m in the leg right after). ROUTE is used by this check alone, so fall
+        # back to the LAST 20 ROUTE ticks (~10 s at a 500 ms interval, i.e. the advance window).
+        # NOT every ROUTE tick in the buffer: summing the whole buffer counted the pause/resume phases
+        # too and reported 746 m for a 500 m route (2026-11-02) — a number that would have been quoted.
+        # Take ticks from the END until they cover the ~10 s advance window, so the figure means
+        # "distance covered in the measured window" and not "distance ever covered in ROUTE mode".
+        $routeAll = @(Get-EngineTicks | Where-Object { $_.Mode -eq 'ROUTE' } | Select-Object -Last 60)
+        $routeTicks = @()
+        $accDt = 0.0
+        for ($ri = $routeAll.Count - 1; $ri -ge 0; $ri--) {
+            $routeTicks = @($routeAll[$ri]) + $routeTicks
+            $accDt += ($routeAll[$ri].DtMs / 1000.0)
+            if ($accDt -ge 10.0) { break }
+        }
         if ($routeTicks.Count -ge 2) {
             $rtMoved = 0.0; $rtDt = 0.0
             foreach ($rt in $routeTicks) { $rtMoved += $rt.Moved; $rtDt += ($rt.DtMs / 1000.0) }
@@ -879,8 +939,8 @@ if (Test-Selected '5') {
     $advanceDetail = if ($advanced) { "advanced $advancedMeters m (oracle=$(if ($tickOk) { 'engine-tick' } else { 'verifier' }))" }
     else { "ADVANCE NOT PROVEN — tkAdvance=$(if ($tkAdvance) { "$($tkAdvance.Meters)m@$($tkAdvance.Rate)m/s" } else { 'null' }); verifier $($track.meters)m in $($track.seconds)s = $([Math]::Round($streamRate,1))m/s, firstSampleD=$([Math]::Round($firstDist))m (must be <=100m: window has to start at the origin), originConfirmed=$($originReady.Ok), droppedFarSamples=$samplesRejected" }
     Test-Result -Id '5-route' -Name 'route advances, pause holds, resume continues' -Condition $ok `
-        -Detail "$advanceDetail; tkPause=$(if ($tkPause) { "$($tkPause.Meters)m" } else { 'null' }) tkResume=$(if ($tkResume) { "$($tkResume.Meters)m" } else { 'null' }); paused drift $($pausedTrack.meters)m; resumed $($resumeTrack.meters)m resumeOk=$resumeOk; verifier samples=$($samples.Count) droppedFar=$samplesRejected retained=$($nearSamples.Count) rate=$([Math]::Round($streamRate,1))m/s; tickBase=$tickAdvanceBase" `
-        -Metrics @{ advanceMeters = $advancedMeters; advanced = $advanced; tickOk = $tickOk; streamOk = $streamOk; streamRate = [Math]::Round($streamRate, 1); samples = $samples.Count; samplesRejected = $samplesRejected; pausedMeters = $pausedTrack.meters; resumedMeters = $resumeTrack.meters; resumeOk = $resumeOk }
+        -Detail "$advanceDetail; tkPause=$(if ($tkPause) { "$($tkPause.Meters)m" } else { 'null' }) tkResume=$(if ($tkResume) { "$($tkResume.Meters)m" } else { 'null' }); paused drift $($pausedTrack.meters)m; resumed $($resumeTrack.meters)m resumeOk=$resumeOk; verifier samples=$($samples.Count) droppedFar=$samplesRejected retained=$($nearSamples.Count) rate=$([Math]::Round($streamRate,1))m/s; tickBase=$tickAdvanceBase; $fwDetail" `
+        -Metrics @{ fwStatusMoved = $fwMoved; fwStatusAge1 = $fw1.AgeSec; fwStatusAge2 = $fw2.AgeSec; advanceMeters = $advancedMeters; advanced = $advanced; tickOk = $tickOk; streamOk = $streamOk; streamRate = [Math]::Round($streamRate, 1); samples = $samples.Count; samplesRejected = $samplesRejected; pausedMeters = $pausedTrack.meters; resumedMeters = $resumeTrack.meters; resumeOk = $resumeOk }
 }
 
 # ------------------------------------------------------------------------------------------------
@@ -1642,6 +1702,23 @@ if (-not $KeepVerifier) {
     Stop-Verifier
 }
 Write-E2eTable
+# BUILD-STABILITY GUARD: `harness-liveness` proves the module was loaded at the START; it cannot see an
+# install that lands mid-run. Measured 2026-11-02 11:29: a fresh build was installed while the matrix was
+# running, system_server restarted, and every motion row afterwards was measured against a different
+# process (appliedTicks=1, tkResume=0). Compare the build identity at the end with the one recorded
+# before the first check and refuse to let such a run read as a clean one.
+try {
+    $endPi = Invoke-AdbShell "dumpsys package $(Get-ModulePackageName)" -AllowFailure
+    $endUpdLine = (@($endPi.Output) | Where-Object { $_ -match 'lastUpdateTime=' } | Select-Object -First 1)
+    $endUpd = if ($endUpdLine) { ($endUpdLine -replace '^\s*lastUpdateTime=', '').Trim() } else { '?' }
+    $startUpd = if ($moduleBuildInfo -match 'lastUpdateTime=(.+)$') { $matches[1].Trim() } else { '?' }
+    if ($startUpd -ne '?' -and $endUpd -ne '?' -and $startUpd -ne $endUpd) {
+        Add-Result -Id 'harness-build-stable' -Name 'the module build did not change during the run' -Status 'FAIL' `
+            -Detail "the installed module changed mid-run: lastUpdateTime $startUpd at the start, $endUpd at the end. A system_server restart during the matrix invalidates every motion row measured after it — re-run on a quiescent device." `
+            -Metrics @{ startLastUpdate = $startUpd; endLastUpdate = $endUpd }
+    }
+}
+catch { }
 $apkPath = ''
 try { $apkPath = Get-PackageApkPath $modulePkg } catch { $apkPath = 'unresolved' }
 if (-not $Report -and $Only) {
