@@ -1484,6 +1484,16 @@ if (Test-Selected '10') {
             -Detail "no real last-known fix on this device — cannot distinguish a leak from an empty platform cache; needs a real GNSS fix first. Module log: $preFixLine" `
             -Metrics @{ skipped = 'no-real-last-known-fix'; prefixedAvailable = $preFixAvailable; preFixMissing = $preFixMissing; snapshotLine = $preFixLine; insideReached = $inside.Ok; logEvidence = $evText }
     }
+    # Contamination is a PRECONDITION statement too: the frozen outside read landed on a simulated point
+    # this very run used, so "non-whitelisted reader got a fake" is indistinguishable from "the cache
+    # still held the previous check's fake". A red row for that trains us to ignore red — the exact
+    # failure mode the round was about. It fails only when a REAL fix was available and a non-whitelisted
+    # reader still got the fake (the branch below, where $staleFrom is empty).
+    elseif ($staleFrom) {
+        Add-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Status 'SKIP' `
+            -Detail "cannot judge: the outside read ($([Math]::Round($outsideLat,5)),$([Math]::Round($outsideLon,5))) sits on $staleFrom — the provider cache still holds a simulated point used earlier in this run, so a leak and a stale cache are indistinguishable. inside(whitelisted) reached=$($inside.Ok); per-package evidence=[$evText]" `
+            -Metrics @{ skipped = 'cache-contaminated'; staleFrom = $staleFrom; outsideLat = $outsideLat; outsideLon = $outsideLon; insideReached = $inside.Ok; logEvidence = $evText }
+    }
     elseif (-not $lkOutPresent -and $null -eq $lkIn -and -not $logEvidence) {
         # Nothing observable at all — neither a cache read nor any per-package log line. That is an
         # inconclusive run, never a pass (this is exactly how the row looked green when run alone).
@@ -1769,9 +1779,30 @@ if (Test-Selected '11') {
                     }
                     Start-Sleep -Milliseconds 400
                 }
+                $interactiveFail = $null
                 if (-not $tapDump) {
-                    Write-Warn2 '     favourites sheet never became fully interactive (Close sheet + row); using the last dump'
-                    $tapDump = Get-UiDump
+                    # NEVER substitute a stale dump. On 2026-11-02 this path fell back to "the last dump",
+                    # tapped coordinates taken before the sheet settled, landed nothing, and then reported
+                    # `commands before=13 after=13` — a plausible number derived from an invalid
+                    # observation. A retry is honest; a fallback is not. Reopen the surface once.
+                    Write-Warn2 '     favourites sheet did not become interactive within 6 s — reopening and retrying once'
+                    $navRetry = Open-FavoritesSurface
+                    if (-not $navRetry) { Write-Warn2 '     reopening the favourites surface did not reach it again' }
+                    $readyDeadline = (Get-Date).AddSeconds(6)
+                    while ((Get-Date) -lt $readyDeadline) {
+                        $probeDump = Get-UiDump
+                        if ($probeDump) {
+                            $hasClose = @($probeDump.SelectNodes('//node') | Where-Object { $_.GetAttribute('content-desc') -match 'Close sheet' }).Count -gt 0
+                            $hasCoord = @($probeDump.SelectNodes('//node') | Where-Object { $_.GetAttribute('text') -match '^\s*-?\d+\.\d+,\s*-?\d+\.\d+\s*$' }).Count -gt 0
+                            if ($hasClose -and $hasCoord) { $tapDump = $probeDump; break }
+                        }
+                        Start-Sleep -Milliseconds 400
+                    }
+                }
+                if (-not $tapDump) {
+                    $topNow = Get-TopActivity
+                    $interactiveFail = "the favourites sheet never became fully interactive (Close sheet + a coordinate row) even after reopening — the tap was NOT attempted, so 'the position did not move' is not a conclusion. topResumedActivity=$topNow"
+                    $tapDump = Get-UiDump   # only so the row lookup below cannot throw; nothing is tapped
                 }
                 $row = @($tapDump.SelectNodes('//node') | Where-Object {
                         $_.GetAttribute('text') -match '^\s*-?\d+\.\d+,\s*-?\d+\.\d+\s*$'
@@ -1784,7 +1815,7 @@ if (Test-Selected '11') {
                 $landed = $false
                 $tapTried = $false
                 $rowBounds = if ($row) { $row.GetAttribute('bounds') } else { 'row not in dump' }
-                if ($row -and $rowBounds -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
+                if ($row -and -not $interactiveFail -and $rowBounds -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
                     $cx = [int](([int]$matches[1] + [int]$matches[3]) / 2)
                     $cy = [int](([int]$matches[2] + [int]$matches[4]) / 2)
                     # HIT TARGET (measured 2026-11-02 08:4x, manual taps with the count of
@@ -1838,7 +1869,7 @@ if (Test-Selected '11') {
                     }
                     # One retry: a sheet can still be settling when the first tap arrives, and the exact
                     # same coordinates work seconds later (measured: manual tap OK, harness tap silent).
-                    if (-not $landed) {
+                    if (-not $landed -and -not $interactiveFail) {
                         Write-Step '     first tap produced no command — settling 1.5 s and retrying once'
                         Start-Sleep -Milliseconds 1500
                         $retryDump = Get-UiDump
@@ -1860,7 +1891,13 @@ if (Test-Selected '11') {
                         }
                     }
                 }
-                if (-not $landed) {
+                if ($interactiveFail) {
+                    Test-Result -Id '11b-favorite-return' -Name 'quick return jumps back to the saved favourite' -Condition $false `
+                        -Detail $interactiveFail `
+                        -Metrics @{ failed = 'sheet-not-interactive' }
+                    Stop-Verifier
+                }
+                elseif (-not $landed) {
                     $cmdAfter = Get-SetPositionCommandCount
                     Test-Result -Id '11b-favorite-return' -Name 'quick return jumps back to the saved favourite' -Condition $false `
                         -Detail "tap did not land on the favourite row: no 'SetPosition' command reached the engine and no 已跳转到 snackbar appeared within 3 s (row bounds: $rowBounds; commands before=$cmdBefore after=$cmdAfter$(if (-not $tapTried) { '; no tappable coordinate row was present in the fresh dump' } else { '' }))"
