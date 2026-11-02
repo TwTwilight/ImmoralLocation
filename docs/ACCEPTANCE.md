@@ -628,3 +628,26 @@ harness-liveness PASS   0-config-hygiene PASS   1-framework-spoof PASS   2-fast-
 (d) bridge/hook 侧是否有 route 启动延迟。
 
 **当前基线**：单次全量矩阵 **16/16 绿**（`report-r10c.json`），任何改动都必须能在这个基线上复跑。
+
+## 27. 更正：没有 8–9 s 启动延迟，是 oracle 太稀疏（2026-11-02 11:54）
+
+我此前记录的"路线启动延迟"是**测量假象**。`hook/Log.kt` 的 `Log.rate("tick.diag", 5_000L, …)` 让每 5 秒
+才落一行 tick 诊断，而 `run_matrix.ps1` 正是靠这些行求和：一个 ~10 s 的窗口里只有 1–2 个样本，
+6.8 m 恰好就是 6 m/s 的一个 tick。引擎侧证据（0.5 s 采样）：
+
+```
+ticker started (interval 1000ms)
+tick dt=65ms   appliedTicks=165 moved=0.39m mode=ROUTE running=true     ← 第一个 tick 就开始动
+tick dt=1042ms appliedTicks=170 moved=6.252m mode=ROUTE running=true
+```
+
+`SimulationEngine.startRoute`（core:245）同步设置 plan/progress/state 并立即 `applyRouteSample`；
+`tick` 第一次调用就积分；`EngineRuntime:274` 处理 `StartRoute` 后立即 `startTicker()`（幂等、`lastTickMs=now-1`）。
+**签名早就写在我们的输出里**：`47.83 / 23.43 / 6.91 m` 抖动而恢复段稳定 `32.6 / 38.9 / 39.7 m` —— 那是采样，不是延迟。
+
+**修法（已批准）**：把 `tick.diag` 的 5 s 节流降到 tick 间隔（`Log.rate` 在 detail 关闭时本就直接返回），
+oracle 才能真正求和。
+
+**同时发现一个真 bug（已批准修）**：`EngineRuntime:279` 在"同一份点集已加载"时**静默忽略** `StartRoute`，
+于是第二次规划同一路线会"没反应"，或在 FINISHED 状态下 `PlayRoute` 恢复旧进度导致位置跳变。
+修法：当请求到达而状态不是 PLAYING（FINISHED/IDLE）时视为重新开始（进度归零），并把忽略路径打 info 日志。
