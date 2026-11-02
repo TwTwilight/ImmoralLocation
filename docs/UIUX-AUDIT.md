@@ -398,3 +398,18 @@ FAB 板按钮      x 从 2202 起            （2158 < 2202，无相交）
 就预留板宽（或把板移到下方）。这样横屏、窄屏、分屏、折叠屏都自动覆盖，而竖屏全宽时行为不变。
 
 **设备已恢复**：`wm size reset` → 1080×2400，`font_scale 1.0`。
+
+## 26. 事故：`wm size reset` 触发 system_server 重启（2026-11-02 20:42）
+
+改完显示尺寸恢复后，`adb shell` 出现 `Can't find service: window/settings/package`——
+即 **system_server 挂了**（`sys.boot_completed=1`、zygote 正常，但 `init.svc.system_server` 为空）。
+约 30 秒后服务自行恢复，`service check package/window` 均 found。
+
+**恢复后的状态核对**（全部正确）：`wm size` = Physical 1080x2400（无 override）、`font_scale 1.0`、
+`accelerometer_rotation 1`、`user_rotation 0`、debug 包与 verifier 都在；
+复跑 `1-framework-spoof` **PASS**，说明 system_server 重启后模块仍正常加载（作用域配置持久化）。
+
+**教训（写进 E2E 规则）**：**任何修改显示尺寸/分辨率的操作（`wm size`、`wm size reset`）都可能引发
+system_server 重启**，之后必须先用 `service check package` 确认服务回来了，再跑任何检查——
+否则会得到一堆"诡异失败"，而其实只是系统还在起。`harness-liveness` 会抓到"引擎没跳 tick"，
+但抓不到"服务还没起"，所以这一步要手动确认。
