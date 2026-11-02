@@ -321,5 +321,8 @@
     <string name="route_export_hint">把当前路径点导出为 GPX</string>
     <!-- A search that never answers must not leave the card stuck on 正在搜索… forever. -->
     <string name="search_timeout">搜索超时，请检查网络或换个关键词</string>
+    <!-- Shown when the device has no network: the tiles cannot load and AMap still reports success. -->
+    <string name="map_offline_hint">无网络 · 地图可能无法加载</string>
 </resources>
+
 
