@@ -308,6 +308,13 @@ object LocationHooks {
         if (reentrant.get() == true) return
         reentrant.set(true)
         try {
+            // Before anything is replaced, remember what the platform itself last knew. Independent
+            // mode can only *restore* a real cache if it has one, and indoors no real GNSS fix ever
+            // arrives - so without this snapshot `publishRealToManager` has nothing to publish and a
+            // previously injected point stays visible to every non-whitelisted reader (measured
+            // 2026-11-02: the outside read in a combined run returned an earlier check's simulated
+            // point, 475 m from the current one).
+            if (realLast.isEmpty()) captureRealLastKnown()
             if (snap.config.independentMode) {
                 // Restore FIRST, even when the engine is stopped, so the platform cache cannot
                 // keep replaying our fabricated value to registrations we do not deliver to.
@@ -398,6 +405,79 @@ object LocationHooks {
      * independent mode was switched on stays cached and is replayed to every new registration -
      * which is exactly how a non-whitelisted app still saw the fake while no drop line was emitted.
      */
+    /** Bounded retries for the pre-replacement snapshot (one attempt per engine tick). */
+    private var snapshotAttempts = 0
+
+    @Volatile
+    private var snapshotGaveUp = false
+
+    /**
+     * Read the platform's **own** last-known fix for every captured provider manager, before we
+     * replace anything.
+     *
+     * Called from [inject] while the reentrancy guard is already held, so [lastLocationHook] and the
+     * report-path hooks stay out of the way and the raw cached value is what comes back.
+     *
+     * A value that is already ours (`Fakes.isFabricated`) is never recorded: an earlier run may have
+     * left a synthetic point in the cache, and storing that as "real" would be worse than storing
+     * nothing at all. When nothing genuine is available the attempt is retried on later ticks
+     * (bounded, logged once in each direction).
+     */
+    private fun captureRealLastKnown() {
+        if (snapshotGaveUp) return
+        var captured = 0
+        var fabricated = 0
+        for ((name, instance) in managers) {
+            val value = try {
+                readLastLocation(instance)
+            } catch (_: Throwable) {
+                null
+            } ?: continue
+            if (Fakes.isFabricated(value)) {
+                fabricated++
+                continue
+            }
+            val provider = value.provider ?: providerFor(name)
+            // Copy: the manager keeps a reference and refreshes elapsedRealtimeNanos on the original.
+            realLast[providerFor(provider)] = Location(value)
+            realLast[name] = Location(value)
+            captured++
+        }
+        if (captured > 0) {
+            Log.i(
+                "snapshot: captured the platform's own last-known fix for " +
+                    realLast.keys.sorted() +
+                    if (fabricated > 0) " (skipped $fabricated cached value(s) that were ours)" else "",
+            )
+            return
+        }
+        snapshotAttempts++
+        if (snapshotAttempts == 1) {
+            Log.i(
+                "snapshot: no genuine last-known fix available yet (fabricated=$fabricated, " +
+                    "managers=${managers.size}) — retrying on later ticks",
+            )
+        }
+        if (snapshotAttempts >= 10) {
+            snapshotGaveUp = true
+            Log.w(
+                "snapshot: giving up after $snapshotAttempts attempts — independent mode cannot restore " +
+                    "a real provider cache this session (indoors, no real fix ever arrives)",
+            )
+        }
+    }
+
+    /** Call the manager's own last-location getter; the held reentrancy guard keeps it unsubstituted. */
+    private fun readLastLocation(instance: Any): Location? {
+        val cls = instance.javaClass
+        for (name in arrayOf("getLastLocationUnsafe", "getLastLocation", "getLastKnownLocation", "getLastLocationSafe")) {
+            val getter = Refl.methodOf(cls, name, 0) ?: continue
+            if (getter.returnType != Location::class.java) continue
+            return Refl.invoke(getter, instance) as? Location
+        }
+        return null
+    }
+
     private fun publishRealToManager(snap: EngineRuntime.Snap) {
         val method = injectMethod ?: return
         for ((name, instance) in managers) {
@@ -1004,6 +1084,9 @@ object LocationHooks {
     private fun lastLocationHook(label: String): XC_MethodHook = object : XC_MethodHook() {
         override fun beforeHookedMethod(param: MethodHookParam) {
             try {
+                // Our own reads (the pre-replacement snapshot in [captureRealLastKnown]) must see the
+                // platform's raw cached value, not a substituted one.
+                if (reentrant.get() == true) return
                 val snap = EngineRuntime.activeSnap() ?: return
                 if (!isSystemCaller() && !Scope.isCallerSpoofed()) {
                     // Independent mode: this caller must never see the fabricated fix. Hand back the
