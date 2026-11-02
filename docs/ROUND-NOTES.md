@@ -1109,6 +1109,32 @@ PASS 11b-favorite-return  tap landed; reached the favourite (gps 31.23661,121.48
 手工复核（与 Lead 的数字一致）：刚打开面板 2 s 后点标题行 → 计数 4→5；同一坐标、面板开久一点 → 3→4。
 **结论：既不是时序也不是点击合成，而是点击落到了哪个窗口。**
 
+### 16.2 `5-route` 曾用"两个世界"的距离判 PASS（已修，2026-11-02 09:0x）
+
+Lead 在 16/16 全绿的那次里发现一行是**假绿**：
+```
+PASS 5-route  advanced 163195.27m in 11.99s (gps)   ← 6 m/s 跑 12 秒不可能走 163 km
+```
+成因：窗口第一帧是**真实 GPS**（30.27…），最后一帧是**模拟点**（31.23…），
+`advanced > 5 m` 被这两点之间的距离满足了 —— 又一个"无法为正确理由通过"的检查。
+
+修法（原则可复用）：
+1. **离路线起点超过 3 km 的样本直接丢弃**，并在 detail 里报 `droppedFar=N retained=M`；
+   丢掉"两个世界"里的远端样本，伪影就从源头消失了。
+2. **速率天花板**：隐含速度必须 ≤ 20 m/s（配置 6 m/s 的 3 倍），且保留序列需 ≥2 个样本、跨度 ≥3 s。
+3. **resume 段同样设上限**（5 s × 6 m/s ≈ 30 m，> 150 m 视为伪影），并输出 `resumeOk`。
+4. 失败文案变成诊断：`ADVANCE NOT PROVEN — tkAdvance=<值|null>; verifier <m>m in <s>s = <rate>m/s, droppedFarSamples=<n>`。
+5. **tick 源取并集**：LSPosed 文件日志可能落后于 logcat（全量跑时 `tkAdvance=null` 就是这么来的），
+   现在两处都解析、按 `appliedTicks` 去重合并。
+
+第一版把"有样本被丢弃"当成失败（`rejectedSamples=6` → FAIL），那也是错的：污染是常态，
+正确反应是**丢掉污染、要求剩余序列自洽**，而不是拒绝判断。最终：
+```
+PASS 5-route  advanced 65.27 m (oracle=verifier); … droppedFar=6 retained=9 rate=5.5m/s
+```
+6 m/s × 11.5 s ≈ 69 m，65.27 m 量级正确。
+
+
 
 
 
