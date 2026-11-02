@@ -1033,3 +1033,29 @@ peek 行上的收藏链接自然不在树里。**手动冷启动 dump 证明标�
 **待办**：先让 harness 用"配置已生效"确认把 `3-joystick` 变绿并记录 `configReasserted`；
 若连续几轮都需要 reassert，则说明 app 的 onStart 推送确实存在竞争，再考虑给 app 的推送加去抖或"只在用户交互后推送"。
 现在不动 app——**先让现象可见几轮，再决定改谁**。
+
+## 44. 全量矩阵回到全绿：**15 PASS / 0 FAIL / 1 SKIP，exit code 0**（2026-11-02 22:07）
+
+```
+PASS 3-joystick        effective 3.3 m/s (RUN 3.3), moved 28.63 m, ratio 1, ticks 16/50 moving
+PASS 4-speed-levels    all 6 levels within ±25% (WALK, RUN, BIKE, DRIVE, PLANE, CUSTOM)
+SKIP 10-independent    cannot judge: the outside read (31.23042,121.4737) sits on POINT_A — the provider cache
+                       still holds a simulated point used earlier in this run, so a leak and a stale cache are
+                       indistinguishable. inside(whitelisted) reached=True
+PASS harness-completeness   14 expected check(s), every one produced a row (SKIP counts as produced)
+15 passed, 0 failed, 1 skipped, 0 warned
+```
+
+**这次运行证明了此前无法声称的两件事**
+1. **污染 SKIP 分支真的会触发**：这是第一次外部读数落在 `POINT_A` 上，结果不是一行红，而是 `cannot judge: …` 那句话——该分支不再是"已发布但未验证"。
+2. **`harness-completeness` 的期望集已扩到 14**（含发布检查）并通过——推导逻辑按预期自动变宽，没有手写清单需要同步。
+
+**joystick 修法**：测量窗口前加预检——推向量约 1.2 s，读引擎自己的**移动 tick** 平均速度，偏离 >20% 则重新断言一次并记录
+`configReasserted=true`，随后重建 `tickBase` 与 `SetPosition` 使测量窗口保持干净。`ConfigReasserted` 同时挂在结果对象与
+`Get-DriftResult` 回退上，避免变成又一个"属性找不到"。
+
+**诚实标注**：本次**没有**用到 re-assert（首次即 `ratio 1`），所以 re-assert 分支仍未被执行验证；但预检本身有效——
+窗口现在报 `ticks 16/50 moving`，说明预检期间的空转 tick 已被排除在窗口统计之外。
+
+**产品观察（记录不修）**：若真需要 re-assert，说明 app 自己的持久化配置能在同一秒内覆盖外部推送——对"配置所有者是 app"无害，
+但对"启动后立刻改速度的用户"是真实竞争。它会在行里以 `configReasserted` 的形式可见若干轮，再决定是否给 app 的推送加去抖。
