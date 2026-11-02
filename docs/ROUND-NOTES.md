@@ -1328,6 +1328,36 @@ W snapshot: giving up after 10 attempts — independent mode cannot restore a re
 **注意**：这些 `snapshot:` 行只进模块日志文件，不进 logcat（实测 logcat 里 0 行），
 所以探针必须先读文件、再退回 logcat。
 
+## 21. `Settings.Global/immoral_state` 改成"仅在自有 UI 可见时发布"（2026-11-02 18:4x）
+
+这是一次**有意的反指纹**设计，不是回归：`Settings.Global` 全局可读，一个在后台持续更新的行是任何 App
+判断"装了伪装器"的最廉价手段。因此 App 在 ON_START/ON_STOP 告诉框架，界面不可见即撤下该行，
+空闲时不重建。
+
+设备实测的四种状态与读法：
+
+| 状态 | `settings get global immoral_state` |
+|---|---|
+| 我们的界面在前台 + 引擎运行 | 实时 JSON |
+| 我们的界面在前台 + 引擎空闲 | `null` |
+| 界面在后台（HOME） | `null` |
+| 检查中（App 被 force-stop 或刚 relaunch） | `null` |
+
+对检查的意义：`report-5g.json` 里的
+`globalState(immoral_state): t1=unset t2=unset moved=False` **是正确读数**，不是通道故障 ——
+检查期间 App 本来就不保证在前台。`5-route` 依旧靠 engine-tick oracle 通过。
+
+harness 侧只做了两件事（不改判定）：
+
+1. 把标签从 `unset` 改成
+   `unset(not-published: app not visible / engine idle)`，让下一个人不用重新推一遍；
+2. 在 `Get-FwStatusProbe` 头部写明"可见性范围"以及三种设备实测状态，并保留
+   `absent`（读取本身失败）与 `unset`（键未被发布）的区分 —— 这两者的处置完全不同。
+
+若将来需要证明"路线运行时状态通道确实在前进"，正确做法是在**我们自己的界面确实在前台**的步骤里采样
+（例如 `Start-App` 之后、其它窗口抢前台之前），而不是在 force-stop 的隔离窗口里采样。
+
+
 
 
 

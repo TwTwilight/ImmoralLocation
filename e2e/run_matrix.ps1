@@ -363,6 +363,11 @@ function Get-FwStatusProbe {
     # replaced the app-private `fw_status.json`, which never existed: system_server could not write into
     # the app's dir — EACCES — so the file probe reported a permanent "missing" about a retired path).
     # `FrameworkStatus` reads this key first and uses the payload's `ts` for freshness.
+    # VISIBILITY-SCOPED BY DESIGN (2026-11-02): the row is written only while OUR UI is on screen and is
+    # dropped when it goes hidden — a world-readable row that kept updating in the background is the
+    # cheapest way for any app to fingerprint a spoofer. Verified on device: visible+running -> live
+    # JSON; visible+idle -> null; backgrounded (HOME) -> null. Inside a check the app is
+    # force-stopped/relaunched, so `unset` is the EXPECTED reading and not a channel failure.
     $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $raw = ''
     try {
@@ -903,7 +908,14 @@ if (Test-Selected '5') {
     $fwFmt = {
         param($s)
         if (-not $s) { 'null' }
-        elseif (-not $s.Present) { if ($s.Raw -eq 'null') { 'unset' } else { 'absent' } }
+        # BY DESIGN (2026-11-02): the row is published only while OUR UI is on screen — a background
+        # row that keeps updating is the cheapest way for any app to fingerprint a spoofer. So:
+        #   app visible + engine running -> live JSON
+        #   app visible + engine idle    -> null
+        #   app backgrounded / force-stopped -> null
+        # During a check the app is force-stopped/relaunched, so `unset` is the CORRECT reading, not a
+        # channel failure. `absent` (the read itself failed) is still a different thing.
+        elseif (-not $s.Present) { if ($s.Raw -eq 'null') { 'unset(not-published: app not visible / engine idle)' } else { 'absent' } }
         else { "($([Math]::Round($s.Lat,5)),$([Math]::Round($s.Lon,5)))@ts+$($s.AgeSec)s running=$($s.Running)" }
     }
     $fwMoved = ($fw1 -and $fw2 -and $fw1.Present -and $fw2.Present -and $null -ne $fw1.Lat -and $null -ne $fw2.Lat -and
