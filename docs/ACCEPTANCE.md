@@ -951,3 +951,25 @@ SKIP 10-independent（诚实前置条件）
 
 **收尾**：装回 debug、重新激活并 `VERIFIED`，设备回到开发基线。
 以后要复验发布产物，只需装 `app-release.apk` 再 `activate_module.ps1`（现在能自动识别）+ `run_matrix.ps1`。
+
+## 28. `11-favorites` 连续两次 SKIP：首次运行遮罩后的状态问题（2026-11-02 21:11）
+
+现象（`report-r24b.json`、`report-r24c.json`）：
+```
+[warn] e2e.peek.favorites not on screen — falling back to text navigation (older build?)
+SKIP 11-favorites  favourites surface not reachable (navigation path: opener>text:工具 ×3)
+```
+日志里同时有一行关键线索：**`dismissed first-run overlay ('稍后再说')`**。
+
+**诊断**：`e2e.peek.favorites` 只在 **PEEK detent** 出现。今天 20:07 做发布产物测试时卸载重装、
+**应用数据被清空**，于是首启引导弹遮罩重新出现；检查关掉遮罩之后，sheet 并不在 PEEK detent，
+peek 行上的收藏链接自然不在树里。**手动冷启动 dump 证明标签存在**：
+`e2e.peek.favorites [826,1861][1025,1993]`。
+
+所以这是**检查的前置状态问题**（数据被清 + 首启遮罩），不是今晚 UI 改动的回归：
+- 手动冷启动（无遮罩）→ 标签在；
+- 检查（先关遮罩）→ 标签不在。
+
+**修法（下一轮交给 harness）**：关掉首启遮罩后，显式把 sheet 收回到 PEEK（例如点 `e2e.peek.collapse` 或
+滚动到顶部）再找 `e2e.peek.favorites`；找不到时**报告当前 detent** 而不是只说"不可达"。
+这与之前 `11b` 的教训同源：**先确认界面处于预期状态，再断言**。
