@@ -903,3 +903,25 @@ SKIP 10-independent  no real last-known fix on this device（诚实前置条件�
   消费者视图只作参考。
 
 **结论**：本轮所有改动（UI + 隐蔽性）都可以认为安全落地，没有任何一条把矩阵弄红。
+
+## 42. 发布产物冒烟测试：**首次在设备上验证 5.94 MiB 的 release 包**（2026-11-02 19:44）
+
+此前所有验收都跑在 **debug** 包上，而用户拿到的是 **release** 包——两者最大的差异正是我们做过的资源裁剪
+（`cfg/`、`map_custom/`、`offlinelocmapv4.png`、`amap_resource1_0_0.png` 被丢弃）。也就是说
+"5.94 MiB 还能正常显示地图"这件事**一直没有在真正的发布产物上被看过**。
+
+本轮做了：卸载 debug → 安装 `app-release.apk`（6 229 952 B）→ 冷启动 → 帧 `_release-firstrun.png`。
+
+**结果：release 包地图完整渲染**——瓦片、POI 标签、道路、我们的标记、全部 chrome 正常，与 debug 无可见差异。
+这坐实了资源裁剪的判定（当时逐组截图验证的结论在真正的发布产物上成立）。
+
+**顺带拍到从未有过的"真正首次运行"状态**（同一帧）：
+- 收藏为空时**不显示数量**（`收藏 ›` 而不是 `收藏 0 ›`），心形为空心；
+- 速度档默认「步行 1.4 m/s」；
+- 没有任何错误提示——首次启动是干净的。
+
+**限制（诚实记录）**：harness 的 `activate_module.ps1` 只认 debug 包名，因此 release 包**无法**在现有工具链下
+激活为 LSPosed 模块，所以本次只验证了 UI/资源层，没有验证 release 包里的 hook 行为。
+要覆盖那部分需要给 `activate_module.ps1` 加一个包名参数——已记入待办。
+
+**收尾**：卸载 release、装回 debug、重新激活并复跑 `1-framework-spoof` PASS，设备回到可用状态。
