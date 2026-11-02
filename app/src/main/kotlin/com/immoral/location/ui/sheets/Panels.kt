@@ -188,7 +188,13 @@ fun PeekPanel(
                     style = MaterialTheme.typography.labelSmall.tabular(),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
-                    modifier = Modifier.weight(1f),
+                    // A stable handle for the *live* position. Without it a check can only scrape
+                    // every `dd.dddd, ddd.dddd` node in the tree — and while the planner is open
+                    // those are the route's 起点/终点, static by design, which made a real movement
+                    // sample impossible to distinguish from two frozen route fields.
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("e2e.peek.position"),
                 )
                 if (hint != null) {
                     PeekHintChip(text = hint)
