@@ -489,3 +489,23 @@ peek 显示收藏坐标 → 模块日志 `command decoded: SetPosition` + `Immor
 2. `ImmoralBridge` 的 prefs 命令是否被引擎消费（app 通道 vs 广播通道是否冲突）；
 3. `dumpsys location` 的 passive 是否被注入路径覆盖。
 若 1 为 running=true 而 2/3 不动，则问题在"app 的 prefs 通道在引擎已由广播通道配置过时不生效"。
+
+## 20. `11b` 责任方定案：app 正确，检查的点击合成有差异（2026-11-02 08:40）
+
+我亲自跑了决定性对照（入口与检查完全一致：从 peek 卡 `e2e.peek.favorites` 打开面板）：
+
+```
+before = 21   （`command decoded: SetPosition` 计数）
+dump → 行标题 [226,1717][400,1783]（收藏点 2）、第二行 [226,1965][393,2031]
+input tap 313 1750
+after  = 22   ← 命令确实发出
+```
+
+结论：**peek 链接 → 面板 → 点标题行 → 引擎解码 `SetPosition`** 全通；qa-e2e 的"面板状态不同"假设可以排除。
+剩下的是检查侧的点击合成/时序，建议顺序：① 轮询到"行标题节点存在且 `content-desc=Close sheet` 出现"再点；
+② 点前后各记一次命令计数，把失败拆成"没发出/发了但位置没变/点击被拒"；③ 仍失败则用零长度 swipe 替代 tap。
+
+同时确认 qa-e2e 的命中区结论独立成立：**标题行是命中区，坐标行是死区**。
+
+**方法论**：`RootScreen.kt` 已是 CRLF，用 LF here-string 做的脚本化替换会"编译通过但什么都没改"——与之前的
+嵌套 KDoc 陷阱同类，脚本化编辑后必须 grep 验证。

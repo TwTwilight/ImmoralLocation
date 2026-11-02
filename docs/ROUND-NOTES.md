@@ -1047,6 +1047,36 @@ SetConfig(STATIC,1s) + SetPosition(POINT_A) + Start
 顺带修掉一个自曝的 bug：`Get-EngineTicks` 原先不解析 `running=`，导致前置探针在自己的成功行上崩溃
 （`The property 'Running' cannot be found`）—— 它**没有**静默通过，也没有误判为产品失败。
 
+## 16. `11` 收藏面板的三个真实 harness bug（qa-e2e，2026-11-02 08:3x–08:4x）
+
+这一轮里 `11-favorites` 从 SKIP 变 PASS，靠的不是改断言，而是找到三个"看起来像 UI 回归"的 harness 缺陷：
+
+1. **首启动浮层盖住整个外壳**：新装后首次打开 App 会弹"切换到其他 App 时保持摇杆"对话框，它**没有**
+   `e2e.*` tag，于是 peek 卡片不可见、每个 UI 检查都报 "surface not reachable"（`opener>text:工具` 连点三次）。
+   现在检查开始前先关掉 `稍后再说 / 以后再说 / 暂不开启`。
+2. **上一个检查留下的 sheet 会挡住 peek 卡片**：现在先 `content-desc=Close sheet` 关掉再开始
+   （某次 `navigation path: (空)` 就是这个原因）。
+3. **`e2e.peek.favorites` 确实存在**（08:23:33 构建上），S1 的入口改造是好的；先前的 SKIP 不是 UI 回归。
+   证据：`favourites opened via e2e.peek.favorites (peek-card link)` → `PASS 11-favorites 共 2 个收藏`。
+
+**`11b` 的命中位置（手工实测）**：引擎运行时统计 `command decoded: SetPosition` 的条数，
+点**标题行**（`收藏点 2`，≈300,1750）→ 3→4（命令发出）；点**坐标行**（`31.236610, 121.480300`，540,1805）
+→ 仍是 4（无效）。所以旧检查一直在点一块死区，现在改为点坐标行上方最近的那个文本节点（并有几何兜底）。
+
+**仍未解决**：harness 在**同一坐标**（313,1750）点击、并加了 1.5 s 稳定 + 一次重试，仍然没有任何命令：
+```
+FAIL 11b-favorite-return  tap did not land on the favourite row: no 'SetPosition' command reached the
+     engine and no 已跳转到 snackbar appeared within 3 s (row bounds: [226,1783][594,1827])
+```
+即"检查打开的 sheet"与"我手动打开的 sheet"之间存在一个 dump 里看不出来的状态差异。**下一步只需一次实验**：
+让 matrix 停在该点，由人手动点同一行并同时观察命令计数 —— 若人工也点不动，就是 sheet 状态问题；
+若人工能点动，就是 harness 的点击合成问题。在得到这个数据之前不要再改断言，也不要去改 app。
+
+**另外**：我曾把搜索 `renminzzz` 卡在 `正在搜索…` 说成"客户端缺超时"，但那次探针**没有真正跑成**
+（`Set-UiText` 参数名写错、且当时界面停在收藏面板），所以那只是读代码得到的**假设**，不是结论；
+需要一次 3 分钟的实测（点 `e2e.searchbar` → 输入 → 每 2 s 采样 `正在搜索…` 共 12 s → grep 请求日志）。
+
+
 
 
 
