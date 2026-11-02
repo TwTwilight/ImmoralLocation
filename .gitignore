@@ -28,7 +28,6 @@ e2e/out/
 hook/harness/
 verifier/
 *.ps1
-!e2e/**/*.ps1
 *.psm1
 *.sh
 *.py
@@ -36,7 +35,7 @@ verifier/
 # Reverse-engineering / acceptance material: kept on disk, never published.
 .lead/
 apk/
-docs/**
+docs/
 dumps/
 frida/
 jadx2/
@@ -48,7 +47,6 @@ web/
 
 # Documentation beyond the README
 *.md
-!docs/**/*.md
 !/README.md
 
 # Native layer build outputs (libimmoralhook.so is committed prebuilt in hook/src/main/jniLibs;
@@ -69,3 +67,7 @@ keystore/
 # Agent scratch directory (plans/probes from parallel workers), never shipped
 .agents/
 docs/
+
+
+# Agent instructions: local only
+AGENTS.md
