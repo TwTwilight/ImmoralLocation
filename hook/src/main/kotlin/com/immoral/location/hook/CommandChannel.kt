@@ -262,6 +262,23 @@ object StatusWriter {
         publishToSettingsGlobals("")
     }
 
+    /**
+     * Whether the app's own UI is on screen. The status row is world-readable, so it is only kept
+     * while somebody can actually read it: a row that keeps updating in the background is the
+     * cheapest possible way for another app to confirm a spoofer is installed.
+     */
+    @Volatile
+    private var uiVisible = true
+
+    fun setUiVisible(visible: Boolean) {
+        uiVisible = visible
+        if (!visible) {
+            // Drop the row as soon as our own UI leaves the screen.
+            publishToSettingsGlobals("")
+            Log.i("status row removed: app UI is no longer visible")
+        }
+    }
+
     @Volatile
     var lastPath: String? = null
         private set
@@ -274,6 +291,8 @@ object StatusWriter {
         val now = System.currentTimeMillis()
         if (!force && now - lastWriteMs < 1000L) return
         lastWriteMs = now
+        // Nothing to publish while nobody can read it: the row is world-readable.
+        if (!uiVisible) return
         // `Settings.Global` is world-readable, so a stopped engine must not keep advertising itself:
         // the row is removed once when the engine stops and rewritten when it starts again.
         if (!state.running) {

@@ -262,6 +262,7 @@ class BridgeClient(
     private fun labelOf(command: Command): String = when (command) {
         Command.Ping -> "Ping"
         Command.GetState -> "读取状态"
+        is Command.SetUiVisible -> "界面可见性"
         is Command.Start -> "开始模拟"
         is Command.Stop -> "停止模拟"
         is Command.SetPosition -> "切换位置"
@@ -398,6 +399,8 @@ class BridgeClient(
 
     fun startEngine() = send(Command.Start)
 
+    fun setUiVisible(visible: Boolean) = send(Command.SetUiVisible(visible))
+
     fun stopEngine() = send(Command.Stop)
 
     /** Loads and plays [plan]. Call this only on an explicit user action — never on a state tick. */
@@ -455,3 +458,4 @@ class BridgeClient(
         attach(this)
     }
 }
+

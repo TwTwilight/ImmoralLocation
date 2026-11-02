@@ -53,6 +53,15 @@ sealed interface Command {
     @SerialName("GetState")
     data object GetState : Command
 
+    /**
+     * Tells the framework whether the app's own UI is on screen. The engine status row in
+     * `Settings.Global` is world-readable, so it is only published while the app is visible: a row
+     * that keeps updating in the background would confirm to any app that a spoofer is installed.
+     */
+    @Serializable
+    @SerialName("SetUiVisible")
+    data class SetUiVisible(val visible: Boolean) : Command
+
     /** Replaces the whole simulation configuration (sanitized by the engine). */
     @Serializable
     @SerialName("SetConfig")

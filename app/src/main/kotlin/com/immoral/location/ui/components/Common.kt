@@ -20,6 +20,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -216,7 +217,15 @@ fun LabeledSlider(
             // rounded track cap (reading as a stray vertical line) and where it overlaps the cap it
             // renders as a clipped "C". A 20 dp disc at the same optical weight as the app's other
             // 20 dp glyphs is unambiguous in both themes and cannot clip inside the 36 dp box.
-            thumb = {
+            // Control experiment (Lead-requested): suppress M3's stop indicator. Two of the three
+            // sliders never showed the crescent, so if this removes it here, it *was* the indicator
+            // and the asymmetry was only how much active track each value leaves.
+            track = { sliderState ->
+                SliderDefaults.Track(
+                    sliderState = sliderState,
+                    drawStopIndicator = null,
+                )
+            },            thumb = {
                 Box(
                     modifier = Modifier
                         .size(20.dp)

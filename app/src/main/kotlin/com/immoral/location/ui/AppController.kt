@@ -181,6 +181,14 @@ class AppController(
         if (isRunning()) stopSimulation() else startSimulation()
     }
 
+    /**
+     * Tells the framework whether our own UI is on screen. The engine status row it publishes lives
+     * in `Settings.Global` and is readable by every app, so it is only kept while it can be seen.
+     */
+    fun setUiVisible(visible: Boolean) {
+        bridge.setUiVisible(visible)
+    }
+
     fun startSimulation() {
         val config = settings.config.value
         val position = currentPosition()
