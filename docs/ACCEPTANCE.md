@@ -884,3 +884,22 @@ PASS 15d-route-clear  destination set=True; before clear: plan=1 clear=1;
 - "月牙"是活动轨道而非停靠指示器（对照实验证明）。
 
 **结论**：UI 的真实状态比命中率看起来要好；下一阶段的质量提升点在**取帧纪律**，而不是继续改代码。
+
+## 41. 第十七轮基线复测：**15 PASS / 0 FAIL / 1 SKIP**（2026-11-02 19:33，`report-r17.json`）
+
+在隐蔽性门控（状态行仅前台发布）、UI 若干改动（可点警告 chip、滑块、状态带）之后全量复跑，
+基线不变：
+
+```
+PASS harness-liveness / 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 11 / 11b / 23 / 24
+SKIP 10-independent  no real last-known fix on this device（诚实前置条件）
+15 passed, 0 failed, 1 skipped
+```
+
+值得注意的两处**新语义**在报告里已经自解释：
+- `5-route … globalState(immoral_state): t1=unset(not-published: app not visible / engine idle)`——
+  可见性门控让"不可见即不发布"成为可读的正确答案，而不是看起来像故障；
+- `6-cells … hook return: lac=33272/ci=153773081 matchesC=True`——断言建立在"引擎写出 ∧ hook 返回"上，
+  消费者视图只作参考。
+
+**结论**：本轮所有改动（UI + 隐蔽性）都可以认为安全落地，没有任何一条把矩阵弄红。
