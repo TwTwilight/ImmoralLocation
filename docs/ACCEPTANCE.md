@@ -772,3 +772,18 @@ Android 版本覆盖我们更强（21–37 vs 他们的 P/Q）。我此前怀疑
 高度与精度不可编辑（`GeoPoint.alt` 有但无 UI）。
 
 **反向提醒**：不要为了"看起来功能多"去做 FL 没有的东西；先把这两条"半有"补成"真有"，或明确标注为限制。
+
+## 35. 12 轮全量矩阵 **15/16**（2026-11-02 15:27，`report-r12.json`）
+
+除 `10-independent` 外全绿，且该行的失败原因已被点名：
+```
+outside=31.23042,121.4737 d=475m
+[POINT_A: the provider cache still holds a simulated point used earlier in this run]
+```
+**这是真实产品缺口，不只是测试问题**：用户若在室内打开"独立模拟"，上一个假点会继续被所有非白名单应用读到，
+直到收到新的真实定位。修法（已交给 hook 负责人）：**在会话第一次替换之前快照平台的真实 last-known**
+（gps/network/fused/passive，带重入保护以免被我们自己的替换钩子污染），独立模式的 `publishRealToManager`
+于是有真实值可写回，缓存会在第一个 tick 被纠正，而不是"等下一次真实定位"。
+
+其余本轮成果：`6-cells` 在新基站真实性实现下通过（460/00 / TAC 33272 不变 / ECI 128846029→153773081 / PCI 31→158，
+三路读一致，宿主与设备元组完全一致），`5-route advanced 29.08 m / resumed 35.69 m`，release 5.94 MB。
