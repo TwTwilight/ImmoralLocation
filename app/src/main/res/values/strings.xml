@@ -196,7 +196,7 @@
     <string name="action_copied">坐标已复制</string>
     <string name="action_copy_failed">无法复制坐标</string>
     <string name="pill_long_press_hint">长按可复制坐标</string>
-    <string name="label_kmh">≈ %1$.1f km/h</string>
+    <string name="label_kmh">时速</string>
     <string name="label_accuracy">精度 %1$s</string>
 
     <!-- 地图上的摇杆 -->
@@ -324,5 +324,6 @@
     <!-- Shown when the device has no network: the tiles cannot load and AMap still reports success. -->
     <string name="map_offline_hint">无网络 · 地图可能无法加载</string>
 </resources>
+
 
 
