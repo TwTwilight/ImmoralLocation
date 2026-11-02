@@ -346,6 +346,19 @@ fun MapScreen(
         }
     }
 
+    // AMap reports "loaded" even when it has no tiles (measured: tile cache cleared + radio off gave
+    // "amap map loaded (tiles rendered)" over a blank grid), so the fallback above cannot detect the
+    // ordinary offline case. Say so instead of leaving a blank map unexplained.
+    var hasNetwork by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+            as? android.net.ConnectivityManager
+        while (true) {
+            hasNetwork = cm?.activeNetwork != null
+            kotlinx.coroutines.delay(2_000)
+        }
+    }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, backend) {
         val observer = LifecycleEventObserver { _, event ->
@@ -566,6 +579,20 @@ fun MapScreen(
                     onClick = onOpenTools,
                     tag = "e2e.fab.tools",
                 )
+            }
+            if (!hasNetwork) {
+                Spacer(modifier = Modifier.height(Dimens.chromeGap))
+                Surface(
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ) {
+                    Text(
+                        text = stringResource(R.string.map_offline_hint),
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                }
             }
             // Live suggestions while typing: the pill keeps focus and the keyboard stays up, so
             // this is an inline card instead of a modal (Google-Maps behaviour).
@@ -950,4 +977,7 @@ fun MapScreen(
         }
     }
 }
+
+
+
 
