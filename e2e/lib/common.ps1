@@ -120,7 +120,15 @@ function Wait-ForBoot {
     $resets = 0
     while ((Get-Date) -lt $deadline) {
         $r = Invoke-AdbShell 'getprop sys.boot_completed' -AllowFailure
-        if ((($r.Output -join '').Trim()) -eq '1') {
+        $booted = ((($r.Output -join '').Trim()) -eq '1')
+        if (-not $booted) {
+            # Secondary signal: on a device whose PackageManager is slow to come back (or is crash-
+            # recovering), `sys.boot_completed` can stay empty long after the framework is usable.
+            # "package service found" is what every later step actually needs.
+            $svc = Invoke-AdbShell 'service check package' -AllowFailure
+            $booted = ((($svc.Output -join '').Trim()) -match 'found')
+        }
+        if ($booted) {
             # boot_completed=1 arrives before the framework settles; give package manager a moment.
             Start-Sleep -Seconds 3
             Write-Ok 'device booted'
@@ -335,4 +343,5 @@ function Invoke-Native {
     $out = & $Exe @Arguments 2>&1
     return [pscustomobject]@{ Code = $LASTEXITCODE; Output = @($out | ForEach-Object { "$_" }) }
 }
+
 
