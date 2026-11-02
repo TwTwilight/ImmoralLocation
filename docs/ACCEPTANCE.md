@@ -571,3 +571,22 @@ tick oracle 可用时优先，不用时在 detail 里写 `null` 并取消该轮�
 （`mInputMethodWindowVisibleHeight=894`，行在 y 1671–1847），所以"点了没反应"其实是点在键盘窗口上——
 这也回溯解释了之前收藏行在键盘弹出时的几次失败。修法：`RouteSearchPage` 加 `imePadding()`（这里必须保留
 键盘，与地图手势那里"关掉键盘"的修法刻意相反）。
+
+## 24. 路线功能：起点已修，可见移动仍开（2026-11-02 11:20）
+
+**已修并验证**：规划路线的折线方向。3 km 路线开始模拟后位置**直接从终点开始**（peek 读 `31.2500,121.5000`）——
+原因是 provider 返回的 polyline 不保证以起点开头，而播放器只走 `routePath[0]`。两个写入点
+（`setPlannedRoute` / `setRoutePath`）现在都会在"首点比末点离起点更远"时反转几何。**设备验证**：peek 读
+`31.2366, 121.4803`（= 起点）。
+
+**路线规划器两处缺陷（已修）**：① 候选行**整行在输入法下方**（IME 覆盖 y≥1462，行在 1671–1847），点按命中键盘窗口；
+② 解析出的坐标在规划器里**根本没有可选的候选行**（只渲染网络结果）——现在有合成行「使用这个坐标」。
+
+**仍开**：路线运行期间 **app 显示的位置不动**。引擎侧证据：`tick mode=ROUTE running=true speed=13.9m/s
+moved=14.8m`，`appliedTicks 171→191`（20 s），而 peek 19 s 内两次采样完全相同。STATIC 模式下 UI 跟随正常，
+所以差异只在 ROUTE。两条候选：hook 未按 1 Hz 刷新 `fw_status.json`（或其 `point` 仍是路线首点），
+或 app 侧轮询在 ROUTE 下不再更新 `engineState`。已请 harness 在 `5-route` 里加一行诊断（路线运行时两次读
+`fw_status.json`，打印 `point`/`updatedAtMs`/mtime），一行即可定案。
+
+**仍开（UI）**：规划器候选列表的 IME 遮挡——`imePadding()` 加在 page 上会把列表压成 0 高（已回退），
+正确位置是 sheet 根节点。
