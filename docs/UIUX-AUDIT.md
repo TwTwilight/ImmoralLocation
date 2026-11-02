@@ -243,3 +243,22 @@ DARK   onSurface/surface 13.34 · onSurfaceVariant/surface 10.09 · onSurfaceVar
 
 **注**：`Color.Black` 只出现在 `Joystick.kt:167`（投影）与 `MapScreen.kt:515`（状态栏纱，已做主题感知），
 `Theme.kt` 里的是配色源头本身——没有第三处硬编码颜色。
+
+## 18. 撤回：规划器"两种空态"不成立（2026-11-02 19:05）
+
+我上一条记录的"清除路线后主按钮可见但不可用"**已撤回**。同 build 同会话的 A/B dump 对照：
+
+| 状态 | 树里的节点 |
+|---|---|
+| 有终点 | `e2e.route.start` + `e2e.route.plan` + `e2e.route.clear` |
+| **清除路线之后** | **`e2e.route.plan` 不存在**、`clear` 不存在、`选择终点后即可规划路线` **存在** |
+| 新开规划页 | 同为 `e2e.route.plan` 不存在 + ⓘ |
+
+代码层面本就是一个条件：`requestUsable = currentRequest()?.isUsable == true`，而 `currentRequest()` 在起点或终点缺失时返回 null，
+`PlanAction` 只从 `else -> SheetHint` 分支渲染——**所有入口按构造收敛**。之前那帧之所以"看到规划路线"，
+是因为它带着 **`已清除路线` snackbar**，即抓在清除过渡中。
+
+**沉淀为规则（第二次栽在同一处）**：凡会弹 snackbar 的动作，**同一帧里 snackbar 的存在就是"过渡中"的标志**——
+要判断任何被该动作改变的布局，必须等 snackbar 消失后再截图。这是本轮三条 UI"缺陷"里第二条被证明是**帧的测量问题**而非产品问题。
+
+**已交办**：把这个对照做成矩阵里的断言（清除后 `plan` 不存在 + ⓘ 存在），让被撤回的发现依然产生价值。
