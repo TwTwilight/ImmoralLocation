@@ -682,3 +682,19 @@ PASS 5-route advanced 29.18 m (window=applied-window); tkResume=32.55m; resumed 
 
 **结论（不要美化）**：当前矩阵能力是"能达到 16/16，但**不能稳定复现** 16/16"。
 下一步该做的是把这两行的前置状态彻底隔离（各自重启引擎 + 清缓存 + 确认 baseline），而不是继续调判据。
+
+## 30. peek 不跟随路线：根因是反序列化，不是轮询（2026-11-02 13:25）
+
+`EngineState` 的**严格**反序列化会把 hook 写进 `Settings.Global` 的载荷当作"所有字段都未知"
+（`ignoreUnknownKeys = true`），于是返回**默认点 (0,0)**。app 的轮询器一直在跑（2 Hz）、一直拿到"有效"状态、
+一直把空岛坐标灌进 UI —— 所以路线运行时 peek 停在起点不动，而通道在推进。
+
+临时探针证据：
+```
+修复前： fwState probe lat=0.0 lon=0.0 running=true
+修复后： fwState probe lat=31.231391528771347 lon=121.473701 running=true
+```
+修法：`decodeLoose` 优先，且 `point` 无效则拒绝该状态。探针已移除。
+
+**方法论**：ui-polish 报的是"两次采样相同 + 前台状态"（现象），我给的是"通道在动"（另一侧事实）；
+两者并列才逼出"中间那层把值解析成了 0"。以后遇到"UI 不动但通道在动"，先怀疑解析层。
