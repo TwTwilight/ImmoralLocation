@@ -821,3 +821,24 @@ W snapshot: giving up after 10 attempts — independent mode cannot restore a re
 **`9-gnss` FAIL 是新的序列依赖**：`satellites=51 usedInFix=0`（全量跑）→ 单独跑 `usedInFix=7` PASS。
 说明前序检查（gpsSignalSimulation=false 时看到真实星座 0 颗参与定位）留下的状态影响了合成状态。
 与 6-cells/10-independent 同属"跨检查状态残留"一类，下一轮按同样方式隔离（GNSS 状态在启动时重置）。
+
+## 38. 12 轮最终矩阵：**15 PASS / 0 FAIL / 1 SKIP**（2026-11-02 16:53，`report-r12d.json`）
+
+单次全量运行的最好状态：除 `10-independent` 以一个被点名的前置条件 SKIP 外，全部通过。
+
+```
+harness-liveness / 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 11 / 11b / 23 / 24  → PASS
+10-independent → SKIP  no real last-known fix on this device — cannot distinguish a leak from an
+                       empty platform cache; needs a real GNSS fix first
+```
+
+**`9-gnss` 修复的诚实版本**（hook-loc 的自我报告）：真正起作用的是**在 `gpsSignalSimulation` off→on 边沿丢弃
+`lastMutatedStatus`**（否则迟注册的 listener 仍会拿到被污染的对象）；construct-first 在这台 ROM 上
+**不 round-trip**（构造 13 颗、读回数量不符），所以每次都会走 `branch=mutate (construct unavailable)` 的日志分支。
+后果：`usedInFix` 已正确（7~9），但**卫星数量仍沿用真实星座形状（≈48）**，没有满足"8–14 颗合成"的更严标准。
+下一步是把构造路径改用 `Fakes.mutateStatus` 已验证可用的同一套编码——已明确记为后续工作，不在收尾轮里塞。
+
+**`10-independent` 的真因与修法**（本轮最重要的功能性修复）：四个 provider 走同一 hook，只有 `realLast["gps"]` 被污染
+（`ageMs=8613` 的普通模式缓存注入），其余三个真实。修法是在**读取时**过滤（fabricated / 当前快照 / 最近合成点），
+沿链回退，全被拒则返回 null——与簿记无关，未来写路径漏守卫也不会重新泄漏。设备验证：非白名单读者四 provider
+全部 `30.27635,120.176233`，白名单读者仍经 `onLocationChanged` 收到模拟值。
