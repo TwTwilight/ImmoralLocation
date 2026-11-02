@@ -43,6 +43,11 @@ object Fakes {
             snap.accuracyFor(provider),
             snap.steps,
         )
+        // Remember every point we fabricate. A Parcelable round-trip loses the object identity, and
+        // a build without the immoral.* extras leaves nothing else marking it as ours, so a delayed
+        // report of an earlier fake can arrive after the engine has moved. That is how a previous
+        // check's simulated point was once remembered as "the real fix" (2026-11-02).
+        rememberFabricatedPoint(snap.lat, snap.lon)
         if (Log.extrasEnabled()) {
             try {
                 val extras = location.extras ?: Bundle()
@@ -173,6 +178,26 @@ object Fakes {
     private var locationResultResolved = false
 
     /** LocationResults built by this module — used to tell our synthetic fixes from real ones. */
+    /** Last points this module fabricated; a fake can come back to us long after we made it. */
+    private val fabricatedPoints: ArrayDeque<DoubleArray> = ArrayDeque()
+
+    private fun rememberFabricatedPoint(lat: Double, lon: Double) {
+        synchronized(fabricatedPoints) {
+            fabricatedPoints.addLast(doubleArrayOf(lat, lon))
+            while (fabricatedPoints.size > 64) fabricatedPoints.removeFirst()
+        }
+    }
+
+    /** True when (lat, lon) is within [meters] of any point this module fabricated recently. */
+    fun matchesFabricatedPoint(lat: Double, lon: Double, meters: Double = 150.0): Boolean =
+        synchronized(fabricatedPoints) {
+            fabricatedPoints.any { p ->
+                val dLat = lat - p[0]
+                val dLon = lon - p[1]
+                Math.sqrt(dLat * dLat + dLon * dLon * 0.66) * 111_320.0 <= meters
+            }
+        }
+
     private val fabricatedResults: MutableSet<Any> =
         java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Any, Boolean>()))
 
