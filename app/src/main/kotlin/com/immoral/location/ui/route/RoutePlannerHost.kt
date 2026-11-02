@@ -1,6 +1,7 @@
 package com.immoral.location.ui.route
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -649,18 +650,11 @@ private fun PlannedActions(controller: RoutePlannerController) {
             ) {
                 Text(stringResource(R.string.rp_save), maxLines = 1)
             }
-            IconButton(
+            DestructiveIconButton(
                 onClick = controller::clear,
-                modifier = Modifier
-                    .size(ActionHeight)
-                    .testTag("e2e.route.clear"),
-            ) {
-                Icon(
-                    Icons.Filled.Delete,
-                    contentDescription = stringResource(R.string.rp_clear_route),
-                    tint = MaterialTheme.colorScheme.error,
-                )
-            }
+                contentDescription = stringResource(R.string.rp_clear_route),
+                testTag = "e2e.route.clear",
+            )
         }
     }
 }
@@ -682,18 +676,11 @@ private fun PlanAction(controller: RoutePlannerController) {
         ) {
             Text(stringResource(R.string.rp_plan), maxLines = 1)
         }
-        IconButton(
+        DestructiveIconButton(
             onClick = controller::clear,
-            modifier = Modifier
-                .size(ActionHeight)
-                .testTag("e2e.route.clear"),
-        ) {
-            Icon(
-                Icons.Filled.Delete,
-                contentDescription = stringResource(R.string.rp_clear_route),
-                tint = MaterialTheme.colorScheme.error,
-            )
-        }
+            contentDescription = stringResource(R.string.rp_clear_route),
+            testTag = "e2e.route.clear",
+        )
     }
 }
 
@@ -972,5 +959,25 @@ private fun PlaceRow(
                 }
             }
         }
+    }
+}
+
+/**
+ * Destructive icon action for the planner footer: 48 dp target, error tint, label for screen readers
+ * and a stable e2e tag. Kept next to its only caller rather than in the shared components until a
+ * second surface needs it.
+ */
+@Composable
+private fun DestructiveIconButton(
+    onClick: () -> Unit,
+    contentDescription: String,
+    testTag: String,
+) {
+    IconButton(onClick = onClick, modifier = Modifier.size(48.dp).testTag(testTag)) {
+        Icon(
+            imageVector = Icons.Filled.Delete,
+            contentDescription = contentDescription,
+            tint = MaterialTheme.colorScheme.error,
+        )
     }
 }
