@@ -787,3 +787,22 @@ outside=31.23042,121.4737 d=475m
 
 其余本轮成果：`6-cells` 在新基站真实性实现下通过（460/00 / TAC 33272 不变 / ECI 128846029→153773081 / PCI 31→158，
 三路读一致，宿主与设备元组完全一致），`5-route advanced 29.08 m / resumed 35.69 m`，release 5.94 MB。
+
+## 36. 真实 last-known 快照：实现完成，设备上给出"有据可依的做不到"（2026-11-02 15:49）
+
+hook 侧按要求实现了"会话首次替换前快照平台真实 last-known"，并做了两处关键防护：
+`lastLocationHook` 在 `reentrant` 期间直接返回（否则会把我们自己替换进去的假点记成"真实"），
+以及跳过 `Fakes.isFabricated` 的值（早先的运行可能已把合成点留在缓存里）。
+
+设备日志（build `15:36:14`）：
+```
+snapshot: no genuine last-known fix available yet (fabricated=0, managers=4) — retrying on later ticks
+W snapshot: giving up after 10 attempts — independent mode cannot restore a real provider cache this session (indoors, no real fix ever arrived)
+```
+
+`fabricated=0` 是关键：四个 provider manager **压根没有** last-known 值，不是"我们的假点被拒绝"。
+所以独立模式没有真实值可写回，缓存继续保留上一条检查的 POINT_A —— 这是**有据可依的做不到**：
+一台从未拿到过真实定位的手机上，任何实现都无法"恢复"一个不存在的真实位置。
+
+**因此 `10-independent` 应改成带前置条件的行**：平台确有真实 last-known 时才断言；
+没有时 SKIP 并写明"无法区分泄漏与空缓存，需先有真实 GNSS 定位"。红色行在这里只会训练我们忽略它。
