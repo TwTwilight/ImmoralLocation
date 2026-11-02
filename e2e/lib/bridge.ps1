@@ -26,6 +26,8 @@ $script:BridgeReply = 'com.immoral.location.action.REPLY'
 $script:BridgeExtra = 'com.immoral.location.extra.PAYLOAD'
 $script:BcastReady = $false
 $script:ChannelFallbacks = 0   # incremented whenever a command silently degrades to the prefs channel
+$script:ChannelFirstFallbackAt = ''
+$script:ChannelLastFallbackAt = ''
 
 function Get-ModulePackageName {
     # `pm path` is cheaper and far more reliable than `pm list packages` right after an install /
@@ -287,6 +289,8 @@ function Send-EngineCommand {
             # Counted so the run can report it: a silent degradation to a different control channel is
             # exactly the kind of invisible failure that turns a harness problem into a "product" red row.
             $script:ChannelFallbacks = 1 + [int]$script:ChannelFallbacks
+            if (-not $script:ChannelFirstFallbackAt) { $script:ChannelFirstFallbackAt = (Get-Date).ToString('HH:mm:ss') }
+            $script:ChannelLastFallbackAt = (Get-Date).ToString('HH:mm:ss')
             return Send-PrefsCommand -Payload $Payload -ConfigPayload $ConfigPayload -Package $Package -Inactive:$Inactive
         }
     }

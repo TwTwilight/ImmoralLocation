@@ -1669,9 +1669,9 @@ catch { Write-Warn2 "git metadata unavailable: $_" }
 # A degraded control channel is reported, never silent: if any command had to fall back to the prefs
 # channel (unreachable while the app is down), motion rows can read "no-sample" for that reason alone.
 if ([int]$script:ChannelFallbacks -gt 0) {
-    Add-Result -Id 'harness-control-channel' -Name 'commands reached the engine over the broadcast channel' -Status 'WARN' `
-        -Detail "$([int]$script:ChannelFallbacks) command(s) fell back to the SharedPreferences channel because the broadcast receiver was down (the app had been force-stopped and not relaunched). Any motion row measured after such a fallback may read 'no-sample' for that reason alone." `
-        -Metrics @{ fallbacks = [int]$script:ChannelFallbacks }
+    Add-Result -Id 'harness-control-channel' -Name 'commands reached the engine over the broadcast channel (DEGRADED)' -Status 'WARN' `
+        -Detail "$([int]$script:ChannelFallbacks) command(s) fell back to the SharedPreferences channel (first at $($script:ChannelFirstFallbackAt), last at $($script:ChannelLastFallbackAt)) because the broadcast receiver was down. Every result row is stamped channel=prefs-fallback($([int]$script:ChannelFallbacks)) from that point on — do NOT read those rows as broadcast-channel results." `
+        -Metrics @{ fallbacks = [int]$script:ChannelFallbacks; firstAt = $script:ChannelFirstFallbackAt; lastAt = $script:ChannelLastFallbackAt }
 }
 
 $summary = Save-E2eReport -Suite 'matrix' -Path $Report -Environment @{
@@ -1686,6 +1686,8 @@ $summary = Save-E2eReport -Suite 'matrix' -Path $Report -Environment @{
     topActivity   = $topActivityLine
     foreignSpoofersStopped = @($foreignSpoofers | Where-Object { Test-PackageInstalled $_ })
     amapSeconds   = $(if ($SkipUi) { 0 } else { $AmapSeconds })
+    channelFallbacks      = [int]$script:ChannelFallbacks
+    channelFallbacksFirst = $script:ChannelFirstFallbackAt
     apkSha256     = $apkHash
     apkBuiltAt    = $apkBuiltAt
     gitHead       = $gitHead

@@ -1107,9 +1107,17 @@ FAIL 11b-favorite-return  tap did not land on the favourite row: no 'SetPosition
 让 matrix 停在该点，由人手动点同一行并同时观察命令计数 —— 若人工也点不动，就是 sheet 状态问题；
 若人工能点动，就是 harness 的点击合成问题。在得到这个数据之前不要再改断言，也不要去改 app。
 
-**另外**：我曾把搜索 `renminzzz` 卡在 `正在搜索…` 说成"客户端缺超时"，但那次探针**没有真正跑成**
-（`Set-UiText` 参数名写错、且当时界面停在收藏面板），所以那只是读代码得到的**假设**，不是结论；
-需要一次 3 分钟的实测（点 `e2e.searchbar` → 输入 → 每 2 s 采样 `正在搜索…` 共 12 s → grep 请求日志）。
+**另外（搜索超时，已由 ui-polish 在设备上验证并采纳，qa 的探针不再需要）**：我曾把搜索 `renminzzz`
+卡在 `正在搜索…` 说成"客户端缺超时"，但那次探针**没有真正跑成**（`Set-UiText` 参数名写错、且当时界面
+停在收藏面板），所以当时那只是读代码得到的**假设**。后来 ui-polish 在真机上验证：
+
+- 输入 `renminzzz`、网络正常 → 约 9 s 后卡片显示 **`搜索超时，请检查网络或换个关键词`** + **`重试`**
+  动作，而不是一直 `正在搜索…`（证据 `docs/screenshots/_audit-search-timeout.png`）；
+- 取消路径另测：输入 `renminzzz` 后在 8 s 内删改成 `renminzz` → 卡片呈现的是**新关键词**的结果，
+  永远不会出现被放弃查询的超时（`_verify-search-cancel-early.png` / `_verify-search-cancel-late.png`）。
+
+⇒ 结论从"假设"升级为**已验证**：客户端 8 s 超时守卫 + 取消路径都符合预期，**不需要** qa 再跑探针。
+
 
 ### 16.1 根因找到：检查点在了**错误的窗口**上（2026-11-02 08:4x，已修，`11b` PASS）
 

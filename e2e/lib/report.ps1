@@ -3,6 +3,17 @@
 $script:E2eResults = [System.Collections.Generic.List[object]]::new()
 $script:E2eStartedAt = (Get-Date).ToString('o')
 
+# Which control channel a row was measured through. bridge.ps1 increments $script:ChannelFallbacks
+# whenever a command degrades to the SharedPreferences path; a prefs-fallback run must never be read as
+# a broadcast-channel run, so the stamp lives on EVERY row and cannot be absorbed by a PASS.
+function Get-ChannelStamp {
+    $fb = 0
+    $v = Get-Variable -Name ChannelFallbacks -Scope Script -ErrorAction SilentlyContinue
+    if ($v -and $null -ne $v.Value) { $fb = [int]$v.Value }
+    if ($fb -gt 0) { return "prefs-fallback($fb)" }
+    return 'broadcast'
+}
+
 function Add-Result {
     param(
         [Parameter(Mandatory)][string]$Id,
@@ -17,6 +28,7 @@ function Add-Result {
         status  = $Status
         detail  = $Detail
         metrics = $Metrics
+        channel = (Get-ChannelStamp)
         ts      = (Get-Date).ToString('o')
     }
     $script:E2eResults.Add($entry)
