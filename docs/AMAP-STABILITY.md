@@ -795,5 +795,32 @@ only filter is `Fakes.isFabricated`, which is identity-based, so a parcelled cop
 be recorded as "real" while `realLast` is empty. The cure is one line: apply the same
 `coordinatesMatchSnap`/`matchesFabricatedPoint` guards there that `rememberReal()` already uses.
 
+## 15. `9-gnss`: contamination via the inherited real constellation (fixed twice-verified, with one honest limit)
 
+Symptom: in a full matrix run `9-gnss` read `satellites=51 usedInFix=0`; standalone it passed
+(`usedInFix=7`). Cause: `replaceStatusArgument` was **mutate-first** — it kept the framework's real
+`GnssStatus` (51 SVs indoors, none used in fix) and wrote our fields into it, and the cached copy
+(`lastMutatedStatus`) was replayed to listeners that registered later. Standalone passed only because
+nothing had polluted the real status yet.
 
+Fix (`framework/GnssHooks.kt`):
+* **construct-first** (our synthesized sky view, accepted only when a read-back proves
+  `count == our satellite count`), mutation demoted to a fallback that logs
+  `branch=mutate (construct unavailable)`;
+* **`lastMutatedStatus` is dropped on the `gpsSignalSimulation` off→on edge** —
+  `gnss: gpsSignalSimulation ON — dropped any inherited real constellation/status`.
+
+Two back-to-back `-Only 9` runs on the same build (`…ohi0hCwXDAd3ndaKc89LXw==`):
+
+```
+PASS  9-gnss  satellites=48 usedInFix=7 maxCn0=43.87 samples=9
+PASS  9-gnss  satellites=49 usedInFix=7 maxCn0=43.87 samples=5     ← second run = contamination case
+```
+
+**Honest limit, logged rather than hidden**: on this ROM the construct path is **unavailable** —
+`branch=mutate (construct unavailable) realCount=47/49 sats=13` — because the constructed status does
+not round-trip its count back. So the fix works through the off→on reset plus a clean mutation, and the
+reported satellite **count still carries the real constellation shape (≈48)** even though `usedInFix`
+is now correct (7). Meeting the "8–14 synthesized satellites" criterion would need the construction
+encoding to round-trip on this ROM; the next step is to build the status with the same encoding that
+`Fakes.mutateStatus` already proves works, rather than the separate constructor path.
