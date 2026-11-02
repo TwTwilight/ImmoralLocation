@@ -739,3 +739,17 @@ FAIL 10-independent  outside=31.23042,121.4737 d=475m
 **peek 跟随路线**：仍未验证，但原因是**测量**——规划器打开时 peek 行显示的是路线的起点/终点，
 不是实时位置（ui-polish 用 `SetPosition` 对照证明了两者都不动）。已批准的修法：给 peek 的坐标 `Text`
 加 `testTag("e2e.peek.position")`，让取样不再有歧义。
+
+## 33. peek 消费通道：STATIC 已证实，ROUTE 仍未测（2026-11-02 15:30）
+
+ui-polish 用新加的 `e2e.peek.position` 标签做了对照实验：
+`POS1 = 31.2366, 121.4803` → `SetPosition 31.21000,121.44000` → `POS2 = 31.2100, 121.4400`（同一 bounds）。
+**所以 PEEK 下 app 确实在消费通道**，此前"app 不跟随通道"的说法只对 ROUTE 情形可能有意义。
+
+我自己尝试复现 ROUTE 情形时失败：用 `bcast.sh` 发 `SetConfig(ROUTE)` + `StartRoute` + `Start` 后，
+`settings get global immoral_state` 仍是 `running:false` —— 即**引擎没有被这条临时广播启动**（matrix 里同样的命令能启动，
+差异在 app 侧的 prefs 通道或命令顺序，未查明）。因此 **ROUTE-at-PEEK 仍未测**，且卡在"手动驱动引擎"这件事上，
+不是产品问题。
+
+顺带得到一个正确的行为确认：引擎停止后状态 **不再刷新**，`ts` 会老化，app 正确地忽略过期状态——
+所以引擎停时 peek 显示的是 `settings.lastPosition`，这是设计如此。
