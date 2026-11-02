@@ -255,7 +255,9 @@ private fun FavoriteRow(
                     text = "${Fmt.coord(place.point.lat)}, ${Fmt.coord(place.point.lon)}",
                     style = MaterialTheme.typography.labelSmall.tabular(),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    // Two lines, not one: a coordinate ellipsised after the comma ("31.226890, …") is
+                    // half a coordinate, which is worse than none (R7 third step, frame at 720 width).
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
