@@ -246,7 +246,18 @@ function Get-StepSeamValues {
     return $values
 }
 
-function Measure-EngineTicks {    param([int]$AfterApplied = 0)
+# Counts the `command decoded: SetPosition` lines the module has logged so far. Used to prove that a UI
+# tap actually reached the app: a tap that misses produces NO command at all, which is a completely
+# different failure from "the command ran but the position did not move".
+function Get-SetPositionCommandCount {
+    try {
+        return @(adb logcat -d -s LSPosedFramework:I 2>&1 | Select-String 'command decoded: SetPosition').Count
+    }
+    catch { return 0 }
+}
+
+function Measure-EngineTicks {
+    param([int]$AfterApplied = 0)
     $sel = @(Get-EngineTicks | Where-Object { $_.Applied -gt $AfterApplied })
     if ($sel.Count -eq 0) { return $null }
     $dt = 0.0; $moved = 0.0; $movingDt = 0.0
@@ -1111,6 +1122,23 @@ if (Test-Selected '10') {
 # ------------------------------------------------------------------------------------------------
 if (Test-Selected '11') {
     Write-Step '11) favourites / quick return (收藏/快速返回) — UI assertions'
+    # A fresh install shows the floating-joystick onboarding dialog on first launch, and it covers the
+    # whole shell — every UI check then reports "surface not reachable" for a reason that has nothing to
+    # do with the UI (measured 2026-11-02 08:3x: the peek-card link was present the whole time, behind
+    # the dialog). Dismiss known first-run overlays before touching anything.
+    foreach ($dismissText in @('稍后再说', '以后再说', '暂不开启')) {
+        $dd = Get-UiDump
+        if (-not $dd) { continue }
+        $dn = @($dd.SelectNodes('//node') | Where-Object { $_.GetAttribute('text') -eq $dismissText })
+        if ($dn.Count -eq 0) { continue }
+        if ($dn[0].GetAttribute('bounds') -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
+            $dx = [int](([int]$matches[1] + [int]$matches[3]) / 2)
+            $dy = [int](([int]$matches[2] + [int]$matches[4]) / 2)
+            Invoke-AdbShell "input tap $dx $dy" -AllowFailure | Out-Null
+            Write-Step "     dismissed first-run overlay ('$dismissText')"
+            Start-Sleep -Seconds 1
+        }
+    }
     # S1 (docs/UIUX-AUDIT.md) moved the entry point: the 收藏 surface now opens from the peek card's
     # “收藏 N ›” link, which ui-polish tagged `e2e.peek.favorites` precisely to keep this check alive.
     # Try the tag first; fall back to the old text navigation so an older build still works, and say
@@ -1134,8 +1162,24 @@ if (Test-Selected '11') {
         return Open-UiScreen -Names @('收藏地点', '收藏', '收藏夹')
     }
     Stop-Verifier
-    # Put the engine on a known point so "收藏当前位置" saves POINT_B, then move it away so the
-    # one-tap return is observable.
+    # Start from a known state: a sheet left open by an earlier check (or a manual probe) hides the peek
+    # card, and then the favourites link simply is not on screen (measured 2026-11-02 08:4x).
+    for ($resetTry = 0; $resetTry -lt 3; $resetTry++) {
+        $stateDump = Get-UiDump
+        if (-not $stateDump) { break }
+        $closeNode = @($stateDump.SelectNodes('//node') | Where-Object {
+                $_.GetAttribute('content-desc') -match 'Close sheet|关闭'
+            }) | Select-Object -First 1
+        if (-not $closeNode) { break }
+        if ($closeNode.GetAttribute('bounds') -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
+            $rx = [int](([int]$matches[1] + [int]$matches[3]) / 2)
+            $ry = [int](([int]$matches[2] + [int]$matches[4]) / 2)
+            Invoke-AdbShell "input tap $rx $ry" -AllowFailure | Out-Null
+            Write-Step '     closed an open sheet to get back to the map'
+            Start-Sleep -Milliseconds 900
+        }
+        else { break }
+    }
     Set-EngineConfig @{ mode = 'STATIC'; updateIntervalMs = 500 } | Out-Null
     Send-Start -Channel $Channel | Out-Null
     Send-SetPosition -Lat $POINT_B.lat -Lon $POINT_B.lon -Channel $Channel | Out-Null
@@ -1239,53 +1283,108 @@ if (Test-Selected '11') {
                 Start-Sleep -Seconds 2
                 Start-Verifier -Count 20 -IntervalMs 1000 -Stream
                 Start-Sleep -Seconds 2
+                # Re-dump IMMEDIATELY before tapping: the previous dump could predate the sheet finishing
+                # its animation, which makes the bounds stale and the tap land on nothing. The Lead proved
+                # this from the module log: a manual tap produced `command decoded: SetPosition`, the
+                # harness tap produced nothing at all — so "position never moved" was hiding a missed tap.
                 $tapDump = Get-UiDump
-                $target = @($tapDump.SelectNodes('//node') | Where-Object {
-                        $_.GetAttribute('text') -match '^收藏地点|^\s*-?\d+\.\d+,\s*-?\d+\.\d+\s*$'
+                $row = @($tapDump.SelectNodes('//node') | Where-Object {
+                        $_.GetAttribute('text') -match '^\s*-?\d+\.\d+,\s*-?\d+\.\d+\s*$'
                     }) | Select-Object -First 1
-                if ($target) {
-                    $bounds = $target.GetAttribute('bounds')
-                    if ($bounds -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
-                        $cx = [int](([int]$matches[1] + [int]$matches[3]) / 2)
-                        $cy = [int](([int]$matches[2] + [int]$matches[4]) / 2)
-                        Invoke-AdbShell "input tap $cx $cy" -AllowFailure | Out-Null
-                        # Poll instead of a fixed 7 s: the tap can land while the sheet is still
-                        # animating, and the teleport is asynchronous. When it never moves, say
-                        # "tap had no effect" rather than report a misleading distance.
-                        $dumpOk = $false
-                        $dumpDetail = 'no fix'
-                        $closest = -1.0
-                        $pollStart = Get-Date
-                        $deadlineT = (Get-Date).AddSeconds(10)
-                        while ((Get-Date) -lt $deadlineT) {
-                            Start-Sleep -Milliseconds 700
-                            $favFix = Get-DumpsysFix
-                            foreach ($k in @('gps', 'fused', 'network', 'passive')) {
-                                if (-not $favFix.ContainsKey($k)) { continue }
-                                $d = Get-GeoDistanceMeters -Lat1 $favLat -Lon1 $favLon -Lat2 $favFix[$k].lat -Lon2 $favFix[$k].lon
-                                if ($closest -lt 0 -or $d -lt $closest) { $closest = $d }
-                                $dumpDetail = "$k $($favFix[$k].lat),$($favFix[$k].lon) (d=$([Math]::Round($d))m)"
-                                if ($d -le 300) { $dumpOk = $true; break }
-                            }
-                            if ($dumpOk) { break }
+                if (-not $row) {
+                    $row = @($tapDump.SelectNodes('//node') | Where-Object {
+                            $_.GetAttribute('text') -match '^收藏地点'
+                        }) | Select-Object -First 1
+                }
+                $landed = $false
+                $tapTried = $false
+                $rowBounds = if ($row) { $row.GetAttribute('bounds') } else { 'row not in dump' }
+                if ($row -and $rowBounds -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
+                    $cx = [int](([int]$matches[1] + [int]$matches[3]) / 2)
+                    $cy = [int](([int]$matches[2] + [int]$matches[4]) / 2)
+                    # HIT TARGET (measured 2026-11-02 08:4x, manual taps with the count of
+                    # `command decoded: SetPosition` before/after): tapping the row's TITLE line
+                    # ("收藏点 2") produces a command, tapping the coordinate text 55 px below it does
+                    # NOT — the row's hit area is the title line, not the whole row. So tap the nearest
+                    # text node ABOVE the coordinate line, and fall back to geometry if there is none.
+                    $allNodes = @($tapDump.SelectNodes('//node'))
+                    $coordIdx = -1
+                    for ($ni = 0; $ni -lt $allNodes.Count; $ni++) {
+                        if ([object]::ReferenceEquals($allNodes[$ni], $row)) { $coordIdx = $ni; break }
+                    }
+                    $hitCx = $null; $hitCy = $null
+                    if ($coordIdx -gt 0) {
+                        for ($nj = $coordIdx - 1; $nj -ge 0; $nj--) {
+                            $candNode = $allNodes[$nj]
+                            if (-not $candNode.GetAttribute('text')) { continue }
+                            $nb = $candNode.GetAttribute('bounds')
+                            if ($nb -notmatch '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') { continue }
+                            $hitCx = [int](([int]$matches[1] + [int]$matches[3]) / 2)
+                            $hitCy = [int](([int]$matches[2] + [int]$matches[4]) / 2)
+                            break
                         }
-                        $elapsed = [Math]::Round(((Get-Date) - $pollStart).TotalSeconds, 1)
-                        $res = Wait-PositionNear -Lat $favLat -Lon $favLon -ToleranceMeters 300 -TimeoutSec 4
-                        $ok = $dumpOk -or $res.Ok
-                        $returnDetail = if ($ok) { "reached the favourite ($dumpDetail) after ${elapsed}s" }
-                        elseif ($closest -lt 0) { "tap had no effect: no fix at all ${elapsed}s after tapping the favourite at $favLat,$favLon" }
-                        else { "tap had no effect: closest fix stayed $([Math]::Round($closest))m away after ${elapsed}s (favourite $favLat,$favLon; last $dumpDetail)" }
-                        Test-Result -Id '11b-favorite-return' -Name 'quick return jumps back to the saved favourite' `
-                            -Condition $ok `
-                            -Detail $returnDetail
-                        Stop-Verifier
+                    }
+                    if ($null -ne $hitCx) {
+                        $cx = $hitCx; $cy = $hitCy
+                        Write-Step "     tapping the row title line at $cx,$cy (the coordinate text below it is not a hit target)"
                     }
                     else {
-                        Add-Result -Id '11b-favorite-return' -Name 'quick return jumps back to the saved favourite' -Status 'SKIP' -Detail 'favourite row has no tappable bounds'
+                        # geometry fallback: 45 px above the coordinate line, near its left edge
+                        if ($rowBounds -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
+                            $cx = [int]$matches[1] + 40
+                            $cy = [int]$matches[2] - 45
+                        }
+                        Write-Step "     no title node found; tapping 45 px above the coordinate line at $cx,$cy"
+                    }
+                    $cmdBefore = Get-SetPositionCommandCount
+                    Invoke-AdbShell "input tap $cx $cy" -AllowFailure | Out-Null
+                    $tapTried = $true
+                    # The tap counts as landed only when the app actually reacted: a SetPosition command
+                    # reached the engine, or the 已跳转到 snackbar appeared. Anything else is a missed tap,
+                    # and must be reported as such rather than as a distance.
+                    $landDeadline = (Get-Date).AddSeconds(3)
+                    while ((Get-Date) -lt $landDeadline) {
+                        Start-Sleep -Milliseconds 500
+                        if ((Get-SetPositionCommandCount) -gt $cmdBefore) { $landed = $true; break }
+                        $snackDump = Get-UiDump
+                        if (@($snackDump.SelectNodes('//node') | Where-Object { $_.GetAttribute('text') -match '已跳转' }).Count -gt 0) { $landed = $true; break }
                     }
                 }
+                if (-not $landed) {
+                    Test-Result -Id '11b-favorite-return' -Name 'quick return jumps back to the saved favourite' -Condition $false `
+                        -Detail "tap did not land on the favourite row: no 'SetPosition' command reached the engine and no 已跳转到 snackbar appeared within 3 s (row bounds: $rowBounds$(if (-not $tapTried) { '; no tappable coordinate row was present in the fresh dump' } else { '' }))"
+                    Stop-Verifier
+                }
                 else {
-                    Add-Result -Id '11b-favorite-return' -Name 'quick return jumps back to the saved favourite' -Status 'SKIP' -Detail 'favourite row disappeared from the dump'
+                    # Only now is the position assertion meaningful: the tap is proven to have reached the
+                    # app, so a position that fails to move is a genuine product result.
+                    $dumpOk = $false
+                    $dumpDetail = 'no fix'
+                    $closest = -1.0
+                    $pollStart = Get-Date
+                    $deadlineT = (Get-Date).AddSeconds(10)
+                    while ((Get-Date) -lt $deadlineT) {
+                        Start-Sleep -Milliseconds 700
+                        $favFix = Get-DumpsysFix
+                        foreach ($k in @('gps', 'fused', 'network', 'passive')) {
+                            if (-not $favFix.ContainsKey($k)) { continue }
+                            $d = Get-GeoDistanceMeters -Lat1 $favLat -Lon1 $favLon -Lat2 $favFix[$k].lat -Lon2 $favFix[$k].lon
+                            if ($closest -lt 0 -or $d -lt $closest) { $closest = $d }
+                            $dumpDetail = "$k $($favFix[$k].lat),$($favFix[$k].lon) (d=$([Math]::Round($d))m)"
+                            if ($d -le 300) { $dumpOk = $true; break }
+                        }
+                        if ($dumpOk) { break }
+                    }
+                    $elapsed = [Math]::Round(((Get-Date) - $pollStart).TotalSeconds, 1)
+                    $res = Wait-PositionNear -Lat $favLat -Lon $favLon -ToleranceMeters 300 -TimeoutSec 4
+                    $ok = $dumpOk -or $res.Ok
+                    $returnDetail = if ($ok) { "tap landed; reached the favourite ($dumpDetail) after ${elapsed}s" }
+                    elseif ($closest -lt 0) { "tap landed and the app issued SetPosition, but no fix arrived within ${elapsed}s (favourite $favLat,$favLon)" }
+                    else { "tap landed and the app issued SetPosition, but the engine stayed $([Math]::Round($closest))m away after ${elapsed}s (favourite $favLat,$favLon; last $dumpDetail)" }
+                    Test-Result -Id '11b-favorite-return' -Name 'quick return jumps back to the saved favourite' `
+                        -Condition $ok `
+                        -Detail $returnDetail
+                    Stop-Verifier
                 }
             }
         }
