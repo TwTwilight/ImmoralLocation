@@ -249,6 +249,19 @@ object StatusWriter {
     @Volatile
     private var lastWriteMs = 0L
 
+    /** True once the world-readable status row has been removed after the engine stopped. */
+    private var clearedWhileStopped = false
+
+    /**
+     * Removes any status row left behind by a previous boot. `Settings.Global` is persistent storage,
+     * so a row written before a reboot survives it, and until the next publish it advertises the
+     * module to every app on the device.
+     */
+    fun clearStaleRow() {
+        clearedWhileStopped = true
+        publishToSettingsGlobals("")
+    }
+
     @Volatile
     var lastPath: String? = null
         private set
@@ -261,6 +274,16 @@ object StatusWriter {
         val now = System.currentTimeMillis()
         if (!force && now - lastWriteMs < 1000L) return
         lastWriteMs = now
+        // `Settings.Global` is world-readable, so a stopped engine must not keep advertising itself:
+        // the row is removed once when the engine stops and rewritten when it starts again.
+        if (!state.running) {
+            if (!clearedWhileStopped) {
+                clearedWhileStopped = true
+                publishToSettingsGlobals("")
+            }
+        } else {
+            clearedWhileStopped = false
+        }
         try {
             val json = buildString(160) {
                 append("{\"running\":").append(state.running)
@@ -308,7 +331,10 @@ object StatusWriter {
     private fun publishToSettingsGlobals(json: String) {
         try {
             val context = BridgeServer.hostContext() ?: return
-            android.provider.Settings.Global.putString(context.contentResolver, STATE_KEY, json)
+            // An empty payload means "forget us": putString(null) removes the row entirely, which is
+            // what we want when the engine stops.
+            val value = json.ifBlank { null }
+            android.provider.Settings.Global.putString(context.contentResolver, STATE_KEY, value)
         } catch (t: Throwable) {
             // Swallowed on purpose: a failed status publish must never stop the ticker.
             Log.once("status.globals", "Settings.Global publish failed: ${t.javaClass.simpleName}")

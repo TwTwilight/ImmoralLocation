@@ -506,6 +506,25 @@ fun MapScreen(
                 ),
         )
 
+        // Status-bar legibility band. The map is deliberately full-bleed, but on pale tiles the
+        // system clock and battery sit on light POI labels and stop being readable (R1/R6). One
+        // short gradient in the *surface* role to the status-bar height: a white veil in light
+        // (the icons there are dark) and a dark veil in dark mode, so no tonal bar is needed and
+        // the map still reads as full-bleed.
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(with(density) { navInsetTopPx.toDp() })
+                .background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        0f to MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
+                        0.75f to MaterialTheme.colorScheme.surface.copy(alpha = 0.26f),
+                        1f to MaterialTheme.colorScheme.surface.copy(alpha = 0f),
+                    ),
+                ),
+        )
+
         // ----------------------------------------------------------- top chrome
         Column(
             modifier = Modifier

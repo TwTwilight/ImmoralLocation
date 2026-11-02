@@ -1,9 +1,17 @@
 package com.immoral.location.ui.components
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -169,6 +177,7 @@ fun SwitchRow(
 }
 
 /** Title + live value + slider, used for every numeric setting. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun LabeledSlider(
     title: String,
@@ -197,7 +206,23 @@ fun LabeledSlider(
             onValueChange = onValueChange,
             valueRange = valueRange,
             steps = steps,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(36.dp)
+                // Half a thumb of inset so a 0 % value does not leave the track's rounded
+                // start cap peeking out from behind the disc (it read as a second, clipped handle).
+                .padding(horizontal = 10.dp),
+            // M3 1.3's default thumb is the expressive *bar*: at 0 % it sits half outside the
+            // rounded track cap (reading as a stray vertical line) and where it overlaps the cap it
+            // renders as a clipped "C". A 20 dp disc at the same optical weight as the app's other
+            // 20 dp glyphs is unambiguous in both themes and cannot clip inside the 36 dp box.
+            thumb = {
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .background(MaterialTheme.colorScheme.primary, CircleShape),
+                )
+            },
         )
     }
 }

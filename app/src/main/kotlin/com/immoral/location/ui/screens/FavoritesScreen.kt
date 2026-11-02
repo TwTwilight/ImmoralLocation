@@ -269,7 +269,9 @@ private fun FavoriteRow(
                 Icon(
                     Icons.Filled.Edit,
                     contentDescription = stringResource(R.string.action_rename),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // Destructive controls look destructive (§10.2): neutral here read as
+                    // just another row action.
+                    tint = MaterialTheme.colorScheme.error,
                     modifier = Modifier.size(20.dp),
                 )
             }
@@ -277,7 +279,9 @@ private fun FavoriteRow(
                 Icon(
                     Icons.Filled.Delete,
                     contentDescription = stringResource(R.string.action_delete),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // Destructive controls look destructive (§10.2): neutral here read as
+                    // just another row action.
+                    tint = MaterialTheme.colorScheme.error,
                     modifier = Modifier.size(20.dp),
                 )
             }

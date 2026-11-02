@@ -247,12 +247,14 @@ fun PeekPanel(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(stringResource(R.string.action_route_short), maxLines = 1)
                 }
-                // 收藏这里: `tertiaryContainer` when a saved place already covers the simulated
-                // position, so the filled heart is not the only difference between on and off.
+                // The on-state stays inside the *action* system (`primaryContainer`, the same family
+                // as the filled primary, one step quieter) instead of `tertiaryContainer`. Tertiary is
+                // this product's saved-place accent and belongs on map pins — as a button fill it was
+                // a third, pink weight competing with 开始 (§10.2: one emphasised action per surface).
                 val favouriteColors = if (favouriteHere) {
                     IconButtonDefaults.filledTonalIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 } else {
                     IconButtonDefaults.filledTonalIconButtonColors()
@@ -718,7 +720,16 @@ fun LayerSheetContent(
                     onClick = { onPresetChange(option) },
                 )
                 Column(modifier = Modifier.weight(1f)) {
-                    SheetValue(text = stringResource(option.labelRes))
+                    // A disabled preset's label must read dimmer than an enabled one; black-on-
+                    // black made 天地图 look selectable and only the grey note said otherwise.
+                    SheetValue(
+                        text = stringResource(option.labelRes),
+                        color = if (enabled) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        },
+                    )
                     if (!enabled) {
                         // Information, not an error: the preset is fine, it just needs a key. Red
                         // here read as "this option is broken" (audit: inconsistent role).

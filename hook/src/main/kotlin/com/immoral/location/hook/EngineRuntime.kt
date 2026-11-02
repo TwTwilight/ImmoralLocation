@@ -166,6 +166,13 @@ object EngineRuntime {
                 Log.e("engine boot publish", t)
             }
         }
+        // Drop any status row a previous boot left in Settings.Global: that storage persists across
+        // reboots, and until the first tick the row would advertise the module to every app.
+        try {
+            StatusWriter.clearStaleRow()
+        } catch (t: Throwable) {
+            Log.once("status.boot.clear", "clearing the stale status row failed: ${t.javaClass.simpleName}")
+        }
         Log.i("EngineRuntime booted in ${android.os.Process.myPid()} (module $moduleVersion)")
     }
 
@@ -708,3 +715,4 @@ object EngineRuntime {
     /** Force an immediate state push (used right after a teleport). */
     fun currentState(): EngineState? = snap?.state
 }
+
