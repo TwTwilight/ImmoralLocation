@@ -33,16 +33,16 @@ function Get-ModulePackageName {
     # `pm path` is cheaper and far more reliable than `pm list packages` right after an install /
     # when the package service is churning; fall back to the list form only if it says nothing.
     foreach ($attempt in 1..3) {
-        foreach ($candidate in @('io.github.twtwilight.immorallocation.debug', 'com.immoral.location')) {
+        foreach ($candidate in @('io.github.twtwilight.immorallocation.debug', 'io.github.twtwilight.immorallocation', 'com.immoral.location')) {
             $r = Invoke-AdbShell "pm path $candidate" -AllowFailure
             if (($r.Output -join '') -match '^package:') { return $candidate }
         }
-        foreach ($candidate in @('io.github.twtwilight.immorallocation.debug', 'com.immoral.location')) {
+        foreach ($candidate in @('io.github.twtwilight.immorallocation.debug', 'io.github.twtwilight.immorallocation', 'com.immoral.location')) {
             if (Test-PackageInstalled $candidate) { return $candidate }
         }
         Start-Sleep -Seconds 2
     }
-    throw 'ImmoralLocation is not installed (expected io.github.twtwilight.immorallocation.debug)'
+    throw 'ImmoralLocation is not installed (expected io.github.twtwilight.immorallocation[.debug])'
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -502,4 +502,5 @@ function Open-UiScreen {
     }
     return [pscustomobject]@{ Dump = (Get-UiDump); Path = ($path -join ' > ') }
 }
+
 

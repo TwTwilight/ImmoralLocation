@@ -103,10 +103,15 @@ function Show-Python {
 }
 
 function Get-ModulePackage {
-    foreach ($candidate in @('io.github.twtwilight.immorallocation.debug', 'com.immoral.location')) {
+    # Debug first (that is what the matrix installs), then the release id, so a device carrying the
+    # shipping artefact can be activated without hand-passing -ModulePackage.
+    foreach ($candidate in @(
+            'io.github.twtwilight.immorallocation.debug',
+            'io.github.twtwilight.immorallocation',
+            'com.immoral.location')) {
         if (Test-PackageInstalled $candidate) { return $candidate }
     }
-    throw 'ImmoralLocation is not installed on the device - build and install app-debug.apk first'
+    throw 'ImmoralLocation is not installed on the device - install app-debug.apk or app-release.apk first'
 }
 
 function Stop-Lspd {
