@@ -425,6 +425,12 @@ fun MapScreen(
         // Height of the live-search card, so the snackbar stacks *under* it instead of behind it.
         var suggestionsHeightPx by remember { mutableIntStateOf(0) }
         val totalPx = constraints.maxHeight.toFloat()
+        // Landscape puts the FAB plate in the same band as the top chrome, because the sheet claims
+        // most of the height and the plate is anchored just above it. One branch, one effect: the
+        // chrome row reserves the plate's width so the 工具 pill is never covered. Portrait is
+        // untouched by construction (`isLandscape == false` keeps the original paddings).
+        val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+        val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
         // Never constrain the very first layout to a guessed peek height: the measured value is
         // read back from PeekPanel *inside* the sheet, so a too-small guess would lock the sheet at
         // a height that clips the action row. 42 % of the screen is comfortably above the panel's
@@ -558,7 +564,16 @@ fun MapScreen(
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = Dimens.chromeMargin, vertical = Dimens.chromeGap),
+                .padding(
+                    start = Dimens.chromeMargin,
+                    end = if (isLandscape) {
+                        Dimens.chromeMargin + Dimens.fabGroupWidth + Dimens.chromeGap
+                    } else {
+                        Dimens.chromeMargin
+                    },
+                    top = Dimens.chromeGap,
+                    bottom = Dimens.chromeGap,
+                ),
         ) {
             androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
                 SearchPill(
@@ -577,6 +592,9 @@ fun MapScreen(
                     icon = Icons.Filled.Tune,
                     label = stringResource(R.string.action_tools),
                     onClick = onOpenTools,
+                    // Floor width: the label must never be clipped to an icon-only sliver when the
+                    // search pill is greedier than the row (landscape squeeze, audit R1/R5).
+                    modifier = Modifier.widthIn(min = 96.dp),
                     tag = "e2e.fab.tools",
                 )
             }
