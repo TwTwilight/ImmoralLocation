@@ -983,3 +983,23 @@ peek 行上的收藏链接自然不在树里。**手动冷启动 dump 证明标�
 
 **修法**：检查 11 在查 `e2e.peek.favorites` 之前，先 `Start-App` 并用"至少一个 `e2e.*` 标签出现"确认前台
 （复用 `11b` 已有的 `Restore-Foreground` 逻辑），找不到时报告 **`topResumedActivity`** 而不是只说"不可达"。
+
+## 29. `11-favorites`/`11b` 三层修复 —— 并追溯一处"静默缺失"（2026-11-02 21:20）
+
+**三层原因**（我诊断的是第 1 层，队友挖出另两层）：
+1. **前台**：检查先 `Start-Verifier`，verifier 抢前台，peek 在别的窗口后面。现在 `Enter-OwnForeground` 先跑
+   （`Start-App` + 轮询到至少一个 `e2e.*` 标签），失败时 detail 打印 `topResumedActivity=…`；
+2. **首启遮罩比 activity 晚一拍出现，且不含任何 `e2e.*` 标签**——于是"前台是我们的、但没有任何标签"看起来自相矛盾。
+   遮罩的关闭现在放进前台轮询循环里（关掉后再 dump）；
+3. **播种收藏从来没成功过**：播种代码在**收藏面板里**找"保存"控件，而那个控件在**地图的地点卡**上。
+   于是 `created=false` → 走"设计的空态"分支 **PASS**，而 `11b` **根本没运行**。
+
+**追溯影响**：`report-release.json`（发布产物那次）的表格里**只有 `11-favorites`、没有 `11b` 行**——
+那次 "14 PASS" 里 `11b` 是**静默缺失**的，不是通过。这与 `11b` 在单独运行时确实通过（`report-r17` 等）不矛盾，
+但"某次全量跑里它没跑"这个事实必须记下来。
+
+**新增防线**：没有收藏时 `11b` 会显式输出一行
+`SKIP 11b-favorite-return  no saved favourite exists (empty-state path) … 11b did not execute`。
+**一个从表格里消失的子检查，比一个 SKIP 更危险**——它让总结行读起来像"11 绿了"，而断言从未执行。
+
+**设备验证**：`-Only 11,11b` → 3 passed / 0 failed / 0 skipped，`共 1 个收藏`，`11b` 在 0.8 s 内到达收藏点。
