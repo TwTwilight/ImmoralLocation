@@ -80,7 +80,12 @@ class FrameworkStatus(context: Context) {
         if (raw.isBlank()) return null
         val ts = GLOBAL_TS.find(raw)?.groupValues?.get(1)?.toLongOrNull() ?: nowMs
         if (nowMs - ts > STATUS_FRESH_MS) return null
-        return decodeState(raw) ?: decodeReplyState(raw) ?: decodeLoose(raw)
+        // decodeLoose FIRST. The hook publishes lat/lon keys, which EngineState's strict
+        // deserializer accepts as "all fields unknown" (ignoreUnknownKeys) and silently returns the
+        // default point (0,0) - measured 2026-11-02: the poller logged lat=0.0 running=true while the
+        // channel was advancing, which is why the peek never followed a driving route.
+        val parsed = decodeLoose(raw) ?: decodeState(raw) ?: decodeReplyState(raw)
+        return parsed?.takeIf { it.point.isValid() }
     }
 
     private fun readStatusState(nowMs: Long): EngineState? {
@@ -180,6 +185,7 @@ class FrameworkStatus(context: Context) {
         const val HEARTBEAT_FRESH_MS = 30_000L
     }
 }
+
 
 
 
