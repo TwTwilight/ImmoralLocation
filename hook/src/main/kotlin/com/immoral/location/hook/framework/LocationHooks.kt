@@ -1077,10 +1077,29 @@ object LocationHooks {
      * non-whitelisted branch turned into "no location at all" (measured 2026-11-02 as a blackout in
      * `10-independent`). A real fix from any provider is a far better answer than none.
      */
-    private fun anyRealFix(key: String): Location? =
-        realLast[providerFor(key)] ?: realLast[key]
-            ?: realLast["fused"] ?: realLast["gps"] ?: realLast["network"]
-            ?: realLast.values.firstOrNull()
+    private fun anyRealFix(key: String): Location? {
+        val chain = listOfNotNull(
+            realLast[providerFor(key)],
+            realLast[key],
+            realLast["fused"],
+            realLast["gps"],
+            realLast["network"],
+        ) + realLast.values
+        val snap = EngineRuntime.activeSnap()
+        for (candidate in chain) {
+            // Read-time hygiene, not bookkeeping hygiene: `realLast` can be poisoned by a path that
+            // never went through [rememberReal]'s guards (a cached provider value read back through
+            // our own hook is one). A non-whitelisted reader must never receive our fix, whatever
+            // ended up in the map - measured 2026-11-02: the outside read of `gps` returned our
+            // simulated point (31.2306,121.4737, acc=4) while `passive`/`network`/`fused` returned
+            // genuine values (30.2763,120.1762), i.e. exactly one key was contaminated.
+            if (Fakes.containsFabricated(candidate)) continue
+            if (snap != null && coordinatesMatchSnap(candidate, snap)) continue
+            if (Fakes.matchesFabricatedPoint(candidate.latitude, candidate.longitude)) continue
+            return candidate
+        }
+        return null
+    }
     private fun lastLocationHook(label: String): XC_MethodHook = object : XC_MethodHook() {
         override fun beforeHookedMethod(param: MethodHookParam) {
             try {

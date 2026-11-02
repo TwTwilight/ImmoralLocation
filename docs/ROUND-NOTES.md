@@ -1300,5 +1300,34 @@ hook return: lac=50274/ci=129538244 matchesC=True; consumer view (context only):
 `ls -t /data/adb/lspd/log/modules_*.log | head -1` 取最新一份，再
 `tail -n 4000 <file> | grep -E '…'`；确实需要全量历史时才用 `grep` 并配 `--max-count` 或时间窗。
 
+## 20. `10-independent`：把"平台没有真实 last-known"变成前置条件（2026-11-02 15:5x）
+
+独立模式要成立，前提是平台**存在**一个真实的 last-known 位置可供还原。这台设备在室内常常
+根本没有，hook 自己会写：
+
+```
+snapshot: no genuine last-known fix available yet (fabricated=0, managers=4) — retrying on later ticks
+W snapshot: giving up after 10 attempts — independent mode cannot restore a real provider cache this session
+```
+
+`fabricated=0` 是关键：四个 provider manager **一个都没有** last-known，不是"我们的假点被拒"，
+而是平台确实为空。这种情况下任何实现都无法还原一个不存在的位置，于是旧断言会把一条**被防守住的
+不可能**报成红色 —— 而红灯刷多了就会被忽略。
+
+现在的判定顺序：
+
+1. 读模块日志里的 `snapshot:` 行（**必须**截断读取，见 §19 的 40 分钟陷阱：
+   `tail -n 4000 "$(ls -t /data/adb/lspd/log/modules_*.log | head -1)" | grep snapshot:`）；
+2. 有 `snapshot: captured …` → 前置条件成立，走原断言（此时红 = 真泄漏）；
+3. 只有 `no genuine last-known fix available` / `giving up after N attempts` → **SKIP**：
+   > no real last-known fix on this device — cannot distinguish a leak from an empty platform cache;
+   > needs a real GNSS fix first. Module log: W snapshot: giving up after 10 attempts …
+
+实测（build `15:36:14`，`e2e/out/report-10.json`）：`1 passed, 0 failed, 1 skipped`。
+
+**注意**：这些 `snapshot:` 行只进模块日志文件，不进 logcat（实测 logcat 里 0 行），
+所以探针必须先读文件、再退回 logcat。
+
+
 
 

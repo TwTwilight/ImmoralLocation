@@ -323,6 +323,27 @@ function Get-CellsProbeLines {
     return $out
 }
 
+# Indoors this device often has NO real last-known fix at all, and the hook says so itself. Those lines
+# are the precondition evidence for 10-independent: `snapshot: captured …` means the platform HAD one;
+# `no genuine last-known fix available` / `giving up after N attempts` means it had nothing
+# (fabricated=0) — a location no implementation can restore.
+function Get-SnapshotLines {
+    $out = @()
+    # The snapshot lines go to the MODULE LOG FILE; only a subset of module lines reaches logcat
+    # (measured 2026-11-02: `grep snapshot:` in logcat returned 0 while the file had both the
+    # "no genuine last-known fix available" and "giving up after 10 attempts" lines).
+    try {
+        # NEVER grep the whole log directory: `grep -n … modules_*.log` once took 2393 s (~40 min) and
+        # wedged the whole chain (docs/ROUND-NOTES.md §19). Take the NEWEST file and tail it first.
+        $out = @(((Invoke-AdbRoot 'tail -n 4000 "$(ls -t /data/adb/lspd/log/modules_*.log | head -1)" | grep "snapshot:"' -AllowFailure).Output))
+    }
+    catch { }
+    if ($out.Count -eq 0) {
+        try { $out = @(adb logcat -d -s LSPosedFramework:I 2>&1 | Select-String 'snapshot:') } catch { }
+    }
+    return $out
+}
+
 function Get-CellsProbeSig {
     param($Line)
     if (-not $Line) { return $null }
@@ -1406,7 +1427,23 @@ if (Test-Selected '10') {
     if ($substitutedFor) { $evidence += 'log:substituted-real' }
     if ($cacheGenuine) { $evidence += 'log:cache-genuine' }
     $evText = if ($evidence.Count -gt 0) { $evidence -join ',' } else { 'none' }
-    if (-not $lkOutPresent -and $null -eq $lkIn -and -not $logEvidence) {
+    # PRECONDITION (2026-11-02, Lead's log evidence): independent mode can only restore a REAL provider
+    # cache, and this device often has none — the hook reports it directly:
+    #   `snapshot: no genuine last-known fix available yet (fabricated=0, managers=4)`
+    #   `snapshot: giving up after 10 attempts — independent mode cannot restore a real provider cache`
+    # `fabricated=0` means none of the provider managers had a last-known location at all: not "our fake
+    # was rejected" but "the platform has nothing". No implementation can restore a location that does
+    # not exist, so the row SKIPs — a red row in that world just trains us to ignore it.
+    $snapLines = @(Get-SnapshotLines)
+    $preFixAvailable = [bool](@($snapLines | Where-Object { "$_" -match 'snapshot: captured' }).Count -gt 0)
+    $preFixMissing = [bool](@($snapLines | Where-Object { "$_" -match 'no genuine last-known fix available|giving up after \d+ attempts' }).Count -gt 0)
+    $preFixLine = if ($snapLines.Count -gt 0) { (("$($snapLines[-1])") -replace '^.*\[ImmoralLocation\]\s*', '') } else { 'no snapshot lines in the log window' }
+    if (-not $preFixAvailable -and $preFixMissing) {
+        Add-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Status 'SKIP' `
+            -Detail "no real last-known fix on this device — cannot distinguish a leak from an empty platform cache; needs a real GNSS fix first. Module log: $preFixLine" `
+            -Metrics @{ skipped = 'no-real-last-known-fix'; prefixedAvailable = $preFixAvailable; preFixMissing = $preFixMissing; snapshotLine = $preFixLine; insideReached = $inside.Ok; logEvidence = $evText }
+    }
+    elseif (-not $lkOutPresent -and $null -eq $lkIn -and -not $logEvidence) {
         # Nothing observable at all — neither a cache read nor any per-package log line. That is an
         # inconclusive run, never a pass (this is exactly how the row looked green when run alone).
         Add-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Status 'WARN' `

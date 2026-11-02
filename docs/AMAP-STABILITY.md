@@ -748,4 +748,52 @@ Options for whoever picks this up, cheapest first:
 Until one of those exists, `6-cells` is a **named structural gap** — not a matcher bug, not a scope
 problem, and not something more log-grepping will reveal.
 
+## 14. Row 10 (`10-independent`): the leak was one contaminated key in `realLast`
+
+Reproduced deliberately: engine in **normal** mode at POINT_B (31.230416,121.473701) so the provider
+cache holds our fix, then switch to **independent** mode with an empty whitelist, then let the
+verifier read as an ordinary (non-whitelisted) app:
+
+```
+VERIFY lastKnown gps     lat=31.230643 lon=121.473701 acc=4  ageMs=8613   ← OUR FIX (cached from normal mode)
+VERIFY lastKnown passive lat=30.276349 lon=120.176221 acc=30 ageMs=78     ← genuine
+VERIFY lastKnown network lat=30.276349 lon=120.176221 acc=30 ageMs=80     ← genuine
+VERIFY lastKnown fused   lat=30.276353 lon=120.176175 acc=30 ageMs=86     ← genuine
+```
+
+Same hook, same call sequence, **exactly one provider contaminated** ⇒ the read was not going through
+an unhooked seam and not through an unfiltered registration (both were already ruled out); our own
+`getLastLocation` hook answered it and `anyRealFix("gps")` returned a value out of `realLast` that was
+our fix. The `ageMs=8613` is the tell: it is the *cached* normal-mode injection, not a fresh one.
+
+**Fix — hygiene at read time, not at bookkeeping time** (`LocationHooks.anyRealFix`): every candidate is
+now rejected if `Fakes.containsFabricated`, if it matches the current engine fix
+(`coordinatesMatchSnap`), or if `Fakes.matchesFabricatedPoint` matches, and the chain keeps walking; if
+everything is rejected the caller gets `null` ("unknown"), never our fix. This cannot be defeated by a
+future write path that forgets a guard, which is exactly how this one survived three reviews.
+
+After the change, same probe, non-whitelisted reader:
+
+```
+lastKnown passive/network/fused/gps  lat=30.27635 lon=120.176233 acc=30   ← genuine on ALL four
+```
+
+and the whitelisted reader still gets the simulation:
+
+```
+VERIFY {"source":"onLocationChanged","provider":"gps","lat":31.230416,"lon":121.473701,…,"mock":false}
+```
+
+Acceptance row on this build: `-Only 10` now **SKIPs with a precondition** instead of failing —
+"no real last-known fix on this device … needs a real GNSS fix first", citing the module line
+`snapshot: giving up after 10 attempts`. That is the honest state: the row can distinguish a leak
+from an empty cache (its `preFixMissing` metric), and it will assert for real on a device/run where
+the platform actually has a genuine fix.
+
+**Next suspect if the fake ever appears again** (not chasing it now): `captureRealLastKnown()` — its
+only filter is `Fakes.isFabricated`, which is identity-based, so a parcelled copy of our own fix could
+be recorded as "real" while `realLast` is empty. The cure is one line: apply the same
+`coordinatesMatchSnap`/`matchesFabricatedPoint` guards there that `rememberReal()` already uses.
+
+
 
