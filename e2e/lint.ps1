@@ -124,9 +124,14 @@ foreach ($kv in $parsed.GetEnumerator()) {
 }
 
 Write-Host ''
-if ($errors -gt 0) {
-    Write-Host ("lint FAILED: {0} error(s), {1} warning(s)" -f $errors, $warnings) -ForegroundColor Red
+# Format-string guard: a placeholder string read with no argument is rendered raw to the user
+# (StatusSheet once showed a raw '%1$.1f km/h' - docs/UIUX-AUDIT.md 34).
+$stringOut = & (Join-Path $PSScriptRoot 'check_strings.ps1') 2>&1
+if ($LASTEXITCODE -ne 0) { $stringOut | ForEach-Object { Write-Host $_ -ForegroundColor Red }; $errors++ }
+
+if ($errors -gt 0) {    Write-Host ("lint FAILED: {0} error(s), {1} warning(s)" -f $errors, $warnings) -ForegroundColor Red
     exit 1
 }
 Write-Host ("lint OK: 0 errors, {0} warning(s)" -f $warnings) -ForegroundColor Green
 exit 0
+
