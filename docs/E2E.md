@@ -175,7 +175,32 @@ PNG from the workspace. Capture path:
 A capture that fails both strategies throws, so a "screenshot" can never silently be a 0-byte file.
 Width/height are parsed from `IHDR` and reported, which catches a half-drawn frame early.
 
+### Precondition: a settled frame (rule, not advice)
+
+A frame is only evidence for a *layout* claim if the layout has finished reacting to whatever
+you just did. Two ways this fails, both of which have already produced a false defect report:
+
+1. **The action shows a snackbar.** If the snackbar produced by your own action is still visible
+   in the frame, the layout that action changes has not recomposed yet. The snackbar is the
+   tell — wait for it to disappear, then capture. (Cost: a "planner has two different empty
+   states" finding that an A/B dump then disproved, in both light and dark.)
+2. **A sheet is changing detent.** Capture after the detent settles, not between states.
+
+So any post-action capture needs, in order:
+
+```powershell
+adb shell dumpsys activity activities | Select-String topResumedActivity   # our app is in front
+# (perform the action)
+# wait until the snackbar text is gone from the UI tree, and a dump matches the expected state
+.\e2e\screenshot.ps1 -Name <name>
+```
+
+A dump **before** the frame is cheap and turns "the frame looks odd" into either "the frame is
+right" or "the frame is mid-transition". This is the same discipline as the stale-node rule:
+never judge a picture whose tree you have not read in the same state.
+
 ## Reading the ground truth
+
 
 `verifier` prints one JSON object per line on tag `ImmoralVerifier`:
 

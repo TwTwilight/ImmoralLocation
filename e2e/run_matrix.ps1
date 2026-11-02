@@ -1813,7 +1813,7 @@ if (Test-Selected '11') {
 # 12..21  UI/UX rework checks (need the app in the foreground; see lib/checks_ui.ps1)
 # ------------------------------------------------------------------------------------------------
 if (-not $SkipUi) {
-    if (@('12', '13', '14', '15', '16', '17', '18', '20', '21', '22', '25') | Where-Object { Test-Selected $_ }) {
+    if (@('12', '13', '14', '15', '15d', '16', '17', '18', '20', '21', '22', '25') | Where-Object { Test-Selected $_ }) {
         Ensure-VerifierStream
         # the UI checks need a quiet logcat window and a live app; checks_ui re-establishes state
         Stop-Verifier

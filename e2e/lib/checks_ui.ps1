@@ -1023,6 +1023,83 @@ function Invoke-RouteWaypointCheck {
 }
 
 # ------------------------------------------------------------------------------------------------
+# 15d. clearing the route returns the planner to its fresh shape
+# ------------------------------------------------------------------------------------------------
+# Guards the "the primary is rendered while it cannot act" class (P2, removed twice by hand tonight).
+# ui-polish's A/B dump proved the shape: with a destination, start/plan/clear are all present; after
+# `e2e.route.clear`, `plan` is absent, `clear` is absent and the hint line is back. The same pair also
+# produced a RETRACTED finding, which is exactly why this belongs in a check and not in a procedure:
+# any future entry point (saved route, GPX import, deep link) can reintroduce the state, and a
+# dump-based assertion catches it regardless of how it was reached.
+#
+# CAPTURE RULE this depends on (docs/E2E.md): when an action shows a snackbar, the snackbar in the
+# same frame is the tell that the dump is MID-TRANSITION. Both of tonight's planner "defects" were the
+# clear-transition frame read as a settled state, so the layout is judged only after it is gone.
+function Invoke-RouteClearCheck {
+    if (-not (Start-UiApp)) { throw "the app did not come to the foreground (top=$(Get-TopActivity))" }
+    Start-Sleep -Seconds 2
+    $dump = Open-RoutePlanner
+    if (-not $dump) {
+        Add-Result -Id '15d-route-clear' -Name 'clearing the route returns the planner to its fresh shape' -Status 'SKIP' `
+            -Detail ('route planner surface not reachable. ' + (Format-UiSnapshot -Dump (Get-UiXml)))
+        return
+    }
+    # --- set a destination so the primary cannot be present for free -----------------------------
+    $dest = Get-UiElement -Name 'routeDest' -Dump $dump -Optional
+    $destSet = $false
+    if ($dest) {
+        Invoke-UiTapPoint -X $dest.Cx -Y $dest.Cy
+        Start-Sleep -Seconds 2
+        $pickerDump = Get-UiXml
+        $fieldHits = @(Get-UiBounds -Id 'e2e.route.search' -Dump $pickerDump)
+        $fieldNode = if ($fieldHits.Count -gt 0) { $fieldHits[0] } else { @(Get-UiTextFields -Dump $pickerDump) | Select-Object -First 1 }
+        if ($fieldNode) {
+            Set-UiText -Value ("{0:F4},{1:F4}" -f $POINT_B.lat, $POINT_B.lon) -Field $fieldNode -Enter | Out-Null
+            Close-UiKeyboard
+            $place = Wait-UiBounds -Id 'e2e.route.search.place.0' -TimeoutSec 10
+            if ($place) {
+                Invoke-UiTapPoint -X $place.Cx -Y $place.Cy
+                Start-Sleep -Seconds 2
+                $destSet = $true
+            }
+        }
+    }
+    Wait-UiGone -Id 'e2e.route.planning' -TimeoutSec 20 | Out-Null
+    $beforeNodes = @(Get-UiNodes -Dump (Get-UiXml))
+    $planBefore = @($beforeNodes | Where-Object { $_.Id -eq 'e2e.route.plan' }).Count
+    $clearBefore = @($beforeNodes | Where-Object { $_.Id -eq 'e2e.route.clear' }).Count
+    # --- clear, then wait out the transition -----------------------------------------------------
+    $clearBtn = $beforeNodes | Where-Object { $_.Id -eq 'e2e.route.clear' } | Select-Object -First 1
+    $cleared = $false
+    $snackState = 'not-cleared'
+    if ($clearBtn) {
+        Invoke-UiTapPoint -X $clearBtn.Cx -Y $clearBtn.Cy
+        # The snackbar IS the transition marker: if it is up, the frame is mid-animation and any layout
+        # judged from it is wrong (both of ui-polish's planner "defects" were exactly that). Distinguish
+        # "no snackbar appeared" from "appeared and drained" from "still visible" — a bare boolean read
+        # as a failure last time round.
+        $immediate = @(Get-UiNodes -Dump (Get-UiXml) | Where-Object { $_.Id -eq 'e2e.snackbar' }).Count -gt 0
+        if ($immediate) {
+            $gone = Wait-UiGone -Id 'e2e.snackbar' -TimeoutSec 10
+            $snackState = if ($gone) { 'drained' } else { 'STILL-VISIBLE' }
+        }
+        else { $snackState = 'none' }
+        Start-Sleep -Milliseconds 600
+        $cleared = $true
+    }
+    $afterNodes = @(Get-UiNodes -Dump (Get-UiXml))
+    $planAfter = @($afterNodes | Where-Object { $_.Id -eq 'e2e.route.plan' }).Count
+    $clearAfter = @($afterNodes | Where-Object { $_.Id -eq 'e2e.route.clear' }).Count
+    $hintAfter = @($afterNodes | Where-Object { $_.Text -match '选择终点后即可规划路线' }).Count
+    $ok = $destSet -and ($planBefore -gt 0) -and $cleared -and ($planAfter -eq 0) -and ($hintAfter -gt 0)
+    $detail = "destination set=$destSet; before clear: plan=$planBefore clear=$clearBefore; " +
+    "after clear (post-transition): plan=$planAfter clear=$clearAfter hint=$hintAfter snackbar=$snackState"
+    Test-Result -Id '15d-route-clear' -Name 'clearing the route returns the planner to its fresh shape' -Condition $ok `
+        -Detail $detail `
+        -Metrics @{ destinationSet = $destSet; planBefore = $planBefore; clearBefore = $clearBefore; planAfter = $planAfter; clearAfter = $clearAfter; hintAfter = $hintAfter; snackbar = $snackState }
+}
+
+# ------------------------------------------------------------------------------------------------
 # 15b. playback follows a polyline and progress increases (engine-level, deterministic geometry)
 # ------------------------------------------------------------------------------------------------
 function Invoke-RouteFollowCheck {
@@ -1495,6 +1572,14 @@ function Invoke-ReworkChecks {
         Invoke-Guarded -Id '15c-waypoints' -Name 'route waypoints' -Body { Invoke-RouteWaypointCheck }
         Write-Step '15b) route playback follows the polyline'
         Invoke-Guarded -Id '15b-route-follow' -Name 'route follows polyline' -Body { Invoke-RouteFollowCheck }
+        Write-Step '15d) clearing the route returns the fresh planner shape'
+        Invoke-Guarded -Id '15d-route-clear' -Name 'route clear shape' -Body { Invoke-RouteClearCheck }
+    }
+    # `-Only 15d` should be able to run the clear-shape assertion alone (it is the one an app change is
+    # most likely to break), without dragging the whole 15 family behind it.
+    elseif (& $isSelected '15d') {
+        Write-Step '15d) clearing the route returns the fresh planner shape'
+        Invoke-Guarded -Id '15d-route-clear' -Name 'route clear shape' -Body { Invoke-RouteClearCheck }
     }
     if (& $isSelected '16') {
         Write-Step "16) AMap stability for ${AmapSeconds}s"
