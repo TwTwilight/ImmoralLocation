@@ -376,3 +376,24 @@ adb shell ls -l /data/local/tmp | Select-String -Pattern "immoralhook"
 | **D5** | `docs/CONTRACTS.md` / `docs/E2E.md` 写明 `immoral.*` extras 只存在于 debug 构建 | docs | 防止将来 e2e 跑 release 时"静默读到空 extras" |
 
 
+
+## S13. 隐蔽性现状与一条由我自己引入的新暴露面（2026-11-02 17:20）
+
+**已经做到的（可被帧/日志证明）**
+- 伪造的 `Location` 结构完整：`time` 与 `elapsedRealtimeNanos` 单调、`accuracy`/`verticalAccuracy`/`speedAccuracy`/`bearingAccuracy` 齐全、
+  `isFromMockProvider=false` 且调用了隐藏 `setMock(false)`（`Fakes.kt:100-122`），默认不写任何 `immoral.*` extras。
+- 基站元组改为**从位置网格派生的合理值**（真实 PLMN 表、3GPP ECI 布局、PCI 唯一、服务小区最强），见 §S12。
+- 原生库解压到随机命名 0700 私有目录，不再有可预测的 `/data/local/tmp/libimmoralhook-*.so`。
+
+**明确不做（受"只能 hook framework"约束）**
+- 不注入目标应用进程，因此**无法**对抗应用侧的"环境指纹/反 hook 扫描"（`ro.kernel.qemu`、Magisk 痕迹、`XposedDetector` 之类）。
+  FakeLocation 把"反检测"当卖点，我们这条路做不到等价物——这是架构选择带来的能力边界，写在这里而不是含糊过去。
+
+**新暴露面（我自己在上几轮引入的，必须记下）**
+- `Settings.Global` 里的 `immoral_state` / `immoral_cells` 两个 key **任何应用都能读**，且名字直白。
+  也就是说：任何 app 只要读一次 Settings.Global 就能确认"这台机器装了改位器"。这比任何 hook 检测都更容易。
+- 现在只在引擎运行时写（停止后 `ts` 老化、app 侧忽略），但**写入期间是可读的**。
+- 候选修法，按代价排序：① 改成中性 key 名（便宜、只降低显眼度）；② **只在自家 app 前台时写**（真正的修法，需要 system_server 侧知道
+  顶层 activity，可用 `ActivityTaskManager` 的顶层包名判断）；③ 换成定向广播（仅我们的包收），代价是 app 侧要改成订阅。
+
+**结论**：在 ①/② 落地前，这一条应当作为**已知限制**出现在 README 的"隐蔽性"一节，而不是等用户自己发现。
