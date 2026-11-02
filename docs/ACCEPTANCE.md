@@ -698,3 +698,22 @@ PASS 5-route advanced 29.18 m (window=applied-window); tkResume=32.55m; resumed 
 
 **方法论**：ui-polish 报的是"两次采样相同 + 前台状态"（现象），我给的是"通道在动"（另一侧事实）；
 两者并列才逼出"中间那层把值解析成了 0"。以后遇到"UI 不动但通道在动"，先怀疑解析层。
+
+## 31. `6-cells` 定案：hook 读对了，消费侧才是旧的（2026-11-02 14:11）
+
+用 cells-engineer 的三路读探针（build `14:08:41`）跑 `-Only 6`，模块日志给出决定性证据：
+
+```
+cells.probe CHANGED read #111 via getAllCellInfo caller=uid=10168 source=query raw=hash=ddf59fb4 len=157 first=LTE/460/11/lac=50274/c…
+cells.probe read paths: query=hash=ddf59fb4 len=157 collection=hash=ddf59fb4 len=157 settings=hash=ddf59fb4 len=157 (all agree)
+```
+
+即：C 处 hook **被进入了**、走 per-name query、返回的是 **C 的集合**（`len=157, tac=50274`），三路读完全一致。
+而检查的 oracle 仍报 `ci=107084627/tac=46625`（A 的集合），`settings[immoral_cells]` 在 C 处也正是 C 的集合。
+
+结论：①"静默回退到 Settings.Global 缓存"的假设**不成立**；②**我们的读取侧不是陈旧的那一半**；
+③陈旧的是**消费侧**——verifier 流与 `dumpsys telephony.registry` 都还在报 A 的集合。
+
+因此这是 **harness oracle 的问题**：该行应当比对"引擎写了什么（`settings get global immoral_cells`）"
+与"hook 返回了什么（`cells.probe CHANGED`）"，而不是比对带自己缓存的消费视图。已交回 E2E 负责人，
+并明确要求：**判据只能变强不能变弱**（改成上面两条会比今天更强，因为它能抓到真正的 hook 回归）。
