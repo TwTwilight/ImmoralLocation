@@ -75,6 +75,24 @@ val amapAssetPatterns: List<String> = listOf(
 )
 val amapAssetsRequested = (project.findProperty("immoralAmapAssets") as String?)?.toBoolean()
 
+/**
+ * Experiment-only knob for the asset A/B: extra aapt2 `--ignore-assets` patterns applied **on top of**
+ * the shipping set in every variant, so one build changes exactly one variable.
+ *
+ *   -PimmoralAmapDropAssets=map_assets
+ *   -PimmoralAmapDropAssets=map_custom
+ *   -PimmoralAmapDropAssets=offlinemapv4.png,amap_resource1_0_0.png
+ *
+ * Absent ⇒ nothing changes (a normal build is byte-identical to the committed config). A group may
+ * only be promoted into [amapAssetPatterns] after a device frame proved it render-identical; the
+ * evidence table lives in docs/ROUND-NOTES.md §7 and docs/STEALTH.md §4.1.
+ */
+val amapAssetExperimentPatterns: List<String> =
+    ((project.findProperty("immoralAmapDropAssets") as String?) ?: "")
+        .split(',')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+
 android {
     namespace = "com.immoral.location"
     compileSdk = 37
@@ -232,8 +250,13 @@ dependencies {
 androidComponents {
     onVariants { variant ->
         val keepAmapAssets = amapAssetsRequested ?: (variant.buildType != "release")
-        if (!keepAmapAssets) {
-            variant.androidResources?.ignoreAssetsPatterns?.addAll(amapAssetPatterns)
+        val patterns = buildList {
+            if (!keepAmapAssets) addAll(amapAssetPatterns)
+            // Empty in every normal build; see [amapAssetExperimentPatterns].
+            addAll(amapAssetExperimentPatterns)
+        }
+        if (patterns.isNotEmpty()) {
+            variant.androidResources?.ignoreAssetsPatterns?.addAll(patterns)
         }
     }
 }
