@@ -139,6 +139,7 @@ fun PeekPanel(
     dragHandle: @Composable () -> Unit,
     modifier: Modifier = Modifier,
     hint: String? = null,
+    onHintClick: (() -> Unit)? = null,
     accuracyLabel: String? = null,
 ) {
     val modeLabel = buildString {
@@ -197,7 +198,7 @@ fun PeekPanel(
                         .testTag("e2e.peek.position"),
                 )
                 if (hint != null) {
-                    PeekHintChip(text = hint)
+                    PeekHintChip(text = hint, onClick = onHintClick)
                     Spacer(modifier = Modifier.width(8.dp))
                 }
                 PeekFavoritesLink(count = favouriteCount, onClick = onOpenFavorites)

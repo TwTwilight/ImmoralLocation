@@ -537,9 +537,16 @@ fun PeekFavoritesLink(
 
 /** A one-line, non-blocking warning (module not activated) that fits beside the status row. */
 @Composable
-fun PeekHintChip(text: String, modifier: Modifier = Modifier) {
+fun PeekHintChip(text: String, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+    // A warning that leads nowhere is only half a warning: when a handler is supplied the chip becomes
+    // tappable and opens the activation help. 32 dp keeps it compact while giving a real target.
+    val shaped = if (onClick != null) {
+        modifier.heightIn(min = 32.dp).clickable(onClick = onClick)
+    } else {
+        modifier
+    }
     Surface(
-        modifier = modifier,
+        modifier = shaped,
         shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
         contentColor = MaterialTheme.colorScheme.onErrorContainer,

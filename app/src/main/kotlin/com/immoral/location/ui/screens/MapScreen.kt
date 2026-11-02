@@ -895,6 +895,9 @@ fun MapScreen(
                             } else {
                                 null
                             },
+                            // Tapping the warning opens the status sheet, which carries 查看激活方法:
+                            // a warning that leads nowhere is only half a warning.
+                            onHintClick = onOpenStatus,
                             favouriteHere = favouriteHere,
                             favouriteCount = favouriteCount,
                             accuracyLabel = accuracyLabel,
