@@ -806,3 +806,18 @@ W snapshot: giving up after 10 attempts — independent mode cannot restore a re
 
 **因此 `10-independent` 应改成带前置条件的行**：平台确有真实 last-known 时才断言；
 没有时 SKIP 并写明"无法区分泄漏与空缓存，需先有真实 GNSS 定位"。红色行在这里只会训练我们忽略它。
+
+## 37. 12 轮收尾矩阵 14 PASS / 1 FAIL / 1 SKIP（`report-r12c.json`，build 16:09:46）
+
+**`10-independent` → SKIP（被点名，不再是假红）**：`snapshot: no genuine last-known fix available yet
+(fabricated=0, managers=4)` —— 这台设备此刻平台确实没有真实 last-known，无法区分泄漏与空缓存。
+
+**真正的修复（本轮最重要的一条）**：hook-loc 用同一调用序列的对照捕获定位到
+`realLast["gps"]` 被污染——四个 provider 走同一个 hook，只有 gps 返回假点（`ageMs=8613`，是缓存的普通模式注入），
+其余三个返回真实 `30.276349`。修法是在**读取时**过滤（`anyRealFix` 跳过 fabricated / 匹配当前快照 / 匹配最近合成点，
+并继续沿链回退，全被拒则返回 null）——与簿记无关，未来任何写路径漏掉守卫也不会重新泄漏。
+设备验证：非白名单读者四个 provider 全部 `30.27635,120.176233`，白名单读者仍通过 `onLocationChanged` 收到模拟值。
+
+**`9-gnss` FAIL 是新的序列依赖**：`satellites=51 usedInFix=0`（全量跑）→ 单独跑 `usedInFix=7` PASS。
+说明前序检查（gpsSignalSimulation=false 时看到真实星座 0 颗参与定位）留下的状态影响了合成状态。
+与 6-cells/10-independent 同属"跨检查状态残留"一类，下一轮按同样方式隔离（GNSS 状态在启动时重置）。
