@@ -99,6 +99,7 @@ import com.immoral.location.ui.map.MapHost
 import com.immoral.location.ui.map.MapPalette
 import com.immoral.location.ui.sheets.PeekPanel
 import com.immoral.location.ui.sheets.SheetHandle
+import com.immoral.location.net.CoordinateParser
 import com.immoral.location.net.PlaceResult
 import com.immoral.location.ui.sheets.CollapsedPeekHeader
 import com.immoral.location.ui.sheets.coordinateLine
@@ -517,12 +518,21 @@ fun MapScreen(
             }
             // Live suggestions while typing: the pill keeps focus and the keyboard stays up, so
             // this is an inline card instead of a modal (Google-Maps behaviour).
+            // A query that parses as a coordinate has a *local* answer, so it produces no network
+            // result — without this the card stayed hidden and the user got no feedback at all that
+            // the input was understood (they had to press 搜索 to find out).
+            val parsedCoordinate = remember(query) {
+                CoordinateParser.parse(query.trim())
+            }
             val showSuggestions = query.isNotBlank() &&
-                (searchState.loading || searchState.error != null || searchState.results.isNotEmpty())
+                (parsedCoordinate != null || searchState.loading ||
+                    searchState.error != null || searchState.results.isNotEmpty())
             if (showSuggestions) {
                 Spacer(modifier = Modifier.height(Dimens.chromeGap))
                 SearchSuggestionCard(
                     state = searchState,
+                    parsedCoordinate = parsedCoordinate,
+                    onPickParsed = onSearchSubmit,
                     onPick = onPickSuggestion,
                     onRetry = onSearchSubmit,
                     modifier = Modifier.onSizeChanged { suggestionsHeightPx = it.height },

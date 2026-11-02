@@ -255,6 +255,8 @@
     <string name="search_results">搜索结果</string>
     <string name="searching">正在搜索…</string>
     <string name="search_no_results">没有找到匹配的地点</string>
+    <string name="search_jump_title">跳转到 %1$s</string>
+    <string name="search_jump_hint">点击直接跳转到这个坐标</string>
     <string name="search_failed">搜索失败：%1$s</string>
     <string name="search_network_error">网络不可用，请检查网络后重试</string>
     <string name="search_coord_jumped">已跳转到坐标</string>

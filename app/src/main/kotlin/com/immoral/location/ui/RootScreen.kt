@@ -448,7 +448,13 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                 ModalSheet.FAVORITES -> FavoritesScreen(
                     favorites = favorites,
                     currentPosition = position,
-                    onSelect = controller::jumpToFavorite,
+
+                    onSelect = { place ->
+                        // Jump first, then close: the confirmation snackbar lives on the map
+                        // surface, so leaving the sheet open hid the only feedback the user gets.
+                        controller.jumpToFavorite(place)
+                        modal = ModalSheet.NONE
+                    },
                     onRename = controller::renameFavorite,
                     onDelete = controller::deleteFavorite,
                     onAddCurrent = controller::addCurrentFavorite,
