@@ -220,3 +220,26 @@ PASS harness-liveness / 9-gnss (satellites=50, usedInFix=7) / 11-favorites / 11b
 - 顶部状态带在深色下是**轻微的暗带**（主题感知纱已生效），时钟清晰。
 
 **仍缺**：深色规划页的补帧（原有修复前帧已判定良好，本次只是补拍）。这一项不影响任何代码改动的证据完整性。
+
+## 17. 代码级 UIUX 审计：排版、文案、对比度（2026-11-02 19:05，Lead）
+
+三条**不依赖设备**的客观检查，全部通过：
+
+| 检查 | 方法 | 结果 |
+|---|---|---|
+| **排版是否走类型刻度** | grep `app/.../ui/**/*.kt` 里的 `fontSize = <数字>` | **0 处**——所有文字都来自 `SheetText` 的三档角色，没有绕过刻度的字面量 |
+| **文案是否走资源** | grep `Text("中文…")` / `contentDescription = "中文…"` | **0 处**——UI 文本全部来自 `strings*.xml`，可翻译 |
+| **对比度（WCAG）** | 解析 `Theme.kt` 的两套配色，按相对亮度算前后景比 | 见下表，**没有任何一对低于 AA 的 4.5:1** |
+
+```
+LIGHT  onSurface/surface 16.72 · onSurfaceVariant/surface 9.05 · onSurfaceVariant/surfaceVariant 7.21
+       onPrimary/primary 6.51 · onPrimaryContainer/primaryContainer 13.25 · onSecondaryContainer 13.21
+DARK   onSurface/surface 13.34 · onSurfaceVariant/surface 10.09 · onSurfaceVariant/surfaceVariant 5.46
+       onPrimary/primary 7.71 · onPrimaryContainer/primaryContainer 7.28 · onSecondaryContainer 7.21
+```
+
+最弱的一对是深色的 `onSurfaceVariant` on `surfaceVariant`（5.46），仍高于 AA 要求；多数对达到 AAA（7:1）。
+也就是说"开关 OFF 态看起来发灰"是**形状/描边**的问题，不是对比度问题——这条纠正了之前的一个主观判断。
+
+**注**：`Color.Black` 只出现在 `Joystick.kt:167`（投影）与 `MapScreen.kt:515`（状态栏纱，已做主题感知），
+`Theme.kt` 里的是配色源头本身——没有第三处硬编码颜色。
