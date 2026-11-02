@@ -983,11 +983,22 @@ if (Test-Selected '6') {
     # window the two snapshots: reading the whole buffer returns the same (first) cell twice
     $markA = Get-VerifyMark
     Invoke-SetPositionAndVerify -Lat $POINT_A.lat -Lon $POINT_A.lon | Out-Null
+    # PROBE (2026-11-02): read the A cell immediately after the move as well as after the settle, so a
+    # "C never changed" failure can be told apart from "A was already the wrong value" (the engine
+    # publishing the PRE-park set after the park). Read the engine's own published key too, to see
+    # whether the engine wrote a new set or the phone process still serves the old one.
+    Start-Sleep -Milliseconds 800
+    $cellsAImm = @(Get-VerifySamples -Kind 'cell' -AfterTs $markA)
+    $sigAImm = ($cellsAImm | Where-Object { $_.registered } | Select-Object -First 1)
+    $settingsCellsA = ''
+    try { $settingsCellsA = (((Invoke-AdbShell 'settings get global immoral_cells' -AllowFailure).Output) -join '').Trim() } catch { }
     Start-Sleep -Seconds 3
     $cellsA = @(Get-VerifySamples -Kind 'cell' -AfterTs $markA)
     $sigA = ($cellsA | Where-Object { $_.registered } | Select-Object -First 1)
     $markC = Get-VerifyMark
     Invoke-SetPositionAndVerify -Lat $POINT_C.lat -Lon $POINT_C.lon | Out-Null
+    $settingsCellsC = ''
+    try { $settingsCellsC = (((Invoke-AdbShell 'settings get global immoral_cells' -AllowFailure).Output) -join '').Trim() } catch { }
     # The engine publishes only when the encoded set changes and the phone process caches it for 500 ms,
     # so a fixed 3 s wait is marginal under load (measured 2026-11-02: stand-alone run PASS, full run
     # unchanged ci/tac). Poll up to 12 s: the move+apply+read chain has measured 4.9 s under a full
@@ -1007,9 +1018,11 @@ if (Test-Selected '6') {
     $present = $cellsA.Count -gt 0
     $changed = ($sigA -and $sigC) -and (($sigA.ci -ne $sigC.ci) -or ($sigA.tac -ne $sigC.tac))
     $plmnOk = ($sigA -and $sigA.mcc -eq '460')
+    # Probe text: A immediately after the move vs after the settle, plus the engine's own published key.
+    $cellsProbe = "A@0.8s ci=$(if ($sigAImm) { "$($sigAImm.ci)/tac=$($sigAImm.tac)" } else { 'none' }) A@settled ci=$(if ($sigA) { "$($sigA.ci)/tac=$($sigA.tac)" } else { 'none' }) settings[immoral_cells]: A=$(if ($settingsCellsA) { $settingsCellsA } else { 'unset' }) C=$(if ($settingsCellsC) { $settingsCellsC } else { 'unset' })"
     Test-Result -Id '6-cells' -Name 'cell identity changes with position (基站模拟) [KNOWN-OPEN: hook-framework fixing]' -Condition ($present -and $changed) `
-        -Detail $(if ($sigA -and $sigC) { "t0(parked at B) ci=$(if ($sigT0) { $sigT0.ci } else { 'none' })/tac=$(if ($sigT0) { $sigT0.tac } else { 'none' }); A ci=$($sigA.ci)/tac=$($sigA.tac)/pci=$($sigA.pci) -> C ci=$($sigC.ci)/tac=$($sigC.tac); mcc=$($sigA.mcc)$($sigA.mnc) plmnOk=$plmnOk; polled $([Math]::Round($cellsCWait,1))s for the change; parkedOk=$($parked.Ok)$(if ($sigT0 -and $sigA -and $sigT0.ci -eq $sigA.ci) { ' [WARN: t0 already equals A — the channel did not follow the move]' } else { '' })" } elseif ($present) { "cells present but no registered cell line (count A=$($cellsA.Count) C=$($cellsC.Count), polled $([Math]::Round($cellsCWait,1))s)" } else { 'no cell lines in the verifier stream' }) `
-        -Metrics @{ countA = $cellsA.Count; countC = $cellsC.Count; pollSeconds = [Math]::Round($cellsCWait, 1); parkedOk = $parked.Ok; ciT0 = $(if ($sigT0) { $sigT0.ci } else { "n/a" }); ciA = $(if ($sigA) { $sigA.ci } else { "n/a" }); ciC = $(if ($sigC) { $sigC.ci } else { "n/a" }); tacA = $(if ($sigA) { $sigA.tac } else { "n/a" }); tacC = $(if ($sigC) { $sigC.tac } else { "n/a" }); mcc = $(if ($sigA) { $sigA.mcc } else { "n/a" }) }
+        -Detail $(if ($sigA -and $sigC) { "t0(parked at B) ci=$(if ($sigT0) { $sigT0.ci } else { 'none' })/tac=$(if ($sigT0) { $sigT0.tac } else { 'none' }); A ci=$($sigA.ci)/tac=$($sigA.tac)/pci=$($sigA.pci) -> C ci=$($sigC.ci)/tac=$($sigC.tac); mcc=$($sigA.mcc)$($sigA.mnc) plmnOk=$plmnOk; polled $([Math]::Round($cellsCWait,1))s for the change; parkedOk=$($parked.Ok)$(if ($sigT0 -and $sigA -and $sigT0.ci -eq $sigA.ci) { ' [WARN: t0 already equals A — the channel did not follow the move]' } else { '' }); $cellsProbe" } elseif ($present) { "cells present but no registered cell line (count A=$($cellsA.Count) C=$($cellsC.Count), polled $([Math]::Round($cellsCWait,1))s); $cellsProbe" } else { "no cell lines in the verifier stream; $cellsProbe" }) `
+        -Metrics @{ countA = $cellsA.Count; countC = $cellsC.Count; pollSeconds = [Math]::Round($cellsCWait, 1); parkedOk = $parked.Ok; ciAImmediate = $(if ($sigAImm) { $sigAImm.ci } else { "n/a" }); tacAImmediate = $(if ($sigAImm) { $sigAImm.tac } else { "n/a" }); settingsCellsA = $settingsCellsA; settingsCellsC = $settingsCellsC; ciT0 = $(if ($sigT0) { $sigT0.ci } else { "n/a" }); ciA = $(if ($sigA) { $sigA.ci } else { "n/a" }); ciC = $(if ($sigC) { $sigC.ci } else { "n/a" }); tacA = $(if ($sigA) { $sigA.tac } else { "n/a" }); tacC = $(if ($sigC) { $sigC.tac } else { "n/a" }); mcc = $(if ($sigA) { $sigA.mcc } else { "n/a" }) }
 }
 
 # ------------------------------------------------------------------------------------------------
@@ -1227,6 +1240,18 @@ if (Test-Selected '10') {
     }
     Start-Sleep -Seconds 4
     $mark = Get-VerifyMark
+    # STRUCTURAL FREEZE (2026-11-02, full-run failure "outside == POINT_C"): capture the outside
+    # observation ONCE, here, right after the B broadcast and BEFORE the whitelist config is sent, and
+    # store it in plain variables. Every later phase asserts the stored value; nothing re-reads the
+    # buffer at evaluation time, so a later sample can never overwrite what "outside" meant.
+    $outsideLat = $null; $outsideLon = $null; $outsideTs = 0; $outsidePresent = $false
+    $lkFreeze = @(Get-VerifySamples -Kind 'lastKnown' | Where-Object { "$($_.present)" -eq 'True' -and $null -ne $_.lat })
+    if ($lkFreeze.Count -gt 0) {
+        $fz = $lkFreeze[-1]
+        $outsideLat = [double]$fz.lat; $outsideLon = [double]$fz.lon
+        $outsideTs = if ($fz.ts) { [long]$fz.ts } else { 0 }
+        $outsidePresent = $true
+    }
     Start-Sleep -Seconds 6
     $outside = @(Get-VerifySamples -Kind 'location' -AfterTs $mark | Where-Object { $_.provider -eq 'gps' })
     if ($outside.Count -eq 0) {
@@ -1278,18 +1303,23 @@ if (Test-Selected '10') {
     # the way an ordinary app would. Non-whitelisted: that cache must be GENUINE, i.e. at least 1 km
     # from the simulated point (or the read must have returned a value at all — a null read fails the
     # assertion explicitly instead of skipping it).
-    # ORDERING GUARD: everything from here on belongs to phase (b). A text-book failure was "outside
-    # read = POINT_C", i.e. a sample produced after the position had already moved to C. Cut the window
-    # explicitly so the outside read can only be data from before the C broadcast.
-    $outsideCutoff = Get-VerifyMark
-    $lkOutside = @(Get-VerifySamples -Kind 'lastKnown' | Where-Object { $_.ts -le $outsideCutoff -or $_.ts -eq 0 })
-    $lkOut = if ($lkOutside.Count -gt 0) { $lkOutside[-1] } else { $null }
-    $lkOutIsPhaseC = [bool]($lkOut -and ([Math]::Abs([double]$lkOut.lat - $POINT_C.lat) -lt 1e-4) -and ([Math]::Abs([double]$lkOut.lon - $POINT_C.lon) -lt 1e-4))
-    $lkOutPresent = [bool]($lkOut -and ("$($lkOut.present)" -eq 'True') -and ($null -ne $lkOut.lat))
+    # The outside observation was FROZEN above — after the B broadcast, before the whitelist config and
+    # before any C broadcast. Assert the stored value; never re-read the buffer here (a re-read is what
+    # let a later sample make "outside" equal POINT_C in the full run on 2026-11-02).
+    $lkOutPresent = [bool]($outsidePresent -and ($null -ne $outsideLat))
     $lkOutDist = if ($lkOutPresent) {
-        Get-GeoDistanceMeters -Lat1 $POINT_B.lat -Lon1 $POINT_B.lon -Lat2 $lkOut.lat -Lon2 $lkOut.lon
+        Get-GeoDistanceMeters -Lat1 $POINT_B.lat -Lon1 $POINT_B.lon -Lat2 $outsideLat -Lon2 $outsideLon
     } else { -1.0 }
-    $outsideLastKnownOk = $lkOutPresent -and ($lkOutDist -ge 1000) -and (-not $lkOutIsPhaseC)
+    # Name the contamination instead of printing bare coordinates: if the frozen value sits on a point
+    # this run has used, the provider cache was still holding a PREVIOUS check's fake — a precondition
+    # story — and the detail should say which point, so nobody reads it as "the fake leaked".
+    $staleFrom = ''
+    if ($lkOutPresent) {
+        foreach ($np in @(@{ n = 'POINT_A'; p = $POINT_A }, @{ n = 'POINT_B'; p = $POINT_B }, @{ n = 'POINT_C'; p = $POINT_C })) {
+            if ((Get-GeoDistanceMeters -Lat1 $np.p.lat -Lon1 $np.p.lon -Lat2 $outsideLat -Lon2 $outsideLon) -le 100) { $staleFrom = $np.n }
+        }
+    }
+    $outsideLastKnownOk = $lkOutPresent -and ($lkOutDist -ge 1000) -and ($staleFrom -eq '')
     # Phase (b): whitelist the verifier, settle, restart the verifier again, then expect the fake.
     Set-EngineConfig @{ mode = 'STATIC'; independentMode = $true; independentPackages = @($script:VerifierPackage); updateIntervalMs = 500 } | Out-Null
     Send-Start -Channel $Channel | Out-Null
@@ -1315,7 +1345,7 @@ if (Test-Selected '10') {
     if ($substitutedFor) { $evidence += 'log:substituted-real' }
     if ($cacheGenuine) { $evidence += 'log:cache-genuine' }
     $evText = if ($evidence.Count -gt 0) { $evidence -join ',' } else { 'none' }
-    if ($null -eq $lkOut -and $null -eq $lkIn -and -not $logEvidence) {
+    if (-not $lkOutPresent -and $null -eq $lkIn -and -not $logEvidence) {
         # Nothing observable at all — neither a cache read nor any per-package log line. That is an
         # inconclusive run, never a pass (this is exactly how the row looked green when run alone).
         Add-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Status 'WARN' `
@@ -1323,7 +1353,7 @@ if (Test-Selected '10') {
             -Metrics @{ outsideSamples = $outside.Count; outsideFake = $null; insideReached = $inside.Ok; logEvidence = $evText; lastKnownOutside = 'null'; lastKnownInside = 'null'; inconclusive = $true }
     }
     else {
-        $lkOutText = if ($lkOutPresent) { "$([Math]::Round($lkOut.lat,5)),$([Math]::Round($lkOut.lon,5)) d=$([Math]::Round($lkOutDist))m$(if ($lkOutIsPhaseC) { ' [= POINT_C: stale cache left from the whitelisted phase — a non-whitelisted reader still sees the fake]' } else { '' })" } else { 'read returned null' }
+        $lkOutText = if ($lkOutPresent) { "$([Math]::Round($outsideLat,5)),$([Math]::Round($outsideLon,5)) d=$([Math]::Round($lkOutDist))m$(if ($staleFrom) { " [${staleFrom}: the provider cache still holds a simulated point used earlier in this run — precondition contamination, not a leak]" } else { '' })" } else { 'read returned null' }
         $lkInText = if ($lkInPresent) { "$([Math]::Round($lkIn.lat,5)),$([Math]::Round($lkIn.lon,5)) d=$([Math]::Round($lkInDist))m" } else { 'read returned null' }
         Test-Result -Id '10-independent' -Name 'non-whitelisted app sees real, whitelisted sees fake' -Condition $ok `
             -Detail "lastKnown outside(not whitelisted)=$lkOutText [need >=1000 m from the simulated point]; lastKnown inside(whitelisted)=$lkInText [need <=300 m]; stream outside fake=$outsideFake (samples=$($outside.Count)); per-package evidence=[$evText]; inside stream reached=$($inside.Ok)" `

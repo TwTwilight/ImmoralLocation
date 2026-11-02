@@ -114,6 +114,15 @@ private fun plannerBorderColor(): Color =
  */
 private val ActionHeight = 48.dp
 
+/**
+ * Width of the leading badge column and of the trailing affordance column of a stop row.
+ *
+ * One number for both sides (audit S9): the A/1/B badge and the locate pin used to be 24 dp and
+ * 20 dp in the same row with a 12 dp gap, so the two columns drifted by 4 dp and the rows never
+ * lined up. Whatever sits in either column is centred in this width.
+ */
+private val StopColumn = 28.dp
+
 /** Hairline used *between rows inside* a card: fainter than the card boundary. */
 @Composable
 private fun plannerDividerColor(): Color =
@@ -419,7 +428,9 @@ private fun StopEditRow(controller: RoutePlannerController) {
                 Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
             },
             modifier = Modifier
-                .height(32.dp)
+                // 48 dp like every other control in the sheet: the audit rule is explicit that a
+                // 32 dp chip may not sit next to 48 dp text buttons in the same row (P4/§10.2.6).
+                .height(ActionHeight)
                 .testTag("e2e.route.addwaypoint"),
         )
         Spacer(modifier = Modifier.weight(1f))
@@ -452,9 +463,9 @@ private fun StopBadge(
         shape = CircleShape,
         color = container,
         contentColor = contentColor,
-        // 24 dp, the same diameter as the map's start/end badges: the card used 28 dp next to 24 dp
-        // pins on the map, so the same stop looked like two different objects (audit S9).
-        modifier = Modifier.size(24.dp),
+        // 28 dp, sharing one column width with the trailing 24 dp pin below (S9): the sheet badge
+        // and the map badge used to be different diameters for the same stop.
+        modifier = Modifier.size(28.dp),
     ) {
         Box(contentAlignment = Alignment.Center) {
             Text(
@@ -485,7 +496,9 @@ private fun StopField(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        badge()
+        Box(modifier = Modifier.size(StopColumn), contentAlignment = Alignment.Center) {
+            badge()
+        }
         Column(modifier = Modifier.weight(1f)) {
             SheetLabel(label)
             SheetValue(text = value)
@@ -493,12 +506,14 @@ private fun StopField(
         if (trailing != null) {
             trailing()
         } else {
-            Icon(
-                Icons.Filled.Place,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp),
-            )
+            Box(modifier = Modifier.size(StopColumn), contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Filled.Place,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
         }
     }
 }
@@ -701,12 +716,9 @@ private fun SavedRouteRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = route.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                // Value role from the shared type scale, not `bodyMedium`: a saved route's name is
+                // a value, and P7 is exactly about those roles drifting per surface.
+                SheetValue(text = route.name)
                 SheetLabel(stringResource(RoutePlannerStrings.labelRes(route.profile)))
             }
             IconButton(onClick = onDelete) {

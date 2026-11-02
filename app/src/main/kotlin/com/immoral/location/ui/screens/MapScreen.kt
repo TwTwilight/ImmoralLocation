@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -414,6 +415,11 @@ fun MapScreen(
         // The peek block itself measures *without* the gesture-bar inset (the sheet's Column owns
         // that padding, at its very bottom), so the PEEK detent has to add it back here.
         val navInsetPx = WindowInsets.navigationBars.getBottom(density)
+        // The sheet is bottom-anchored with an explicit height, so an IME inset cannot be padded
+        // inside it — that squeezed the picker's list to zero height. Instead the sheet keeps its
+        // bottom edge above the keyboard: height capped by the space left over, lifted by the inset.
+        // Zero when no keyboard is up, so every other state is byte-identical.
+        val imeInsetPx = WindowInsets.ime.getBottom(density)
         val navInsetTopPx = WindowInsets.statusBars.getTop(density)
         val peekPx = (
             if (peekHeightPx > 0) {
@@ -792,7 +798,8 @@ fun MapScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(with(density) { sheetPx.toDp() })
+                .height(with(density) { (sheetPx.toFloat() - imeInsetPx.toFloat()).coerceAtLeast(0f).toDp() })
+                .offset(y = -(with(density) { imeInsetPx.toDp() }))
                 .testTag("e2e.sheet"),
             shape = SheetShape,
             color = sheetContainer(),
@@ -898,3 +905,4 @@ fun MapScreen(
         }
     }
 }
+
