@@ -397,3 +397,21 @@ adb shell ls -l /data/local/tmp | Select-String -Pattern "immoralhook"
   顶层 activity，可用 `ActivityTaskManager` 的顶层包名判断）；③ 换成定向广播（仅我们的包收），代价是 app 侧要改成订阅。
 
 **结论**：在 ①/② 落地前，这一条应当作为**已知限制**出现在 README 的"隐蔽性"一节，而不是等用户自己发现。
+
+### S13.1 状态行暴露面已关闭（2026-11-02 18:05）
+
+`immoral_state` 曾经是最廉价的指纹：任何应用读一次 `Settings.Global` 就能确认装了改位器。
+现在 app 在自己的 `ON_START`/`ON_STOP` 边沿告诉框架"界面是否可见"，写入方在界面隐藏的那一刻**删除该行**，
+回来时再写。设备证据（同一会话内）：
+
+```
+app 可见   → settings get global immoral_state = {"running":true,"lat":31.23661,…,"ts":…}
+按 HOME 后 → settings get global immoral_state = null
+```
+
+配合此前"引擎停止即删行"，后台暴露已关闭；剩余窗口恰好是**我们自己的 activity 在屏幕上**的那段时间。
+
+**仍然存在的**：`immoral_cells` 必须对 phone 进程随时可读（应用后台查询基站时也要模拟），
+因此**不能**用同样的可见性门控。现状是"只有用户开启基站模拟时才存在"，且名字直白。
+可选缓解：改中性 key 名（只降低显眼度），或改成只对 `com.android.phone` 可见的私有通道——
+后者需要额外的跨进程机制，暂列后续。
