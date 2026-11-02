@@ -67,6 +67,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntOffset
@@ -211,10 +213,18 @@ fun MapScreen(
     // open at full screen height and leave ~800 px of empty container under its actions.
     var routeContentPx by remember { mutableIntStateOf(0) }
 
+    // The search field keeps the IME up, and a card drawn while it is up lands *under* the keyboard
+    // (audit R1/R6: the place card's whole action row was hidden by it). A map gesture means the
+    // user is done typing, so the keyboard goes first — cheaper and quieter than padding every
+    // floating card, and it is what every map app does.
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val dismissIme: () -> Unit = remember { { focusManager.clearFocus(); keyboardController?.hide() } }
     // The map callbacks are captured once by the (remembered) backend, so they must only read
     // state through `rememberUpdatedState` refs, never through captured values.
     val handleTap: (GeoPoint) -> Unit = remember {
         { raw ->
+            dismissIme()
             val point = raw.copy(alt = altitudeRef)
             val previous = positionRef
             selectedFavoriteId = null
@@ -228,6 +238,7 @@ fun MapScreen(
     }
     val handleLongPress: (GeoPoint) -> Unit = remember {
         { raw ->
+            dismissIme()
             selectedFavoriteId = null
             tapChip = null
             pendingPoint = raw.copy(alt = altitudeRef)
@@ -243,6 +254,7 @@ fun MapScreen(
     // same frame it appeared. Ignore camera events in the first 800 ms after our own tap.
     val handleMapGesture: () -> Unit = remember {
         {
+            dismissIme()
             if (android.os.SystemClock.uptimeMillis() - tapChipAtMs[0] > 800) tapChip = null
         }
     }

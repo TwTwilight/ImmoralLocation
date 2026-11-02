@@ -40,4 +40,11 @@
 |---|---|
 | 带上 32 位 | `-PimmoralAbis=arm64-v8a,armeabi-v7a` |
 | 每个 ABI 单独出包 | `-PimmoralAbiSplits=true` |
-| 保留高德 `assets/cfg` | `-PimmoralAmapAssets=true` |
+| 保留高德 的全部资产（换真实 AMap key / 排查地图） | `-PimmoralAmapAssets=true` |
+| 单独再丢一组高德 资产做 A/B（实验用） | `-PimmoralAmapDropAssets=map_assets` |
+
+release 默认丢掉四组高德 资产（`assets/cfg`、`assets/map_custom`、`offlinemapv4.png`、
+`amap_resource1_0_0.png`，合计 −1.95 MB），**每一组都在设备上单独验证过**：地图与保留时同视口一致。
+`assets/ae/res.zip` 与 `assets/map_assets` 是硬依赖（去掉即黑屏/空白），**必须留**。
+⚠️ 缺 `map_assets` 时 `amap map loaded` 这行日志照样会打印 —— 判据只能是帧，不能是日志。
+详见 [`docs/ROUND-NOTES.md` §7](docs/ROUND-NOTES.md) 与 [`docs/STEALTH.md` §4.1](docs/STEALTH.md)。
