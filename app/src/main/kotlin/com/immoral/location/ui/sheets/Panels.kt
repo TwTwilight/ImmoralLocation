@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SatelliteAlt
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Wifi
@@ -1050,6 +1051,8 @@ fun SearchSuggestionCard(
     onPick: (PlaceResult) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    parsedCoordinate: GeoPoint? = null,
+    onPickParsed: () -> Unit = {},
 ) {
     Surface(
         modifier = modifier
@@ -1065,6 +1068,54 @@ fun SearchSuggestionCard(
         shadowElevation = 8.dp,
     ) {
         Column(modifier = Modifier.padding(vertical = 6.dp)) {
+            // A parsed coordinate is an answer, not a query: show it as the first (and only)
+            // suggestion so the user sees that the input was understood and gets a tap target
+            // instead of having to press 搜索 (audit R2: feedback for a locally-resolvable query).
+            if (parsedCoordinate != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onPickParsed)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 1.dp)
+                            .size(32.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = RoundedCornerShape(10.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.MyLocation,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(
+                                R.string.search_jump_title,
+                                Fmt.coord(parsedCoordinate.lat) + ", " + Fmt.coord(parsedCoordinate.lon),
+                            ),
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = stringResource(R.string.search_jump_hint),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
             when {
                 state.loading -> Row(
                     modifier = Modifier
@@ -1100,7 +1151,7 @@ fun SearchSuggestionCard(
                     }
                 }
 
-                state.results.isEmpty() -> Text(
+                state.results.isEmpty() && parsedCoordinate == null -> Text(
                     text = stringResource(R.string.search_no_results),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

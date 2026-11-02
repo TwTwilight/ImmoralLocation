@@ -213,11 +213,14 @@ class AppController(
      */
     fun setPosition(point: GeoPoint) {
         if (!point.isValidLatLon()) return
-        if (!isRunning()) {
-            bridge.setConfig(settings.config.value)
-            bridge.startEngine()
-            SimulationService.start(app, SimulationService.ACTION_START_ENGINE)
-        }
+        // Always (re)assert the engine, not only when our cached state says "stopped": the cache can
+        // be stale-true while the engine is actually down (measured 2026-11-02 - a favourite tap sent
+        // SetPosition to a stopped engine, the peek updated from the stored state, and the framework
+        // fix never moved). startEngine is idempotent, so this is a cheap guarantee that a jump to a
+        // point always produces a fix.
+        bridge.setConfig(settings.config.value)
+        bridge.startEngine()
+        SimulationService.start(app, SimulationService.ACTION_START_ENGINE)
         bridge.setPosition(point)
         settings.setLastPosition(point)
     }

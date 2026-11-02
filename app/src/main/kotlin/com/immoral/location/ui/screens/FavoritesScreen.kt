@@ -2,6 +2,7 @@ package com.immoral.location.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -215,15 +216,21 @@ private fun FavoriteRow(
 ) {
     val distance = GeoMath.distanceMeters(currentPosition, place.point)
     Surface(
-        onClick = onSelect,
-        modifier = Modifier.fillMaxWidth(),
+        // Modifier.clickable on the surface itself, not Surface(onClick=): the tap must land
+        // anywhere on the row (name, coordinate line, or the empty strip to its right). Taps at the
+        // coordinate text's own centre produced no callback at all, which is the 11b defect.
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelect),
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
     ) {
         Row(
-            modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Neutral tile + `tertiary` glyph: "saved place" stays the product's tertiary accent
