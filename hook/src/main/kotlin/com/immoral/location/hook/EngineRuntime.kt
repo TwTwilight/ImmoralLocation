@@ -129,9 +129,16 @@ object EngineRuntime {
             published?.let { snapValue ->
                 publish(snapValue)
                 // Per-tick evidence: delta actually used, speed and distance integrated.
+                //
+                // Throttled by the TICK INTERVAL, not by a fixed 5 s: the e2e oracle sums `moved`
+                // over these lines to decide whether route playback advanced, so a 5 s throttle
+                // made a 10 s window contain only 1-2 ticks and reported "advanced 6.8 m" for a
+                // route that was demonstrably covering 6.2 m per second (false product bug —
+                // 2026-11-02). One line per tick is ~1 line/s and only when detail logging is on
+                // (Log.rate returns early otherwise). Field order is parsed by qa-e2e — keep it.
                 Log.rate(
                     "tick.diag",
-                    5_000L,
+                    intervalMs.coerceAtLeast(200L),
                     "tick dt=" + deltaUsedMs + "ms interval=" + intervalMs + " engineDelta=" +
                         engine.lastTickDeltaMs + "ms appliedTicks=" + engine.appliedTickCount + " speed=" +
                         snapValue.speedMps + "m/s moved=" + (snapValue.speedMps * deltaUsedMs / 1000.0) +
@@ -272,14 +279,31 @@ object EngineRuntime {
                     engine.setHeading(command.deg)
                 }
                 is Command.StartRoute -> {
-                    // The app re-sends its whole state on every refresh: replaying StartRoute must not
-                    // retune or restart a route that is already loaded (that silently reset the plan
-                    // speed and made route playback advance at 1/17 of the configured speed).
+                    // The app re-sends its whole state on every refresh, so replaying StartRoute
+                    // must not retune or restart a route that is already PLAYING (that silently
+                    // reset the plan speed and made route playback advance at 1/17 of the
+                    // configured speed).
+                    //
+                    // A replay while the plan is NOT playing is the opposite: a genuine restart
+                    // request. Treating it as "same plan, ignore" was a real user-facing bug —
+                    // after a route FINISHED its progress stays at 1.0, so replaying the same
+                    // route (or re-planning the same stops) advanced nothing at all, and a
+                    // PlayRoute then instantly finished again. Restarting resets progress to 0,
+                    // which is what "plan this again / play it again" must mean.
                     val existing = engine.routePoints
-                    val samePlan = existing.isNotEmpty() && existing == command.plan.points &&
-                        engine.currentRouteState != com.immoral.location.core.model.RouteState.IDLE
-                    if (samePlan) {
-                        Log.rate("routerepeat", 10_000L, "StartRoute ignored (same plan)")
+                    val previousState = engine.currentRouteState
+                    val samePlan = existing.isNotEmpty() && existing == command.plan.points
+                    val restart = !samePlan ||
+                        previousState != com.immoral.location.core.model.RouteState.PLAYING
+                    if (!restart) {
+                        // Info level (rate-limited, not silent) with the state it saw, so a future
+                        // "nothing happened" has a one-line cause in logcat.
+                        Log.rate(
+                            "routerepeat",
+                            2_000L,
+                            "StartRoute ignored (same plan already playing; state=" + previousState +
+                                " progress=" + engine.state.routeProgress + ")",
+                        )
                     } else {
                         engine.startRoute(
                             command.plan.points,
@@ -290,7 +314,8 @@ object EngineRuntime {
                         startTicker()
                         Log.i(
                             "route loaded: points=" + command.plan.points.size +
-                                " speed=" + engine.activeRouteSpeedMps + "m/s repeat=" + command.plan.repeat,
+                                " speed=" + engine.activeRouteSpeedMps + "m/s repeat=" + command.plan.repeat +
+                                " (was state=" + previousState + " samePlan=" + samePlan + ")",
                         )
                     }
                     publish(buildSnap())
