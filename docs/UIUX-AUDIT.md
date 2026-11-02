@@ -197,3 +197,15 @@
 
 **两个小瑕疵已修**：收藏的删除图标改 `error` 红（编辑保持中性），图层禁用行标签调暗。
 设置底部两段式（模块/关于 + 恢复默认设置）已拍到：tonal 恢复 + filled 保存，均 48 dp。
+
+## 15. UI 改动后的回归（2026-11-02 18:00，`report-r13.json`）
+
+UI 侧本轮改动了 `MapChrome`（状态栏渐变）、`Common.kt`（滑块）、`SettingsScreen`、`FavoritesScreen`、`Panels`。
+担心的是 UI 检查（11/11b 依赖 uiautomator 坐标）与 GNSS 行会受影响，实测无回归：
+
+```
+PASS harness-liveness / 9-gnss (satellites=50, usedInFix=7) / 11-favorites / 11b-favorite-return
+4 passed, 0 failed, 0 skipped
+```
+
+**判定**：本轮 UI 收尾（滑块、状态栏、动作行权重、空态）可以认为**安全落地**，验收链路未被牵连。
