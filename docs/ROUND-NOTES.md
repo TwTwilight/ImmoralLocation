@@ -1197,3 +1197,40 @@ $t = $t.Replace($oldLine, $newLine)   # $oldLine / $newLine 都用 $nl 拼接
 Select-String -Path $p -Pattern '<改动标记>'   # 必须能 grep 到，否则就是没改上
 ```
 
+## 17. `5-route` 的两处口径修正（2026-11-02 11:4x）
+
+**17.1 `advanced` 的测量窗口：路线开始 → 暂停**
+
+之前 `advanced` 取的是"缓冲里最后约 10 s 的 ROUTE tick"，结果同一个检查在三次运行里给出
+**47.83 / 23.43 / 6.91 m**，而 `resumed` 一直稳定在 **32.6 / 38.9 / 39.7 m**。数字漂移不是产品变化，
+是窗口跟着"引擎什么时候重启"变。现在改为：
+
+- 在 `StartRoute` **之前**记录 ROUTE tick 条数 `$routeSeenBefore`，窗口 = 其后的所有 ROUTE tick；
+- 兜底：若这段跨度 > 15 s（说明 `appliedTicks` 复位导致合并顺序不可靠），退回"尾部约 10 s"，
+  并在 detail 里把窗口名写出来：`window=route-start-to-pause` / `window=route-mode-tail-fallback`。
+
+detail 现在直接写明口径：`advanced = route start -> pause, not a fixed time window`，
+`resumed`/`tkResume` 继续作为稳定见证（同一条 detail 里）。
+
+**17.2 状态通道探针：`fw_status.json` → `Settings.Global/immoral_state`**
+
+旧的 `filesDir/fw_status.json` 探针永远输出 `missing`，因为该文件**根本不存在**：
+`system_server` 无法写入 App 私有目录（`EACCES`）。Hook 现在把同一份 JSON 发布到
+`Settings.Global/immoral_state`（1 Hz，`FrameworkStatus` 优先读它，用 payload 的 `ts` 判新鲜度）。
+探针改为两次 `settings get global immoral_state`（间隔 ~4 s），输出 `lat/lon/ts/running`：
+
+```
+globalState(immoral_state): t1=(31.23077,121.4737)@ts+0s running=True
+                            t2=(31.231,121.4737)@ts+0s running=True moved=True
+```
+`moved=True` 是"路线在跑、且状态在发布"的直接证据。格式化上区分 **`unset`**（键从未写入）与
+**`absent`**（读取失败）—— 两种完全不同的故障，旧写法都会显示成 `missing`。
+
+**17.3 由此得到的引擎观察（供产品侧判断，非断言）**
+
+改为"路线开始 → 暂停"口径后，`advanced` 仍是 **6.8 m**（10 s 窗口），而紧随其后的 `resumed` 是
+**32.36 m / 5 s ≈ 6.5 m/s**。也就是说：`StartRoute` 之后引擎大约有 **8–9 s 不产生位移**，
+真正移动只发生在窗口末尾的 1–2 s。这不是 harness 的采样问题（同一窗口内 tick 连续、速率一致），
+而是**路线启动延迟**本身；若产品侧认为启动应在 1 s 内生效，这是一条独立的、可复现的观察。
+
+

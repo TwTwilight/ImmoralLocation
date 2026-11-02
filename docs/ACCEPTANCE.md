@@ -614,3 +614,17 @@ harness-liveness PASS   0-config-hygiene PASS   1-framework-spoof PASS   2-fast-
 2. **路线起点**：polyline 不保证起点在前，播放器只走 `routePath[0]` → 从终点开始；两个写入点现在会按
    起点距离反转几何（已验证 peek 读回起点）。
 3. **`harness-build-stable`**：运行中途换包会直接 FAIL，配上 `harness-liveness`，两种"旧设备"陷阱都被堵住。
+
+## 26. 路线启动延迟 ~8–9 s（观察，待查，2026-11-02 11:50）
+
+`StartRoute`（两点、500 m、6 m/s）后引擎立刻 `mode=ROUTE running=true`，但位置**约 8–9 s 不移动**；
+之后速率正常（5 s 走 32.36 m ≈ 6.5 m/s），暂停/恢复都正确。所以是**启动延迟**，不是速率错误。
+
+已排除的：`SimulationEngine.startRoute`（core ~L245）同步设置 plan/progress/state 并立即 `applyRouteSample`，
+没有任何 sleep；harness 的 tick 切片连续且速率一致；起点已确认；同一轮里恢复段测量准确。
+
+**交给 core 负责人按以下顺序查**：(a) 进度积分要不要预热/等第一次 config echo；(b) `applyRouteSample` 是否被
+节流（过路点或 update-interval 门限）；(c) mode 变化时 ticker 是否重启导致前几个 tick 的 route 为空；
+(d) bridge/hook 侧是否有 route 启动延迟。
+
+**当前基线**：单次全量矩阵 **16/16 绿**（`report-r10c.json`），任何改动都必须能在这个基线上复跑。
