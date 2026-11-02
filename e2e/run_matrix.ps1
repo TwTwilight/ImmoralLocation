@@ -184,14 +184,24 @@ function Invoke-SetPositionAndVerify {
 # instead of aborting every check after it.
 function Get-DriftResult {
     param([hashtable]$Params)  # NOT $Args: that is PowerShell's automatic argument array
+    $driftError = ''
     try {
         $r = @(Measure-JoystickDrift @Params) | Where-Object { $_.PSObject.Properties['Seconds'] } | Select-Object -Last 1
         if ($r) { return $r }
     }
-    catch { Write-Warn2 "joystick drift measurement threw: $_" }
+    catch {
+        Write-Warn2 "joystick drift measurement threw: $_"
+        $driftError = "$_"
+    }
+    # The fallback carries EVERY property the checks read: a failed measurement must never become
+    # "The property 'X' cannot be found" and abort the whole matrix (measured 2026-11-02: `-Only 8`
+    # aborted inside Invoke-AllTests and turned a 16-row report into a 2-row one). `Source` separates a
+    # control-channel failure from a genuinely quiet engine.
+    $fallbackSource = if ($driftError -match 'SharedPreferences|broadcast channel') { 'channel-down' } else { 'none' }
     return [pscustomobject]@{
         Speed = "$($Params['Speed'])"; Samples = 0; RawSamples = 0; StaleSamples = 0
-        Meters = 0.0; Seconds = 0.0; Rate = 0.0; Bearing = 0.0; Source = 'none'
+        Meters = 0.0; Seconds = 0.0; Rate = 0.0; Bearing = 0.0; Source = $fallbackSource
+        MedianSpeed = 0.0; TickMoving = 0; TickTotal = 0
         DumpsysMeters = 0.0; DumpsysRate = 0.0; DumpsysVel = $null
         ExpectedBearing = 0.0; Expected = $null; Track = $null
     }
@@ -275,6 +285,20 @@ function Get-SetPositionCommandCount {
     catch { return 0 }
 }
 
+# After a deliberate Force-Stop the broadcast receiver is gone, and the bridge silently degrades to the
+# SharedPreferences channel — which is unreachable when the app is down, so motion rows read "no-sample"
+# for a reason that has nothing to do with the product (measured 2026-11-02: DRIVE=no-sample alongside
+# "broadcast channel unavailable"). Relaunch, then let the check re-apply its own config afterwards.
+function Restore-ControlChannelAfterForceStop {
+    param([string]$Why = '')
+    try {
+        Start-App -Package (Get-ModulePackageName) | Out-Null
+        Start-Sleep -Seconds 2
+        Write-Step "     relaunched the app after Force-Stop so the control channel stays alive$(if ($Why) { " ($Why)" })"
+    }
+    catch { Write-Warn2 "relaunch after Force-Stop failed: $_" }
+}
+
 function Measure-EngineTicks {
     param([int]$AfterApplied = 0)
     $sel = @(Get-EngineTicks | Where-Object { $_.Applied -gt $AfterApplied })
@@ -321,6 +345,7 @@ function Measure-JoystickDrift {
 
     # --- isolation -------------------------------------------------------------------------
     Force-Stop (Get-ModulePackageName)
+    Restore-ControlChannelAfterForceStop
     Ensure-VerifierStream
 
     $override = @{
@@ -684,8 +709,10 @@ if (Test-Selected '3') {
     $ratio = if ($eff -gt 0) { $eff / 3.3 } else { 0 }
     $bearingDelta = [Math]::Abs((Get-AngleDelta -From $m.ExpectedBearing -To $m.Bearing))
     $bearingOk = ($bearingDelta -lt 30) -or ($m.Meters -lt 3)
-    $ok = ($m.Source -ne 'none') -and ($ratio -ge 0.8 -and $ratio -le 1.2) -and $bearingOk
-    $detail3 = if ($m.Source -eq 'none') { 'measurement produced no usable samples (helper returned no result — see the log above)' }
+    $usableSource = ($m.Source -ne 'none') -and ($m.Source -ne 'channel-down')
+    $ok = $usableSource -and ($ratio -ge 0.8 -and $ratio -le 1.2) -and $bearingOk
+    $detail3 = if ($m.Source -eq 'channel-down') { 'control channel unavailable: the app/prefs could not be reached, so SetJoystick never landed — this is a harness/reset problem, not a speed measurement' }
+    elseif ($m.Source -eq 'none') { 'measurement produced no usable samples (helper returned no result — see the log above)' }
     else { "effective $eff m/s (RUN 3.3), moved $($m.Meters) m in $($m.Seconds)s, bearing $($m.Bearing)deg (expected ~$($m.ExpectedBearing)), ratio $([Math]::Round($ratio,2)), oracle=$($m.Source), samples $($m.Samples)/$($m.RawSamples) stale$($m.StaleSamples), ticks $($m.TickMoving)/$($m.TickTotal) moving" }
     Test-Result -Id '3-joystick' -Name 'joystick drift matches speed x time along reference bearing' -Condition $ok `
         -Detail $detail3 `
@@ -716,9 +743,10 @@ if (Test-Selected '4') {
         # run: WALK/RUN/DRIVE/CUSTOM all read exactly 0.50 while the median tick was dead on).
         $eff = if ($m.PSObject.Properties['MedianSpeed'] -and [double]$m.MedianSpeed -gt 0) { [double]$m.MedianSpeed } else { $m.Rate }
         $ratio = if ($lvl.mps -gt 0.1) { $eff / $lvl.mps } else { 0 }
-        if ($m.Source -ne 'none') { $measured[$lvl.name] = [Math]::Round($eff, 2) }
+        if ($m.Source -ne 'none' -and $m.Source -ne 'channel-down') { $measured[$lvl.name] = [Math]::Round($eff, 2) }
         Write-Host ("     {0,-7} expected {1,6:N2} m/s  measured {2,6:N2} m/s  ratio {3:N2}  samples {4}/{5}  src {6}" -f $lvl.name, $lvl.mps, $eff, $ratio, $m.Samples, $m.RawSamples, $m.Source)
-        if ($m.Source -eq 'none') { $bad += "$($lvl.name)=no-sample" }
+        if ($m.Source -eq 'channel-down') { $bad += "$($lvl.name)=control-channel-down" }
+        elseif ($m.Source -eq 'none') { $bad += "$($lvl.name)=no-sample" }
         elseif ($ratio -lt 0.75 -or $ratio -gt 1.25) { $bad += "$($lvl.name)=$($eff)m/s (ratio $([Math]::Round($ratio,2)), n=$($m.Samples))" }
     }
     Test-Result -Id '4-speed-levels' -Name 'each speed level drifts at its own rate' -Condition ($bad.Count -eq 0) `
@@ -733,7 +761,11 @@ if (Test-Selected '5') {
     Write-Step '5) route simulation (路线模拟)'
     # isolation: park the UI app; the verifier stream is kept alive for the whole run
     Force-Stop (Get-ModulePackageName)
-    Ensure-VerifierStream
+    Restore-ControlChannelAfterForceStop
+    # The relaunch puts OUR app in front and starves the verifier (it only delivers while foreground),
+    # so force a fresh verifier stream after it — otherwise the window has zero samples.
+    Ensure-VerifierStream -Force | Out-Null
+    Start-Sleep -Seconds 2
     # ORDERING/RESET (2026-11-02, full-matrix failure): with earlier checks having left the engine at or
     # near the route's END (POINT_C), the first sample of the window was already 475 m along the route,
     # producing "475.41m in 13.72s = 34.7m/s". Put the engine back on the route ORIGIN and prove delivery
@@ -764,6 +796,28 @@ if (Test-Selected '5') {
     # it is backgrounded, and on 2026-11-02 that made this row read "advanced 0 m" for a route the engine
     # log showed moving at 6.0 m/s in ROUTE mode - a sampling artefact, not a product failure.
     $tkAdvance = Measure-EngineTicks -AfterApplied $tickAdvanceBase
+    $tkAdvanceSource = 'applied-window'
+    if (-not $tkAdvance -or $tkAdvance.Meters -lt 5) {
+        # Stop/Start can RESET appliedTicks to 0, and an Applied-based baseline then matches almost
+        # nothing for the whole window (measured 2026-11-02: tkAdvance=3.27 m for a 65 m route, while
+        # `tkResume` measured 32 m in the leg right after). ROUTE is used by this check alone, so the
+        # movement of this route is the sum over mode=ROUTE ticks in the current log window.
+        $routeTicks = @(Get-EngineTicks | Where-Object { $_.Mode -eq 'ROUTE' })
+        if ($routeTicks.Count -ge 2) {
+            $rtMoved = 0.0; $rtDt = 0.0
+            foreach ($rt in $routeTicks) { $rtMoved += $rt.Moved; $rtDt += ($rt.DtMs / 1000.0) }
+            $tkAdvance = [pscustomobject]@{
+                Ticks       = $routeTicks.Count
+                MovingTicks = @($routeTicks | Where-Object { $_.Speed -gt 0.05 }).Count
+                Seconds     = [Math]::Round($rtDt, 2)
+                Meters      = [Math]::Round($rtMoved, 2)
+                Rate        = if ($rtDt -gt 0.1) { [Math]::Round($rtMoved / $rtDt, 2) } else { 0.0 }
+                MedianSpeed = 0.0
+                Modes       = 'ROUTE'
+            }
+            $tkAdvanceSource = 'route-mode-sum'
+        }
+    }
     $samples = @(Get-LiveLocationSamples -AfterTs $mark)
     # The delivered stream can start with the platform's REAL fix and end with the simulated one; the
     # distance between those two worlds is not "advance" and must never satisfy the assertion (measured
@@ -834,6 +888,9 @@ if (Test-Selected '5') {
 # ------------------------------------------------------------------------------------------------
 if (Test-Selected '6') {
     Write-Step '6) cell simulation (基站模拟)'
+    # A relaunch from an earlier check leaves our app in front, which starves the verifier stream.
+    Ensure-VerifierStream -Force | Out-Null
+    Start-Sleep -Seconds 2
     # RESET (2026-11-02, full-matrix failure): an earlier check had left the engine at one of the two
     # points this check compares, so the cell channel still held that set and the row read A==C after
     # 7 s of polling. Park the engine at a THIRD point (POINT_B) first, confirm delivery, and record
@@ -915,6 +972,7 @@ if (Test-Selected '8') {
     Write-Step '8) step simulation (步频模拟)'
     # isolation: the UI app can otherwise re-push stepSimulation=false
     Force-Stop (Get-ModulePackageName)
+    Restore-ControlChannelAfterForceStop
     Ensure-VerifierStream -Force | Out-Null
     Set-EngineConfig @{ mode = 'STATIC'; stepSimulation = $true; stepCadenceBpm = 120; updateIntervalMs = 500 } | Out-Null
     Send-ResetSteps -Steps 0 -Channel $Channel | Out-Null
@@ -961,10 +1019,22 @@ if (Test-Selected '8') {
     $expected = 120.0 / 60.0 * 12.0
     # --- primary oracle: the sensor seam window (unthrottled, one line per fabricated step batch) ---
     $seamAll = @(Get-StepSeamValues)
-    $seamWin = if ($seamAll.Count -gt $seamBefore) { @($seamAll[$seamBefore..($seamAll.Count - 1)]) } else { @() }
+    # Defensive slicing: `@($x[$a..$b])` with a $null or inverted range is how a single unexpected value
+    # turns into "The property 'Count' cannot be found" and kills the WHOLE matrix (measured 2026-11-02:
+    # `-Only 8` aborted inside Invoke-AllTests). Build the window explicitly and never index with a
+    # non-integer.
+    $seamWin = @()
+    $seamTotal = @($seamAll).Count
+    $seamFrom = 0
+    if ($null -ne $seamBefore) { $seamFrom = [int]$seamBefore }
+    if ($seamTotal -gt $seamFrom) {
+        for ($si = $seamFrom; $si -lt $seamTotal; $si++) { $seamWin += $seamAll[$si] }
+    }
+    $seamWinCount = @($seamWin).Count
+    $samples = @($samples)
     $seamDelta = 0
     $seamMonotonic = $true
-    if ($seamWin.Count -ge 1) {
+    if ($seamWinCount -ge 1) {
         $seamDelta = [long]$seamWin[-1].Steps - [long]$seamWin[0].Steps
         $sp = $null
         foreach ($sv in $seamWin) {
@@ -973,14 +1043,14 @@ if (Test-Selected '8') {
         }
     }
     $oracle = 'verifier'
-    if ($seamWin.Count -ge 2) {
+    if ($seamWinCount -ge 2) {
         # The seam is authoritative when it has a series: it cannot be throttled, and it reports the
         # engine's own counter (`engine steps=`) rather than what a backgrounded callback happened to see.
         $delta = $seamDelta
         $monotonic = $seamMonotonic
         $oracle = 'steps-seam'
     }
-    elseif ($seamWin.Count -eq 1 -and $seamDelta -gt 0) {
+    elseif ($seamWinCount -eq 1 -and $seamDelta -gt 0) {
         $delta = $seamDelta
         $monotonic = $seamMonotonic
         $oracle = 'steps-seam(1)'
@@ -990,7 +1060,7 @@ if (Test-Selected '8') {
     #   * exactly 1    -> the series was throttled away, but a rise of at least 40% of the cadence
     #                     window still proves the counter is being driven (19 of an expected 24 passed
     #                     here on 2026-11-02 after the verifier cap changed the stream pacing)
-    $sampleCount = if ($oracle -eq 'verifier') { $samples.Count } else { $seamWin.Count }
+    $sampleCount = if ($oracle -eq 'verifier') { @($samples).Count } else { $seamWinCount }
     $ok = ($delta -gt 0) -and $monotonic -and
         (($sampleCount -ge 2) -or ($delta -ge ($expected * 0.4)))
     $detectorEvents = @(Get-VerifySamples -Kind 'stepDetector' -AfterTs $mark).Count
@@ -1001,8 +1071,8 @@ if (Test-Selected '8') {
     } catch { }
     if ($hookStepLine) { Write-Step "     hook: $hookStepLine" }
     Test-Result -Id '8-steps' -Name 'step counter stream rises monotonically (步频模拟)' -Condition $ok `
-        -Detail "counter delta=$delta over $sampleCount sample(s) [oracle=$oracle, verifier samples=$($samples.Count), seam window=$($seamWin.Count)] (monotonic=$monotonic, cadence informational ~$expected at 120 bpm); detector events=$detectorEvents (known-open, informational)" `
-        -Metrics @{ delta = $delta; expected = $expected; samples = $sampleCount; verifierSamples = $samples.Count; seamSamples = $seamWin.Count; oracle = $oracle; monotonic = $monotonic; detectorEvents = $detectorEvents; hook = $hookStepLine }
+        -Detail "counter delta=$delta over $sampleCount sample(s) [oracle=$oracle, verifier samples=$(@($samples).Count), seam window=$seamWinCount] (monotonic=$monotonic, cadence informational ~$expected at 120 bpm); detector events=$detectorEvents (known-open, informational)" `
+        -Metrics @{ delta = $delta; expected = $expected; samples = $sampleCount; verifierSamples = @($samples).Count; seamSamples = $seamWinCount; oracle = $oracle; monotonic = $monotonic; detectorEvents = $detectorEvents; hook = $hookStepLine }
 }
 
 # ------------------------------------------------------------------------------------------------
@@ -1014,6 +1084,7 @@ if (Test-Selected '9') {
     # position is set; a status that arrives before that is the ROM's empty one (usedInFix=0).
     # So: config -> Start -> SetPosition -> wait >= 1 update interval -> mark -> read only newer lines.
     Force-Stop (Get-ModulePackageName)
+    Restore-ControlChannelAfterForceStop
     Ensure-VerifierStream
     Set-EngineConfig @{ mode = 'STATIC'; gpsSignalSimulation = $true; updateIntervalMs = 500 } | Out-Null
     Send-Start -Channel $Channel | Out-Null
@@ -1594,6 +1665,14 @@ try {
     $gitDirty = @((& git status --porcelain 2>$null)).Count
 }
 catch { Write-Warn2 "git metadata unavailable: $_" }
+
+# A degraded control channel is reported, never silent: if any command had to fall back to the prefs
+# channel (unreachable while the app is down), motion rows can read "no-sample" for that reason alone.
+if ([int]$script:ChannelFallbacks -gt 0) {
+    Add-Result -Id 'harness-control-channel' -Name 'commands reached the engine over the broadcast channel' -Status 'WARN' `
+        -Detail "$([int]$script:ChannelFallbacks) command(s) fell back to the SharedPreferences channel because the broadcast receiver was down (the app had been force-stopped and not relaunched). Any motion row measured after such a fallback may read 'no-sample' for that reason alone." `
+        -Metrics @{ fallbacks = [int]$script:ChannelFallbacks }
+}
 
 $summary = Save-E2eReport -Suite 'matrix' -Path $Report -Environment @{
     device        = $env_info.model

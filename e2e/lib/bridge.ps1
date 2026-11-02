@@ -25,6 +25,7 @@ $script:BridgeAction = 'com.immoral.location.action.COMMAND'
 $script:BridgeReply = 'com.immoral.location.action.REPLY'
 $script:BridgeExtra = 'com.immoral.location.extra.PAYLOAD'
 $script:BcastReady = $false
+$script:ChannelFallbacks = 0   # incremented whenever a command silently degrades to the prefs channel
 
 function Get-ModulePackageName {
     # `pm path` is cheaper and far more reliable than `pm list packages` right after an install /
@@ -283,6 +284,9 @@ function Send-EngineCommand {
             $r = Send-BroadcastCommand -Payload $Payload -Package $Package -Quiet
             if ($r.Delivered) { Write-Step "broadcast accepted: $Payload" ; return $r }
             Write-Warn2 'broadcast channel unavailable (receiver down?) — falling back to SharedPreferences'
+            # Counted so the run can report it: a silent degradation to a different control channel is
+            # exactly the kind of invisible failure that turns a harness problem into a "product" red row.
+            $script:ChannelFallbacks = 1 + [int]$script:ChannelFallbacks
             return Send-PrefsCommand -Payload $Payload -ConfigPayload $ConfigPayload -Package $Package -Inactive:$Inactive
         }
     }

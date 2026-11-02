@@ -882,6 +882,9 @@ function Invoke-RouteUiCheck {
         if ($fieldNode) {
             # ENTER fires KeyboardActions(onSearch) immediately; the debounce would need >=2 chars
             Set-UiText -Value $coordText -Field $fieldNode -Enter | Out-Null
+    # A row drawn under the IME is indistinguishable from a broken click target: close the
+    # keyboard before any tap that follows typing.
+    Close-UiKeyboard
             $place = Wait-UiBounds -Id 'e2e.route.search.place.0' -TimeoutSec 10
             if (-not $place) {
                 # fallback: first clickable result row below the search field
@@ -1002,6 +1005,9 @@ function Invoke-RouteWaypointCheck {
         $pickerOpened = [bool]$fieldNode
         if ($fieldNode) {
             Set-UiText -Value ("{0:F4},{1:F4}" -f $POINT_B.lat, $POINT_B.lon) -Field $fieldNode -Enter | Out-Null
+    # A row drawn under the IME is indistinguishable from a broken click target: close the
+    # keyboard before any tap that follows typing.
+    Close-UiKeyboard
             $place = Wait-UiBounds -Id 'e2e.route.search.place.0' -TimeoutSec 10
             if ($place) {
                 Invoke-UiTapPoint -X $place.Cx -Y $place.Cy
@@ -1424,6 +1430,9 @@ function Invoke-CoordinateSearchCheck {
     Invoke-UiTapPoint -X $bar.Cx -Y $bar.Cy
     Start-Sleep -Milliseconds 800
     Set-UiText -Value $query | Out-Null
+    # A row drawn under the IME is indistinguishable from a broken click target: close the
+    # keyboard before any tap that follows typing.
+    Close-UiKeyboard
     $card = Wait-UiBounds -Id 'e2e.search.suggestions' -TimeoutSec 8
     Start-Sleep -Milliseconds 800
     $dump = Get-UiXml
