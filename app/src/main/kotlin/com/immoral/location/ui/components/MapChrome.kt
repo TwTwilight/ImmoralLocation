@@ -458,13 +458,24 @@ fun PeekStatusText(
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
         )
-        Text(
-            text = "  ·  $modeLabel",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        // The mode label yields a whole tier at a time: full ("步行 1.4 m/s"), then its head ("步行"),
+        // then nothing. Half a word ("步…") is a fragment, not information (R7 third step; frame at 720).
+        BoxWithConstraints(modifier = Modifier.weight(1f, fill = false)) {
+            val shown = when {
+                maxWidth >= 96.dp -> modeLabel
+                maxWidth >= 40.dp -> modeLabel.substringBefore(' ')
+                else -> ""
+            }
+            if (shown.isNotEmpty()) {
+                Text(
+                    text = "  ·  $shown",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         // Accuracy belongs in the summary: it is the one number that says how "real" the simulated
         // fix looks, and it used to live only inside the status sheet.
         if (accuracyLabel != null) {

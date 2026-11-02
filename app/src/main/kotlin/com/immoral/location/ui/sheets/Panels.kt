@@ -6,7 +6,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -1039,14 +1041,24 @@ fun CollapsedPeekHeader(
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
         )
-        Text(
-            text = "  ·  $modeLabel",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
-        )
+        // Same three-tier yield as the peek card: full label, then its head, then nothing. A planner
+        // header reading "未开始 · 步…" is a fragment, not information (R7 third step, 720 width).
+        BoxWithConstraints(modifier = Modifier.weight(1f, fill = false)) {
+            val shown = when {
+                maxWidth >= 96.dp -> modeLabel
+                maxWidth >= 40.dp -> modeLabel.substringBefore(' ')
+                else -> ""
+            }
+            if (shown.isNotEmpty()) {
+                Text(
+                    text = "  ·  $shown",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         Spacer(modifier = Modifier.weight(1f))
         IconButton(onClick = onCollapse, modifier = Modifier.size(48.dp).testTag("e2e.peek.collapse")) {
             Icon(
@@ -1230,3 +1242,4 @@ fun SearchSuggestionCard(
         }
     }
 }
+
