@@ -277,3 +277,24 @@ peek 元信息行里出现 `⚠ 模块未激活`，位置在坐标与收藏之�
 
 **流程**：测完把作用域恢复为 `system + com.android.phone` 并重启，`1-framework-spoof` 复跑 PASS，
 确认设备回到可用状态（改作用域这种测试必须留恢复步骤，否则下一个人会对着"什么都没生效"排查半天）。
+
+## 20. 第十八轮：三个"缺什么"的核查，一个真缺口（2026-11-02 19:45）
+
+本轮先验证了几个我怀疑缺失的 UX 状态，结论是**大多已经实现**——这本身是有价值的信息：
+
+| 怀疑 | 核查结果 |
+|---|---|
+| 关闭基站模拟后 `immoral_cells` 行会残留 | **不会**：`publishCells` 在 `cellSimulation` 关闭时写 `null`（等于删行） |
+| 收藏为 0 时是空白页 | **不会**：`FavoritesScreen` 有专门的空态，注释明确写了"空态的文案属于空态自己的正文，header+body 重复打印是我们要避免的那类重复" |
+| 模块未激活无提示 | **不会**（上一轮已验证并拍帧），且本轮把它改成可点 |
+
+**真缺口：地图瓦片/初始化失败时没有任何用户可见的信息。**
+`ui/map/AmapHost.kt` 有 `onMapLoaded` 回调，但 `MapScreen` 只把它当日志用；断网或 AMap key 失效时，
+用户看到的就是一张灰底地图，没有任何解释。
+
+**实现草图（留给下一个窗口，本轮不做）**：`AmapHost` 已暴露 `onMapLoaded: () -> Unit`，`MapScreen:317` 直接调用它，
+因此可以（1）`var mapLoaded by remember { mutableStateOf(false) }` + `onMapLoaded = { mapLoaded = true }`；
+（2）`LaunchedEffect(...) { delay(10_000); if (!mapLoaded) showBanner = true }`；
+（3）用一个 `key(generation)` 包住 `AmapHost`，重试即 `generation++` 重建视图。
+**为什么不这轮做**：验证需要真的让瓦片失败（断网后仍可能有缓存瓦片），我没有可在本轮内完成的可靠验证手段——
+按本项目"没有帧/日志就不算完成"的标准，宁可不写。
