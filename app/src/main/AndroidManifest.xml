@@ -57,10 +57,6 @@
                 android:value="Location simulation keeps the mock engine and floating joystick alive while the UI is in the background." />
         </service>
 
-        <receiver
-            android:name=".bridge.BridgeReplyReceiver"
-            android:exported="false" />
-
         <!-- LSPosed / Xposed module metadata -->
         <meta-data
             android:name="xposedmodule"
@@ -71,9 +67,6 @@
         <meta-data
             android:name="xposedminversion"
             android:value="82" />
-        <meta-data
-            android:name="xposedsharedprefs"
-            android:value="true" />
         <!-- Recommended scope, pre-ticked by the manager: the framework is the only seam this
              module needs, everything below it is covered by the system_server hook. -->
         <meta-data

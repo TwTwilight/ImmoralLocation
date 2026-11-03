@@ -35,7 +35,7 @@ object Scope {
     fun packageManager(): android.content.pm.PackageManager? {
         val current = pm
         if (current != null) return current
-        val fromBridge = BridgeServer.packageManager()
+        val fromBridge = BridgeHost.packageManager()
         if (fromBridge != null) {
             pm = fromBridge
             return fromBridge

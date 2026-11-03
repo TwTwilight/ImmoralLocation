@@ -1,8 +1,11 @@
 package com.immoral.location.bridge
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.IBinder
+import android.os.RemoteException
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -10,16 +13,23 @@ import com.immoral.location.core.model.EngineState
 import com.immoral.location.core.model.GeoPoint
 import com.immoral.location.core.model.SimulationConfig
 import com.immoral.location.core.protocol.Bridge
-import com.immoral.location.core.protocol.Codec
-import com.immoral.location.core.protocol.Command
+import com.immoral.location.core.protocol.CORE_ENGINE_VERSION
+import com.immoral.location.core.protocol.IPC_API_VERSION
 import com.immoral.location.core.route.RoutePlan
-import com.immoral.location.data.CommandChannel
-import com.immoral.location.data.FrameworkStatus
+import com.immoral.location.ipc.IImmoralEngine
+import com.immoral.location.ipc.IImmoralStateCallback
+import com.immoral.location.ipc.WireResult
+import com.immoral.location.ipc.WireState
+import com.immoral.location.ipc.toCore
+import com.immoral.location.ipc.toWire
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,67 +41,72 @@ import kotlinx.coroutines.launch
 
 /** What the UI shows in the "模块已激活 / 未激活" chip. */
 enum class ModuleLink {
-    /** No signal at all yet — we are still probing. */
+    /** No binder yet — we are still handshaking (or within the startup grace period). */
     CHECKING,
 
-    /** The framework answered: at least one liveness signal is fresh. */
+    /** A live `IImmoralEngine` is attached and answering. */
     ACTIVE,
 
-    /** Every liveness signal is stale: the module is not enabled for this app. */
+    /** No engine: the module is not enabled for this app, or it died. */
     INACTIVE,
 }
 
 /**
- * The app-side control channel.
+ * The app-side end of the binder bridge.
  *
- * Three transports, in order of reliability:
- *  1. **SharedPreferences port** ([CommandChannel]): every command is mirrored into
- *     `<package>_preferences` (`sim_seq`/`sim_cmd`/`sim_active`/`sim_config`). The framework polls
- *     it every 250 ms. This is the authoritative path — it also works when a `system_server`
- *     broadcast receiver could not be registered.
- *  2. **Broadcasts** (`Bridge.ACTION_COMMAND` → `Bridge.ACTION_REPLY`): kept as an optimisation so
- *     state comes back without waiting for a poll; never blocks the UI.
- *  3. **Files** ([FrameworkStatus]): `filesDir/fw_status.json` for authoritative engine state and
- *     `filesDir/hook_heartbeat` for module liveness.
+ * One transport, no fallback: the app broadcasts [Bridge.ACTION_HELLO] (a signature-permission
+ * broadcast, **not** package-scoped, because the framework's receiver lives on the `system_server`
+ * "android" context), the framework answers with [Bridge.ACTION_HELLO_REPLY] carrying the
+ * `IImmoralEngine` binder in its extras, and everything after that — every command and every state
+ * push — is a binder transaction. The engine is deliberately absent from `ServiceManager`, so this
+ * greeting is the only way to reach it.
  *
- * The engine never runs in the app process: this class only encodes intents and decodes status.
+ * Lifecycle:
+ *  * [start] registers the reply receiver and kicks the handshake; the handshake is retried with an
+ *    exponential backoff (1 s → 8 s) for as long as no engine is attached;
+ *  * the engine is probed with `ping()` every [PROBE_INTERVAL_MS] — a dead transaction, a dead
+ *    binder or a `SecurityException` all drop the link and restart the handshake;
+ *  * commands are never queued. If there is no engine a command fails *now* with a message, so a
+ *    link that comes back up cannot replay a batch of stale intents (the old SharedPreferences port
+ *    did exactly that and moved the user's marker after a module restart).
  */
-class BridgeClient(
-    context: Context,
-    private val configSupplier: () -> SimulationConfig = { SimulationConfig() },
-) {
+class BridgeClient(context: Context) {
 
-    private val appContext = context.applicationContext
+    private val appContext: Context = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    /** The SharedPreferences port the framework polls. */
-    val channel: CommandChannel = CommandChannel(appContext, configSupplier)
-    private val frameworkStatus = FrameworkStatus(appContext)
-
-    private var pingJob: Job? = null
-    private var watchJob: Job? = null
-    private var registered = false
-    private val receiver = BridgeReplyReceiver()
+    @Volatile
+    private var engine: IImmoralEngine? = null
 
     @Volatile
-    private var lastReplyAt = 0L
+    private var engineBinder: IBinder? = null
 
-    @Volatile
-    private var everHadSignal = false
+    private var linkJob: Job? = null
+    private var graceJob: Job? = null
 
-    /** Last configuration the engine acknowledged, used to make [setConfig] idempotent. */
+    private var receiverRegistered = false
+
+    /** Monotonic request id handed to every mutating call that reports an outcome. */
+    private val requestIds = AtomicLong(0L)
+
+    /** Highest state sequence adopted so far; older pushes are dropped. */
+    private val lastSeq = AtomicLong(0L)
+
+    private class PendingCall(val label: String, val atMs: Long)
+
+    /** Commands awaiting `onResult`, keyed by request id. */
+    private val pending = ConcurrentHashMap<Long, PendingCall>()
+
+    /** Last configuration the engine was told about, used to make [setConfig] idempotent. */
     @Volatile
     private var lastSentConfig: SimulationConfig? = null
 
     private val _engineState = MutableStateFlow<EngineState?>(null)
-    /** Last known engine state, from `fw_status.json` when fresh, else from a broadcast reply. */
+    /** Newest engine snapshot known to the app; `null` until the first push / pull. */
     val engineState: StateFlow<EngineState?> = _engineState.asStateFlow()
 
     private val _link = MutableStateFlow(ModuleLink.CHECKING)
     val link: StateFlow<ModuleLink> = _link.asStateFlow()
-
-    private val _engineLoaded = MutableStateFlow(false)
-    val engineLoaded: StateFlow<Boolean> = _engineLoaded.asStateFlow()
 
     private val _moduleVersion = MutableStateFlow("")
     val moduleVersion: StateFlow<String> = _moduleVersion.asStateFlow()
@@ -99,363 +114,420 @@ class BridgeClient(
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
-    private val _lastReplyAtMs = MutableStateFlow(0L)
-    val lastReplyAtMs: StateFlow<Long> = _lastReplyAtMs.asStateFlow()
-
-    private val _lastCommandAtMs = MutableStateFlow(0L)
-    val lastCommandAtMs: StateFlow<Long> = _lastCommandAtMs.asStateFlow()
-
-    private data class Pending(val label: String, val atMs: Long)
-
-    /** Commands awaiting a reply, keyed by request id (the framework echoes it back). */
-    private val pending = java.util.concurrent.ConcurrentHashMap<String, Pending>()
-
-    private var watchdogJob: Job? = null
-
     private val _commandFailures = MutableSharedFlow<String>(extraBufferCapacity = 8)
-    /** Emits a label whenever a user command got no reply within [REPLY_TIMEOUT_MS]. */
+    /** A user command failed (rejected, refused or undeliverable); the UI raises it as a snackbar. */
     val commandFailures: SharedFlow<String> = _commandFailures
 
-    private val _pendingCount = MutableStateFlow(0)
-    /** Commands still awaiting a reply — surfaced by the status panel when non-zero. */
-    val pendingCount: StateFlow<Int> = _pendingCount.asStateFlow()
+    // ------------------------------------------------------------- handshake
 
-    private val startedAt = SystemClock.elapsedRealtime()
+    private val helloReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent == null) return
+            try {
+                handleHelloReply(intent)
+            } catch (t: Throwable) {
+                _lastError.value = describe(t)
+            }
+        }
+    }
 
-    // ------------------------------------------------------------- lifecycle
+    private val deathRecipient = IBinder.DeathRecipient {
+        Log.w(TAG, "engine binder died")
+        dropLink("模块连接已断开")
+    }
 
-    /** Registers the reply receiver and starts the probe + status watchers. Idempotent. */
+    /**
+     * Registers the handshake reply receiver and starts the link loop. Idempotent.
+     */
     fun start() {
         registerReceiver()
-        if (pingJob?.isActive != true) {
-            pingJob = scope.launch {
-                while (isActive) {
-                    send(Command.Ping)
-                    delay(PROBE_INTERVAL_MS)
-                }
-            }
+        sendHello()
+        if (linkJob?.isActive != true) {
+            linkJob = scope.launch { runLink() }
         }
-        if (watchJob?.isActive != true) {
-            watchJob = scope.launch {
-                while (isActive) {
-                    evaluate()
-                    delay(WATCH_INTERVAL_MS)
-                }
-            }
-        }
-        if (watchdogJob?.isActive != true) {
-            watchdogJob = scope.launch {
-                while (isActive) {
-                    val now = SystemClock.elapsedRealtime()
-                    val stale = pending.entries.filter { now - it.value.atMs > REPLY_TIMEOUT_MS }
-                    if (stale.isNotEmpty()) {
-                        stale.forEach { pending.remove(it.key) }
-                        val label = stale.maxByOrNull { it.value.atMs }?.value?.label ?: "命令"
-                        _lastError.value = "命令未送达：$label"
-                        _commandFailures.tryEmit(label)
-                    }
-                    _pendingCount.value = pending.size
-                    delay(WATCHDOG_INTERVAL_MS)
+        if (graceJob?.isActive != true) {
+            graceJob = scope.launch {
+                delay(GRACE_PERIOD_MS)
+                if (engine == null && _link.value == ModuleLink.CHECKING) {
+                    _link.value = ModuleLink.INACTIVE
                 }
             }
         }
     }
 
     fun stop() {
-        pingJob?.cancel()
-        pingJob = null
-        watchJob?.cancel()
-        watchJob = null
-        watchdogJob?.cancel()
-        watchdogJob = null
-    }
-
-    /** Re-runs the liveness evaluation immediately (used by the refresh affordance). */
-    fun probeNow() {
-        send(Command.Ping)
-        send(Command.GetState)
-        evalSynchronously()
+        linkJob?.cancel()
+        linkJob = null
+        graceJob?.cancel()
+        graceJob = null
     }
 
     private fun registerReceiver() {
-        if (registered) return
+        if (receiverRegistered) return
         try {
             ContextCompat.registerReceiver(
                 appContext,
-                receiver,
-                IntentFilter(Bridge.ACTION_REPLY),
-                // The reply comes from system_server (another uid), so the receiver is exported;
-                // the payload is validated by Codec before use.
+                helloReceiver,
+                IntentFilter(Bridge.ACTION_HELLO_REPLY),
+                // Only a sender holding our signature permission may answer the greeting, so a
+                // third-party app cannot hand us a hostile IImmoralEngine proxy.
+                Bridge.PERMISSION_CONTROL,
+                null,
                 ContextCompat.RECEIVER_EXPORTED,
             )
-            registered = true
+            receiverRegistered = true
         } catch (t: Throwable) {
-            _lastError.value = t.message
+            _lastError.value = describe(t)
         }
     }
-
-    // ---------------------------------------------------------------- sending
 
     /**
-     * Sends [command]. The **broadcast is authoritative and goes out first**: the framework's
-     * receiver lives in `system_server`, and on HyperOS the SharedPreferences mirror is not
-     * readable from there at all (`/data/misc/apexdata/.../prefs/...` is 0660 app-owned), so the
-     * mirror is only kept as best-effort redundancy — a UI action must never depend on it.
+     * Asks the framework for the engine binder.
      *
-     * User-relevant commands are registered in [pending]; if no reply carrying their request id
-     * arrives within [REPLY_TIMEOUT_MS] the watchdog emits into [commandFailures], which the UI
-     * surfaces as a snackbar instead of silently doing nothing.
-     *
-     * @return `true` when the broadcast was handed to the system.
+     * Deliberately **not** package-scoped: the framework registers its receiver on the
+     * `system_server` "android" context, and `setPackage()` would make the broadcast undeliverable.
+     * The permission on both sides is the gate, not the package name.
      */
-    fun send(command: Command): Boolean {
-        val payload = try {
-            Codec.encodeCommand(command)
-        } catch (t: Throwable) {
-            _lastError.value = t.message
-            return false
-        }
+    private fun sendHello() {
         val requestId = UUID.randomUUID().toString()
-        val broadcasted = try {
+        try {
             appContext.sendBroadcast(
-                Intent(Bridge.ACTION_COMMAND)
-                    // Deliberately NOT package-scoped: the framework registers its receiver on
-                    // the system_server ("android") context, so setPackage() would make it drop
-                    // the intent. The receiver's signature permission is what guards the channel.
-                    .putExtra(Bridge.EXTRA_PAYLOAD, payload)
-                    .putExtra(EXTRA_REQUEST_ID, requestId),
+                Intent(Bridge.ACTION_HELLO).putExtra(Bridge.EXTRA_REQUEST_ID, requestId),
             )
-            true
         } catch (t: Throwable) {
-            _lastError.value = t.message
-            false
-        }
-
-        if (waitForReply(command)) {
-            pending[requestId] = Pending(labelOf(command), SystemClock.elapsedRealtime())
-            _pendingCount.value = pending.size
-        }
-
-        // Best-effort redundancy only; the framework logs show it cannot read this file on
-        // HyperOS, which is exactly why the broadcast above is the authoritative path.
-        try {
-            channel.publish(command, activeFlagFor(command))
-        } catch (t: Throwable) {
-            _lastError.value = t.message
-        }
-
-        if (broadcasted) {
-            _lastCommandAtMs.value = SystemClock.elapsedRealtime()
-            Log.d(TAG, "send ${labelOf(command)} (${payload.length}B) pending=${pending.size}")
-        }
-        return broadcasted
-    }
-
-    /** Probes and high-rate streams are fire-and-forget; the rest are user intents. */
-    private fun waitForReply(command: Command): Boolean = when (command) {
-        Command.Ping, Command.GetState -> false
-        is Command.SetHeading, is Command.SetJoystick, Command.ReleaseJoystick -> false
-        else -> true
-    }
-
-    /** Human-readable label used by the "not delivered" diagnostic. */
-    private fun labelOf(command: Command): String = when (command) {
-        Command.Ping -> "Ping"
-        Command.GetState -> "读取状态"
-        is Command.SetUiVisible -> "界面可见性"
-        is Command.Start -> "开始模拟"
-        is Command.Stop -> "停止模拟"
-        is Command.SetPosition -> "切换位置"
-        is Command.SetJoystick -> "摇杆"
-        is Command.ReleaseJoystick -> "松开摇杆"
-        is Command.SetHeading -> "朝向"
-        is Command.SetConfig -> "应用设置"
-        is Command.StartRoute -> "开始路线"
-        is Command.PlayRoute -> "播放路线"
-        is Command.PauseRoute -> "暂停路线"
-        is Command.StopRoute -> "结束路线"
-        is Command.ResetSteps -> "重置步数"
-    }
-
-    /** Mirrors a config change without sending a command (settings screens call this). */
-    fun publishConfig(config: SimulationConfig) {
-        try {
-            channel.publishConfig(config)
-        } catch (t: Throwable) {
-            _lastError.value = t.message
+            _lastError.value = describe(t)
         }
     }
 
-    private fun activeFlagFor(command: Command): Boolean? = when (command) {
-        Command.Start -> true
-        Command.Stop -> false
-        is Command.StartRoute -> true
-        else -> null
-    }
-
-    // ---------------------------------------------------------------- replies
-
-    /** Called by [BridgeReplyReceiver]; safe from any thread. */
-    internal fun handleReplyIntent(intent: Intent?) {
-        if (intent == null) return
-        val raw = intent.getStringExtra(Bridge.EXTRA_PAYLOAD) ?: return
-        val reply = Codec.decodeReply(raw) ?: run {
-            _lastError.value = "无法解析框架回复"
+    private fun handleHelloReply(intent: Intent) {
+        // `putBinder` writes a binder into the extras bundle, so `getBinder` is the matching read.
+        val binder = intent.extras?.getBinder(Bridge.EXTRA_BINDER)
+        if (binder == null) {
+            _lastError.value = "模块回复中没有引擎接口"
             return
         }
-        // A reply proves the broadcast channel works — resolve the command it answers.
-        intent.getStringExtra(EXTRA_REQUEST_ID)?.let { pending.remove(it) }
-        _pendingCount.value = pending.size
-        lastReplyAt = SystemClock.elapsedRealtime()
-        everHadSignal = true
-        _lastReplyAtMs.value = lastReplyAt
-        _link.value = ModuleLink.ACTIVE
-        _engineLoaded.value = reply.engineLoaded
-        if (reply.moduleVersion.isNotBlank()) _moduleVersion.value = reply.moduleVersion
-        _lastError.value = reply.error
-        reply.state?.let { state ->
-            _engineState.value = state
-            channel.publishState(state)
+        if (binder === engineBinder && engine != null) return
+        val iface = IImmoralEngine.Stub.asInterface(binder)
+        if (iface == null) {
+            _lastError.value = "无法解析模块引擎接口"
+            return
         }
+        attach(binder, iface)
     }
 
-    // --------------------------------------------------------------- liveness
-
-    private fun evalSynchronously() {
+    private fun attach(binder: IBinder, iface: IImmoralEngine) {
+        // Parcelable layouts are positional: a framework built against another `Wire.kt` would
+        // decode our structs into garbage instead of failing, so refuse a mismatched protocol.
+        val version = try {
+            iface.apiVersion()
+        } catch (t: RemoteException) {
+            _lastError.value = describe(t)
+            return
+        }
+        if (version != IPC_API_VERSION) {
+            Log.w(TAG, "engine apiVersion=$version expected=$IPC_API_VERSION")
+            _lastError.value = "模块版本不匹配，请重启设备"
+            _link.value = ModuleLink.INACTIVE
+            return
+        }
         try {
-            evaluate()
+            binder.linkToDeath(deathRecipient, 0)
+        } catch (t: RemoteException) {
+            _lastError.value = "模块连接已断开"
+            return
+        }
+
+        engineBinder = binder
+        engine = iface
+        _moduleVersion.value = CORE_ENGINE_VERSION
+        // A re-attached framework may have lost our config along with its process: forget what was
+        // pushed so the next setConfig() is not deduplicated away.
+        lastSentConfig = null
+        lastSeq.set(0L)
+
+        try {
+            iface.registerCallback(stateCallback, CALLBACK_INTERVAL_MS)
         } catch (t: Throwable) {
-            // ignore
+            dropLink(describe(t))
+            return
+        }
+        pullSnapshot()
+        _link.value = ModuleLink.ACTIVE
+        _lastError.value = null
+        Log.d(TAG, "engine attached (api=$version, version=$CORE_ENGINE_VERSION)")
+    }
+
+    /** Drops the current engine and lets the link loop start a new handshake. */
+    private fun dropLink(reason: String?) {
+        if (reason != null) _lastError.value = reason
+        val binder = engineBinder
+        engine = null
+        engineBinder = null
+        _moduleVersion.value = ""
+        pending.clear()
+        lastSentConfig = null
+        lastSeq.set(0L)
+        if (binder != null) {
+            runCatching { binder.unlinkToDeath(deathRecipient, 0) }
+        }
+        _link.value = ModuleLink.INACTIVE
+    }
+
+    // ------------------------------------------------------------ keep-alive
+
+    private suspend fun runLink() {
+        var backoff = BACKOFF_MIN_MS
+        while (currentCoroutineContext().isActive) {
+            if (engine == null) {
+                // [start] already greeted once; give the reply this window before greeting again,
+                // then retry with an exponential backoff so a missing module costs one broadcast
+                // per 8 s instead of a busy loop.
+                delay(backoff)
+                if (engine != null) {
+                    backoff = BACKOFF_MIN_MS
+                    continue
+                }
+                sendHello()
+                backoff = (backoff * 2).coerceAtMost(BACKOFF_MAX_MS)
+                continue
+            }
+            delay(PROBE_INTERVAL_MS)
+            prunePending()
+            val iface = engine ?: continue
+            try {
+                iface.ping()
+            } catch (t: Throwable) {
+                Log.w(TAG, "ping failed: ${describe(t)}")
+                dropLink(describe(t))
+                backoff = BACKOFF_MIN_MS
+            }
         }
     }
 
-    /**
-     * Combines the three liveness signals. Runs at 2 Hz so the chip follows reality within a
-     * second of the framework starting or stopping.
-     */
-    private fun evaluate() {
-        val snapshot = try {
-            frameworkStatus.read()
-        } catch (t: Throwable) {
-            FrameworkStatus.Snapshot()
-        }
-
-        if (snapshot.state != null) {
-            _engineState.value = snapshot.state
-            everHadSignal = true
-            channel.publishState(snapshot.state)
-        }
-
+    /** Forgets results that will never come, so a dead engine cannot leak labels forever. */
+    private fun prunePending() {
+        if (pending.isEmpty()) return
         val now = SystemClock.elapsedRealtime()
-        val replyAge = if (lastReplyAt == 0L) Long.MAX_VALUE else now - lastReplyAt
-        // The heartbeat term is gone: nothing writes `hook_heartbeat` in a framework-only build, so
-        // liveness is `fw_status.json` freshness or a recent broadcast reply.
-        val alive = snapshot.statusFresh || replyAge <= REPLY_FRESH_MS
-
-        if (alive) {
-            everHadSignal = true
-            _engineLoaded.value = true
-            if (_link.value != ModuleLink.ACTIVE) {
-                // A fresh engine may have lost our config (module/process restart): forget what we
-                // sent so the next setConfig() re-publishes it instead of being deduplicated.
-                lastSentConfig = null
-            }
-            _link.value = ModuleLink.ACTIVE
-        } else {
-            val sinceStart = now - startedAt
-            _link.value = if (!everHadSignal && sinceStart < GRACE_PERIOD_MS) {
-                ModuleLink.CHECKING
-            } else {
-                ModuleLink.INACTIVE
-            }
-            _engineLoaded.value = false
+        for ((id, call) in pending) {
+            if (now - call.atMs > PENDING_TTL_MS) pending.remove(id, call)
         }
     }
 
-    // ------------------------------------------------------- typed shortcuts
+    // --------------------------------------------------------------- states
 
-    fun requestState() = send(Command.GetState)
+    private val stateCallback = object : IImmoralStateCallback.Stub() {
 
-    fun setPosition(point: GeoPoint) = send(Command.SetPosition(point))
+        override fun onState(state: WireState?, seq: Long) {
+            if (state == null) return
+            // Pushes are coalesced on the framework side and may arrive out of order; only a
+            // strictly newer sequence may move the UI, so it never jumps backwards.
+            while (true) {
+                val previous = lastSeq.get()
+                if (seq <= previous) return
+                if (lastSeq.compareAndSet(previous, seq)) break
+            }
+            _engineState.value = state.toCore()
+        }
 
-    fun setJoystick(x: Float, y: Float) = send(Command.SetJoystick(x, y))
+        override fun onResult(requestId: Long, code: Int, message: String?) {
+            val call = pending.remove(requestId) ?: return
+            if (code == WireResult.OK) {
+                _lastError.value = null
+                return
+            }
+            val detail = message?.takeIf { it.isNotBlank() } ?: RESULT_TEXT[code] ?: "未知错误"
+            _lastError.value = detail
+            _commandFailures.tryEmit("${call.label} 失败：$detail")
+        }
 
-    fun releaseJoystick() = send(Command.ReleaseJoystick)
-
-    fun setHeading(deg: Double) = send(Command.SetHeading(deg))
+        override fun onEngineRestarted(reason: Int) {
+            _engineState.value = null
+            lastSeq.set(0L)
+            pending.clear()
+            lastSentConfig = null
+            pullSnapshot()
+        }
+    }
 
     /**
-     * Pushes the configuration, but only when it actually changed since the last acknowledged
-     * push. Re-sending an identical config on every tick used to make the app fight the engine
-     * (a stale `routeSpeedMps` re-seeded the running route plan).
+     * Reads the snapshot without waiting for the next push (attach, restart, manual refresh).
+     *
+     * A push that lands while the transaction is in flight is newer by definition, so the pulled
+     * snapshot is only adopted when no push advanced the sequence meanwhile.
+     */
+    private fun pullSnapshot() {
+        val iface = engine ?: return
+        scope.launch {
+            val before = lastSeq.get()
+            val state = try {
+                iface.snapshot()
+            } catch (t: Throwable) {
+                dropLink(describe(t))
+                return@launch
+            }
+            if (state != null && lastSeq.get() == before) {
+                _engineState.value = state.toCore()
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- commands
+
+    /**
+     * Runs one binder command.
+     *
+     * @param userFacing `true` for an explicit user intent: the request id is remembered so
+     *   `onResult` can name the command in a snackbar, and an undeliverable command is reported.
+     *   `false` for high-rate signals (joystick, heading) which must stay silent.
+     * @return `true` when the transaction was handed to the engine.
+     */
+    private fun call(
+        label: String,
+        userFacing: Boolean,
+        block: (IImmoralEngine, Long) -> Unit,
+    ): Boolean {
+        val iface = engine
+        if (iface == null) {
+            if (userFacing) {
+                _lastError.value = "模块未连接"
+                _commandFailures.tryEmit("$label 失败：模块未连接")
+            }
+            return false
+        }
+        val requestId = requestIds.incrementAndGet()
+        if (userFacing) pending[requestId] = PendingCall(label, SystemClock.elapsedRealtime())
+        return try {
+            block(iface, requestId)
+            true
+        } catch (t: RemoteException) {
+            failCommand(label, t, userFacing)
+            false
+        } catch (t: SecurityException) {
+            failCommand(label, t, userFacing)
+            false
+        } catch (t: IllegalStateException) {
+            failCommand(label, t, userFacing)
+            false
+        }
+    }
+
+    /** The transport itself broke: drop the link so the loop re-handshakes from scratch. */
+    private fun failCommand(label: String, t: Throwable, userFacing: Boolean) {
+        val message = describe(t)
+        dropLink(message)
+        if (userFacing) _commandFailures.tryEmit("$label 失败：$message")
+    }
+
+    private fun describe(t: Throwable): String =
+        t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+
+    // ---------------------------------------------------- typed shortcuts
+
+    /** Re-reads the engine snapshot (after the link came up, or from a refresh affordance). */
+    fun requestState() {
+        if (engine == null) sendHello() else pullSnapshot()
+    }
+
+    fun setPosition(point: GeoPoint) = call(LABEL_POSITION, userFacing = true) { iface, id ->
+        iface.setPosition(point.toWire(), id)
+    }
+
+    fun setJoystick(x: Float, y: Float) = call(LABEL_JOYSTICK, userFacing = false) { iface, _ ->
+        iface.setJoystick(x, y)
+    }
+
+    fun releaseJoystick() = call(LABEL_JOYSTICK_RELEASE, userFacing = false) { iface, _ ->
+        iface.releaseJoystick()
+    }
+
+    fun setHeading(deg: Double) = call(LABEL_HEADING, userFacing = false) { iface, _ ->
+        iface.setHeading(deg)
+    }
+
+    /**
+     * Pushes the configuration, but only when it actually changed since the last successful push.
+     * Re-sending an identical config on every tick used to make the app fight the engine (a stale
+     * `routeSpeedMps` re-seeded the running route plan).
+     *
+     * @return whether the configuration is now known to the engine (`true` also when it was
+     *   already up to date, or when there is no engine to push to — the caller has nothing to do).
      */
     fun setConfig(config: SimulationConfig): Boolean {
         val sanitized = config.sanitized()
         if (sanitized == lastSentConfig) return true
-        val sent = send(Command.SetConfig(sanitized))
+        val sent = call(LABEL_CONFIG, userFacing = true) { iface, id ->
+            iface.setConfig(sanitized.toWire(), id)
+        }
         if (sent) lastSentConfig = sanitized
         return sent
     }
 
-    fun startEngine() = send(Command.Start)
+    fun startEngine() = call(LABEL_START, userFacing = true) { iface, id -> iface.start(id) }
 
-    fun setUiVisible(visible: Boolean) = send(Command.SetUiVisible(visible))
-
-    fun stopEngine() = send(Command.Stop)
+    fun stopEngine() = call(LABEL_STOP, userFacing = true) { iface, id -> iface.stop(id) }
 
     /** Loads and plays [plan]. Call this only on an explicit user action — never on a state tick. */
-    fun startRoute(plan: RoutePlan) = send(Command.StartRoute(plan))
+    fun startRoute(plan: RoutePlan) = call(LABEL_ROUTE_START, userFacing = true) { iface, id ->
+        iface.startRoute(plan.toWire(), id)
+    }
 
-    fun playRoute() = send(Command.PlayRoute)
+    fun playRoute() = call(LABEL_ROUTE_PLAY, userFacing = true) { iface, id ->
+        iface.playRoute(id)
+    }
 
-    fun pauseRoute() = send(Command.PauseRoute)
+    fun pauseRoute() = call(LABEL_ROUTE_PAUSE, userFacing = true) { iface, id ->
+        iface.pauseRoute(id)
+    }
 
-    fun stopRoute() = send(Command.StopRoute)
+    fun stopRoute() = call(LABEL_ROUTE_STOP, userFacing = true) { iface, id ->
+        iface.stopRoute(id)
+    }
 
-    fun resetSteps(steps: Long = 0L) = send(Command.ResetSteps(steps))
+    fun resetSteps(steps: Long = 0L) = call(LABEL_STEPS, userFacing = true) { iface, id ->
+        iface.resetSteps(steps, id)
+    }
 
     companion object {
         private const val TAG = "ImmoralBridge"
 
-        /** Extra carrying the request id, echoed back by cooperative framework builds. */
-        const val EXTRA_REQUEST_ID: String = "com.immoral.location.extra.REQUEST_ID"
-
-        /** Broadcast probe period (the prefs port is polled by the framework, not by us). */
+        /** Liveness probe period. */
         const val PROBE_INTERVAL_MS: Long = 5_000L
 
-        /** Liveness evaluation period. */
-        const val WATCH_INTERVAL_MS: Long = 500L
+        /** Minimum callback push interval requested from the engine. */
+        const val CALLBACK_INTERVAL_MS: Int = 250
 
-        /** How long a user command may wait for its reply before the UI reports 命令未送达. */
-        const val REPLY_TIMEOUT_MS: Long = 1_000L
-
-        /** How often the pending-command watchdog runs. */
-        private const val WATCHDOG_INTERVAL_MS: Long = 250L
-
-        /** A broadcast reply younger than this keeps the link alive. */
-        const val REPLY_FRESH_MS: Long = 8_000L
-
-        /** Startup grace period before the UI can say 未激活. */
+        /** Startup window during which the chip stays 连接中 instead of claiming 未激活. */
         const val GRACE_PERIOD_MS: Long = 6_000L
 
-        /** Consecutive unanswered probes before the UI reports 未激活 (contract wording). */
-        const val MISSED_PROBES_BEFORE_INACTIVE: Int = 3
+        /** Handshake retry floor. */
+        const val BACKOFF_MIN_MS: Long = 1_000L
 
-        @Volatile
-        private var activeClient: BridgeClient? = null
+        /** Handshake retry ceiling. */
+        const val BACKOFF_MAX_MS: Long = 8_000L
 
-        internal fun attach(client: BridgeClient) {
-            activeClient = client
-        }
+        /** A command result older than this is presumed lost and its label is dropped. */
+        private const val PENDING_TTL_MS: Long = 15_000L
 
-        /** Entry point for the statically declared [BridgeReplyReceiver]. */
-        fun dispatch(intent: Intent?) {
-            activeClient?.handleReplyIntent(intent)
-        }
-    }
+        private const val LABEL_START = "开始模拟"
+        private const val LABEL_STOP = "停止模拟"
+        private const val LABEL_POSITION = "切换位置"
+        private const val LABEL_CONFIG = "应用设置"
+        private const val LABEL_JOYSTICK = "摇杆"
+        private const val LABEL_JOYSTICK_RELEASE = "松开摇杆"
+        private const val LABEL_HEADING = "朝向"
+        private const val LABEL_ROUTE_START = "开始路线"
+        private const val LABEL_ROUTE_PLAY = "播放路线"
+        private const val LABEL_ROUTE_PAUSE = "暂停路线"
+        private const val LABEL_ROUTE_STOP = "结束路线"
+        private const val LABEL_STEPS = "重置步数"
 
-    init {
-        attach(this)
+        /** Fallback wording for the `onResult` codes the engine may answer with. */
+        private val RESULT_TEXT: Map<Int, String> = mapOf(
+            WireResult.INVALID_ARGUMENT to "参数无效",
+            WireResult.UNAVAILABLE to "模块不可用",
+            WireResult.INTERNAL_ERROR to "模块内部错误",
+            WireResult.NOT_RUNNING to "引擎未运行",
+            WireResult.TOO_LARGE to "数据过大",
+        )
     }
 }
-

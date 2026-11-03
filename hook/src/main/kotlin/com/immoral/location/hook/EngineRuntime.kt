@@ -6,12 +6,17 @@ import android.os.Looper
 import android.os.SystemClock
 import com.immoral.location.core.engine.SimulationEngine
 import com.immoral.location.core.model.EngineState
+import com.immoral.location.core.model.GeoPoint
+import com.immoral.location.core.model.RouteState
 import com.immoral.location.core.model.Satellite
 import com.immoral.location.core.model.SimulatedAp
 import com.immoral.location.core.model.SimulatedCell
 import com.immoral.location.core.model.SimulationConfig
-import com.immoral.location.core.protocol.BridgeReply
-import com.immoral.location.core.protocol.Command
+import com.immoral.location.core.route.RoutePlan
+import com.immoral.location.ipc.WireDiagnostics
+import com.immoral.location.ipc.WireResult
+import com.immoral.location.ipc.WireState
+import com.immoral.location.ipc.toWire
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
@@ -23,6 +28,12 @@ import kotlin.math.abs
  * *and* commands) runs on that single thread because [SimulationEngine] is not thread-safe.
  * Hook code only ever reads the immutable [Snap] published here, which is a plain volatile read
  * on the hot location-report path.
+ *
+ * ## Command surface
+ * There is no command *bus* any more: [FrameworkBinder] calls the typed methods below
+ * ([startEngine], [stopEngine], [setPosition], …) on the engine thread and reports their
+ * [WireResult] code back over binder. Each of those methods is idempotent and *sets* a state
+ * instead of toggling it, which is what makes a lost or duplicated delivery harmless.
  */
 object EngineRuntime {
 
@@ -81,11 +92,7 @@ object EngineRuntime {
     var installedAtMs: Long = 0L
         private set
 
-    /** Bridge state pushes (throttled inside [BridgeServer]). */
-    @Volatile
-    var stateSink: ((EngineState) -> Unit)? = null
-
-    /** Extra state consumers (status file writer, …). */
+    /** State consumers (binder fan-out). */
     private val stateListeners = CopyOnWriteArrayList<(EngineState) -> Unit>()
 
     fun addStateListener(listener: (EngineState) -> Unit) {
@@ -166,13 +173,6 @@ object EngineRuntime {
                 Log.e("engine boot publish", t)
             }
         }
-        // Drop any status row a previous boot left in Settings.Global: that storage persists across
-        // reboots, and until the first tick the row would advertise the module to every app.
-        try {
-            StatusWriter.clearStaleRow()
-        } catch (t: Throwable) {
-            Log.once("status.boot.clear", "clearing the stale status row failed: ${t.javaClass.simpleName}")
-        }
         Log.i("EngineRuntime booted in ${android.os.Process.myPid()} (module $moduleVersion)")
     }
 
@@ -211,155 +211,159 @@ object EngineRuntime {
     fun looper(): Looper? = handler?.looper
 
     // ------------------------------------------------------------------ commands
+    //
+    // Every method below must be called on the engine thread (FrameworkBinder posts them) and
+    // reports a WireResult code. They are "set state" operations: calling one twice is the same
+    // as calling it once, and no method derives its behaviour from a cached copy of the client's
+    // view of the world.
 
-    /**
-     * Entry point used by [BridgeServer]. Never blocks: the reply is produced and broadcast from
-     * the engine thread.
-     */
-    fun submit(command: Command, requestId: String?) {
-        post {
-            val reply = handle(command, requestId ?: "broadcast")
-            BridgeServer.sendReply(reply, requestId)
-        }
+    fun startEngine(): Int {
+        engine.running = true
+        startTicker()
+        publish(buildSnap())
+        return WireResult.OK
     }
 
-    private fun handle(command: Command, source: String = "broadcast"): BridgeReply {
-        var error: String? = null
-        try {
-            when (command) {
-                is Command.Ping -> Unit
-                is Command.SetUiVisible -> StatusWriter.setUiVisible(command.visible)
-                is Command.GetState -> publish(buildSnap())
-                is Command.SetConfig -> {
-                    engine.config = command.config
-                    config = engine.config
-                    Log.i(
-                        "config applied: independent=${config.independentMode} " +
-                            "packages=${config.independentPackages.size} interval=${config.updateIntervalMs} " +
-                            "cell=${config.cellSimulation} wifi=${config.wifiSimulation} " +
-                            "gpsSignal=${config.gpsSignalSimulation} steps=${config.stepSimulation} " +
-                            "speed=${config.speed} effSpeed=${config.effectiveSpeedMps()}m/s " +
-                            "custom=${config.customSpeedMps}",
-                    )
-                    val wanted = config.updateIntervalMs.coerceIn(100L, 10_000L)
-                    if (wanted != intervalMs) {
-                        intervalMs = wanted
-                        if (ticking) restartTicker()
-                    }
-                    publish(buildSnap())
-                }
-                is Command.Start -> {
-                    engine.running = true
-                    startTicker()
-                    publish(buildSnap())
-                }
-                is Command.Stop -> {
-                    engine.running = false
-                    stopTicker()
-                    publish(buildSnap())
-                }
-                is Command.SetPosition -> {
-                    if (!command.point.isValidLatLon()) {
-                        error = "invalid position"
-                    } else {
-                        engine.setPosition(command.point, true)
-                        Log.i("position source=" + source + " set " + command.point.lat + "," + command.point.lon)
-                        publish(buildSnap())
-                    }
-                }
-                is Command.SetJoystick -> {
-                    engine.setJoystick(command.x, command.y)
-                    // A joystick push implies "move": start the ticker when the stick is off-centre so
-                    // the very first drag is not swallowed until someone sends Start.
-                    val magnitude = kotlin.math.hypot(command.x.toDouble(), command.y.toDouble())
-                    if (magnitude > 0.02 && !engine.running) {
-                        engine.running = true
-                        startTicker()
-                    }
-                    // state only: the position moves on the next tick, not now
-                    publish(buildSnap(), pushLocation = false)
-                }
-                is Command.ReleaseJoystick -> {
-                    engine.releaseJoystick()
-                    publish(buildSnap(), pushLocation = false)
-                }
-                is Command.SetHeading -> {
-                    engine.setHeading(command.deg)
-                }
-                is Command.StartRoute -> {
-                    // The app re-sends its whole state on every refresh, so replaying StartRoute
-                    // must not retune or restart a route that is already PLAYING (that silently
-                    // reset the plan speed and made route playback advance at 1/17 of the
-                    // configured speed).
-                    //
-                    // A replay while the plan is NOT playing is the opposite: a genuine restart
-                    // request. Treating it as "same plan, ignore" was a real user-facing bug —
-                    // after a route FINISHED its progress stays at 1.0, so replaying the same
-                    // route (or re-planning the same stops) advanced nothing at all, and a
-                    // PlayRoute then instantly finished again. Restarting resets progress to 0,
-                    // which is what "plan this again / play it again" must mean.
-                    val existing = engine.routePoints
-                    val previousState = engine.currentRouteState
-                    val samePlan = existing.isNotEmpty() && existing == command.plan.points
-                    val restart = !samePlan ||
-                        previousState != com.immoral.location.core.model.RouteState.PLAYING
-                    if (!restart) {
-                        // Info level (rate-limited, not silent) with the state it saw, so a future
-                        // "nothing happened" has a one-line cause in logcat.
-                        Log.rate(
-                            "routerepeat",
-                            2_000L,
-                            "StartRoute ignored (same plan already playing; state=" + previousState +
-                                " progress=" + engine.state.routeProgress + ")",
-                        )
-                    } else {
-                        engine.startRoute(
-                            command.plan.points,
-                            command.plan.repeat,
-                            command.plan.speedMps,
-                        )
-                        config = engine.config
-                        startTicker()
-                        Log.i(
-                            "route loaded: points=" + command.plan.points.size +
-                                " speed=" + engine.activeRouteSpeedMps + "m/s repeat=" + command.plan.repeat +
-                                " (was state=" + previousState + " samePlan=" + samePlan + ")",
-                        )
-                    }
-                    publish(buildSnap())
-                }
-                is Command.PlayRoute -> {
-                    engine.playRoute()
-                    if (engine.running) startTicker()
-                    publish(buildSnap())
-                }
-                is Command.PauseRoute -> {
-                    engine.pauseRoute()
-                    publish(buildSnap())
-                }
-                is Command.StopRoute -> {
-                    engine.stopRoute()
-                    publish(buildSnap())
-                }
-                is Command.ResetSteps -> {
-                    engine.resetSteps(command.steps)
-                    publish(buildSnap())
-                }
-            }
-        } catch (t: Throwable) {
-            Log.e("command ${command.javaClass.simpleName} failed", t)
-            error = "${t.javaClass.simpleName}: ${t.message}"
+    /**
+     * Stops the engine and every movement source with it.
+     *
+     * Releasing the joystick here (rather than as a separate client-side call) is what makes
+     * "stop" a single, complete intent: a delayed joystick vector can no longer arrive after the
+     * stop and silently restart the engine, because there is no vector left to resume from.
+     */
+    fun stopEngine(): Int {
+        engine.running = false
+        engine.releaseJoystick()
+        stopTicker()
+        // The native hook only learns about step state from the ticker, which has just stopped.
+        NativeBridge.pushStepState(
+            steps = engine.state.steps,
+            cadenceBpm = config.stepCadenceBpm,
+            enabled = false,
+        )
+        publish(buildSnap())
+        Log.i("engine stopped; joystick released, step fabrication disarmed")
+        return WireResult.OK
+    }
+
+    fun setPosition(point: GeoPoint): Int {
+        if (!point.isValidLatLon()) return WireResult.INVALID_ARGUMENT
+        engine.setPosition(point, true)
+        Log.i("position set ${point.lat},${point.lon}")
+        publish(buildSnap())
+        return WireResult.OK
+    }
+
+    fun setConfig(next: SimulationConfig): Int {
+        engine.config = next
+        config = engine.config
+        Log.i(
+            "config applied: independent=${config.independentMode} " +
+                "packages=${config.independentPackages.size} interval=${config.updateIntervalMs} " +
+                "cell=${config.cellSimulation} wifi=${config.wifiSimulation} " +
+                "gpsSignal=${config.gpsSignalSimulation} steps=${config.stepSimulation} " +
+                "speed=${config.speed} effSpeed=${config.effectiveSpeedMps()}m/s " +
+                "custom=${config.customSpeedMps}",
+        )
+        val wanted = config.updateIntervalMs.coerceIn(100L, 10_000L)
+        if (wanted != intervalMs) {
+            intervalMs = wanted
+            if (ticking) restartTicker()
         }
-        return BridgeReply(
-            ok = error == null,
-            error = error,
-            state = try {
-                engine.state
-            } catch (_: Throwable) {
-                snap?.state
-            },
-            engineLoaded = true,
-            moduleVersion = ModuleInfo.version,
+        publish(buildSnap())
+        return WireResult.OK
+    }
+
+    fun setJoystick(x: Float, y: Float) {
+        engine.setJoystick(x, y)
+        // A joystick push implies "move": start the ticker when the stick is off-centre so the
+        // very first drag is not swallowed until someone sends start.
+        val magnitude = kotlin.math.hypot(x.toDouble(), y.toDouble())
+        if (magnitude > 0.02 && !engine.running) {
+            engine.running = true
+            startTicker()
+        }
+        // state only: the position moves on the next tick, not now
+        publish(buildSnap(), pushLocation = false)
+    }
+
+    fun releaseJoystick() {
+        engine.releaseJoystick()
+        publish(buildSnap(), pushLocation = false)
+    }
+
+    fun setHeading(deg: Double) {
+        engine.setHeading(deg)
+    }
+
+    fun startRoute(route: RoutePlan): Int {
+        // A re-sent plan while the route is already PLAYING must not retune or restart it
+        // (that silently reset the plan speed and made playback advance at 1/17 of the
+        // configured speed). A re-sent plan in any other state is a genuine restart request:
+        // after the route FINISHED its progress stays at 1.0, so "play this again" has to reset
+        // it to 0 instead of instantly finishing again.
+        val existing = engine.routePoints
+        val previousState = engine.currentRouteState
+        val samePlan = existing.isNotEmpty() && existing == route.points
+        val restart = !samePlan || previousState != RouteState.PLAYING
+        if (!restart) {
+            Log.rate(
+                "routerepeat",
+                2_000L,
+                "startRoute ignored (same plan already playing; state=" + previousState +
+                    " progress=" + engine.state.routeProgress + ")",
+            )
+            publish(buildSnap())
+            return WireResult.OK
+        }
+        engine.startRoute(route.points, route.repeat, route.speedMps)
+        config = engine.config
+        startTicker()
+        Log.i(
+            "route loaded: points=" + route.points.size +
+                " speed=" + engine.activeRouteSpeedMps + "m/s repeat=" + route.repeat +
+                " (was state=" + previousState + " samePlan=" + samePlan + ")",
+        )
+        publish(buildSnap())
+        return WireResult.OK
+    }
+
+    fun playRoute(): Int {
+        engine.playRoute()
+        if (engine.running) startTicker()
+        publish(buildSnap())
+        return WireResult.OK
+    }
+
+    fun pauseRoute(): Int {
+        engine.pauseRoute()
+        publish(buildSnap())
+        return WireResult.OK
+    }
+
+    fun stopRoute(): Int {
+        engine.stopRoute()
+        publish(buildSnap())
+        return WireResult.OK
+    }
+
+    fun resetSteps(steps: Long): Int {
+        engine.resetSteps(steps)
+        publish(buildSnap())
+        return WireResult.OK
+    }
+
+    /** Current state as a wire struct, or `null` before the first publish. */
+    fun currentWireState(): WireState? = snap?.state?.toWire()
+
+    /** Synthesized environment data for the diagnostics panel (already computed per tick). */
+    fun currentDiagnostics(): WireDiagnostics {
+        val current = snap ?: return WireDiagnostics(emptyList(), emptyList(), emptyList(), emptyList())
+        return WireDiagnostics(
+            satellites = current.satellites.map { it.toWire() },
+            cells = current.cells.map { it.toWire() },
+            accessPoints = current.accessPoints.map { it.toWire() },
+            nmeaLines = current.nmeaLines,
         )
     }
 
@@ -367,8 +371,8 @@ object EngineRuntime {
 
     private fun startTicker() {
         if (ticking) {
-            // Idempotent: a second Start / a joystick auto-start must never create a second tick chain
-            // (that would integrate the position twice per interval and double the measured speed).
+            // Idempotent: a second start / a joystick auto-start must never create a second tick
+            // chain (that would integrate the position twice per interval and double the speed).
             Log.rate("ticker.dup", 5_000L, "ticker already running, not started again")
             return
         }
@@ -478,16 +482,16 @@ object EngineRuntime {
      * A `Context` usable from the engine thread, resolved once and cached.
      *
      * This is what silently killed the cells channel. `ActivityThread.currentActivityThread()` is
-     * still `null` while the process is attaching (the engine thread publishes within milliseconds of
-     * `boot()`), so the reflective call fell through to `getSystemContext().invoke(null)` on an
+     * still `null` while the process is attaching (the engine thread publishes within milliseconds
+     * of `boot()`), so the reflective call fell through to `getSystemContext().invoke(null)` on an
      * **instance** method — a `NullPointerException`. The old code reported that exactly once with
      * `Log.once` and had already committed the dedup key, while `Settings.Global` kept whatever a
-     * previous boot had left behind; the phone process therefore served one frozen cell set for the
-     * whole session — the "position moves, cells don't" defect (`6-cells`).
+     * previous boot had left behind; the phone process therefore served one frozen cell set for
+     * the whole session — the "position moves, cells don't" defect (`6-cells`).
      *
      * Order: a direct attempt on the calling thread (self-healing, works as soon as the activity
-     * thread is up), then — once — a hop to the **main looper**, which is where `ActivityThread` is
-     * guaranteed to be visible. Nothing here may throw into the ticker.
+     * thread is up), then — once — a hop to the **main looper**, which is where `ActivityThread`
+     * is guaranteed to be visible. Nothing here may throw into the ticker.
      */
     @Volatile
     private var cachedContext: android.content.Context? = null
@@ -556,7 +560,9 @@ object EngineRuntime {
      *
      * The cell getters live in `com.android.phone` (`PhoneInterfaceManager`), a different process
      * from the engine, and `TelephonyRegistry` in `system_server` has no cell *getter* at all — so
-     * without a state channel the phone-side hooks are installed but inert.
+     * without a state channel the phone-side hooks are installed but inert. This is the one
+     * cross-process channel that is not binder: that process hosts the platform API and cannot
+     * host our interface.
      *
      * Contract with `TelephonyHooks.cellsFromSettings`:
      *  - simulation on  -> `"1|type,mcc,mnc,lac,cid,pci,level,dbm,reg;…"`;
@@ -600,9 +606,9 @@ object EngineRuntime {
             Log.rate("cells.cleared", 10_000L, "cells channel cleared: " + CELLS_KEY + " row removed")
             return
         }
-        // Acceptance evidence for `6-cells`: the line carries the position the set was derived from
-        // *and* the serving identity, so "the published set follows the position" can be read
-        // straight out of the log instead of being inferred from the app side.
+        // Acceptance evidence for `6-cells`: the line carries the position the set was derived
+        // from *and* the serving identity, so "the published set follows the position" can be
+        // read straight out of the log instead of being inferred from the app side.
         Log.rate(
             "cells.written",
             2_000L,
@@ -614,9 +620,9 @@ object EngineRuntime {
     }
 
     /**
-     * Rate limited (60 s) but **never silent**: a boot where the Context never resolves must leave a
-     * line behind, because that is the first thing to check if `6-cells` regresses. The count is
-     * cumulative since the last successful write and only grows while publishes keep failing.
+     * Rate limited (60 s) but **never silent**: a boot where the Context never resolves must
+     * leave a line behind, because that is the first thing to check if `6-cells` regresses. The
+     * count is cumulative since the last successful write and only grows while publishes fail.
      */
     private fun logPublishStall(reason: String) {
         cellsPublishStalls++
@@ -633,9 +639,9 @@ object EngineRuntime {
     /**
      * Reads the setting back once after a change.
      *
-     * `Settings.Global.putString` reports nothing, so a silently dropped write would leave the phone
-     * process serving the previous cell set forever. On a mismatch the dedup is cleared so the next
-     * tick writes again.
+     * `Settings.Global.putString` reports nothing, so a silently dropped write would leave the
+     * phone process serving the previous cell set forever. On a mismatch the dedup is cleared so
+     * the next tick writes again.
      */
     private fun verifyCellsSetting(expected: String?) {
         val context = cachedContext ?: return
@@ -666,13 +672,12 @@ object EngineRuntime {
     /**
      * Publishes a snapshot.
      *
-     * [pushLocation] controls whether the *location* consumers (framework injection, GNSS push) run.
-     * Commands that do not move the position (SetJoystick / ReleaseJoystick / SetHeading) publish
-     * state only: injecting a fix per command would flood apps with identical coordinates at up to
-     * 10 Hz while the engine only advances once per tick, which makes any consumer that derives
-     * speed from consecutive fixes compute ~0 m/s.
+     * [pushLocation] controls whether the *location* consumers (framework injection, GNSS push)
+     * run. Commands that do not move the position (setJoystick / releaseJoystick / setHeading)
+     * publish state only: injecting a fix per command would flood apps with identical coordinates
+     * at up to 10 Hz while the engine only advances once per tick, which makes any consumer that
+     * derives speed from consecutive fixes compute ~0 m/s.
      */
-
     private fun publish(value: Snap, pushLocation: Boolean = true) {
         snap = value
         config = value.config
@@ -685,11 +690,6 @@ object EngineRuntime {
                     Log.rate("ticklistener", 10_000L, "tick listener failed: ${t.javaClass.simpleName}")
                 }
             }
-        }
-        try {
-            stateSink?.invoke(value.state)
-        } catch (t: Throwable) {
-            Log.rate("statesink", 10_000L, "state sink failed: ${t.javaClass.simpleName}")
         }
         for (listener in stateListeners) {
             try {
@@ -712,8 +712,4 @@ object EngineRuntime {
         val cfg = config
         return cfg.independentMode to cfg.independentPackages
     }
-
-    /** Force an immediate state push (used right after a teleport). */
-    fun currentState(): EngineState? = snap?.state
 }
-

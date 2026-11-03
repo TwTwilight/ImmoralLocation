@@ -33,7 +33,7 @@ class App : Application() {
         OsmdroidSetup.initialize(this)
         settings = SettingsStore(this)
         favorites = FavoritesStore(this)
-        bridge = BridgeClient(this) { settings.config.value }
+        bridge = BridgeClient(this)
         bridge.start()
         instance = this
     }

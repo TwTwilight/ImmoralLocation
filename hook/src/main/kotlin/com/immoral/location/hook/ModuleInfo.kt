@@ -9,7 +9,7 @@ object ModuleInfo {
     @Volatile
     var modulePath: String? = null
 
-    /** Version string reported inside [com.immoral.location.core.protocol.BridgeReply]. */
+    /** Version string reported by `IImmoralEngine.apiVersion()` diagnostics and the install log. */
     @Volatile
     var version: String = "dev"
 

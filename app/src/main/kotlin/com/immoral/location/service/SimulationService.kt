@@ -72,7 +72,6 @@ class SimulationService : Service() {
         when (intent?.action) {
             ACTION_START_ENGINE -> startEngine()
             ACTION_STOP_ENGINE -> stopEngineAndSelf()
-            ACTION_SYNC_CONFIG -> syncConfig()
             ACTION_TOGGLE_OVERLAY -> toggleOverlay()
             ACTION_SET_JOYSTICK -> {
                 val x = intent.getFloatExtra(EXTRA_X, 0f)
@@ -115,6 +114,8 @@ class SimulationService : Service() {
         // re-publish a stale `mode`/`routeSpeedMps` on top of it.
         application.bridge.setConfig(config)
         application.bridge.startEngine()
+        // Keep the floating pad's "up = north" / "up = heading" affordance in step with the app.
+        overlay?.setFollowHeading(config.followHeading)
         startHeading()
         updateNotification(force = true)
     }
@@ -128,14 +129,6 @@ class SimulationService : Service() {
         running = false
         updateNotification(force = true)
         stopSelf()
-    }
-
-    private fun syncConfig() {
-        val application = app ?: return
-        val config = application.settings.config.value
-        application.bridge.setConfig(config)
-        // Keep the floating pad's "up = north" / "up = heading" affordance in step with the app.
-        overlay?.setFollowHeading(config.followHeading)
     }
 
     private fun observeEngine(application: App) {
@@ -348,7 +341,6 @@ class SimulationService : Service() {
 
         const val ACTION_START_ENGINE = "com.immoral.location.service.START_ENGINE"
         const val ACTION_STOP_ENGINE = "com.immoral.location.service.STOP_ENGINE"
-        const val ACTION_SYNC_CONFIG = "com.immoral.location.service.SYNC_CONFIG"
         const val ACTION_TOGGLE_OVERLAY = "com.immoral.location.service.TOGGLE_OVERLAY"
         const val ACTION_HIDE_OVERLAY = "com.immoral.location.service.HIDE_OVERLAY"
     const val ACTION_SUSPEND_OVERLAY = "com.immoral.location.service.SUSPEND_OVERLAY"

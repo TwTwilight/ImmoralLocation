@@ -19,6 +19,10 @@ android {
 
     buildFeatures {
         buildConfig = false
+        // The binder contract (`com.immoral.location.ipc`) lives in this module: it is the only
+        // Android library both `:hook` and `:app` already share, and `:core` is a pure-JVM module
+        // that cannot reference `android.os.Parcelable`.
+        aidl = true
     }
 
     lint {

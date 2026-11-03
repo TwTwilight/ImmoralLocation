@@ -2,6 +2,10 @@
 # com.immoral.location.hook.XposedEntry) and through reflection inside the framework, so the whole
 # package is kept verbatim. CI check 23-module-integrity asserts this on the built artifact.
 -keep class com.immoral.location.hook.** { *; }
+# The binder contract runs in two processes (app and system_server) out of the **same** dex, so an
+# obfuscation mismatch is impossible — but the AIDL parcelables are also the documented wire format
+# and their layout must stay readable in a stack trace / on-device dump. Keep them verbatim.
+-keep class com.immoral.location.ipc.** { *; }
 -keep class de.robv.android.xposed.** { *; }
 -keepclassmembers class * implements android.os.Parcelable { *; }
 -dontwarn de.robv.android.xposed.**

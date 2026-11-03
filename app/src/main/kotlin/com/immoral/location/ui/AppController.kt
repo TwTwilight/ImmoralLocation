@@ -80,7 +80,6 @@ class AppController(
     fun updateConfig(transform: (SimulationConfig) -> SimulationConfig) {
         val next = settings.updateConfig(transform)
         bridge.setConfig(next)
-        bridge.publishConfig(next)
     }
 
     fun setSpeed(level: SpeedLevel) = updateConfig { it.copy(speed = level) }
@@ -185,14 +184,6 @@ class AppController(
         if (isRunning()) stopSimulation() else startSimulation()
     }
 
-    /**
-     * Tells the framework whether our own UI is on screen. The engine status row it publishes lives
-     * in `Settings.Global` and is readable by every app, so it is only kept while it can be seen.
-     */
-    fun setUiVisible(visible: Boolean) {
-        bridge.setUiVisible(visible)
-    }
-
     fun startSimulation() {
         val config = settings.config.value
         val position = currentPosition()
@@ -203,10 +194,19 @@ class AppController(
         showMessage(app.getString(R.string.status_running))
     }
 
+    /**
+     * 停止模拟.
+     *
+     * One channel only: the binder `stop()` sets the engine state to stopped in a single
+     * transaction (releasing the joystick along with it), and the foreground service is asked to
+     * shut down so the floating pad and its notification go with it.
+     */
     fun stopSimulation() {
         bridge.releaseJoystick()
         bridge.stopEngine()
-        SimulationService.command(app, SimulationService.ACTION_SYNC_CONFIG)
+        // Only a running service is asked to shut down: starting one just to stop it would flash
+        // a notification and, on a background transition, trip the foreground-service limits.
+        SimulationService.command(app, SimulationService.ACTION_STOP_ENGINE)
     }
 
     /**
@@ -306,7 +306,12 @@ class AppController(
         )
         val signature = routeSignature(plan)
         val routeState = bridge.engineState.value?.routeState
-        if (signature == lastRouteSignature && routeState == RouteState.PLAYING) {
+        // Same plan already loaded: 播放 means *resume*, never re-seed. Re-sending `StartRoute` in a
+        // non-PLAYING state is a genuine restart on the engine side (progress 0), which used to
+        // teleport the marker back to the first point every time this button was touched.
+        if (signature == lastRouteSignature &&
+            (routeState == RouteState.PLAYING || routeState == RouteState.PAUSED)
+        ) {
             bridge.playRoute()
             return
         }

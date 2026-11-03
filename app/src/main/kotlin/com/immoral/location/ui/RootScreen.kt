@@ -194,9 +194,6 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                 Lifecycle.Event.ON_RESUME -> overlayPermission = canDrawOverlays(context)
 
                 Lifecycle.Event.ON_START -> {
-                    // The framework may only publish the (world-readable) status row while our UI
-                    // is on screen.
-                    controller.setUiVisible(true)
                     // The floating pad is for *other* apps; while ours is in front it would float
                     // over our own controls.
                     if (overlayRunningNow) {
@@ -205,7 +202,6 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                 }
 
                 Lifecycle.Event.ON_STOP -> {
-                    controller.setUiVisible(false)
                     SimulationService.command(app, SimulationService.ACTION_RESUME_OVERLAY)
                 }
 

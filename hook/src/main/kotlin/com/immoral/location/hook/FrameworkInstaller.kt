@@ -41,13 +41,11 @@ object FrameworkInstaller {
             }
         }
         step("engine") { EngineRuntime.boot(ModuleInfo.version) }
-        // Authoritative control channel: the app writes sim_seq/sim_cmd into its own prefs file.
-        step("prefs-channel") { CommandChannel.start() }
-        step("status-writer") {
-            EngineRuntime.addStateListener { state -> StatusWriter.onState(state) }
-        }
-        // Broadcast bridge: latency optimisation, retried until ActivityManagerService is up.
-        step("bridge") { BridgeServer.install() }
+        // The binder engine: one interface, handed to the app by BridgeHost after the HELLO
+        // broadcast. Installed before the host so a handshake can never arrive without an engine.
+        step("binder") { FrameworkBinder.install() }
+        // Handshake receiver: retried until ActivityManagerService is up.
+        step("bridge-host") { BridgeHost.install() }
         step("location") { LocationHooks.install(loader) }
         step("gnss") { GnssHooks.install(loader) }
         step("wifi") { WifiHooks.install(loader) }
@@ -55,8 +53,8 @@ object FrameworkInstaller {
 
         Log.i(
             "framework layer installed in ${System.currentTimeMillis() - t0}ms; " +
-                "engine=${EngineRuntime.enginePresent} bridge=${BridgeServer.installedOk} " +
-                BridgeServer.dumpTargets(),
+                "engine=${EngineRuntime.enginePresent} handshake=${BridgeHost.installedOk} " +
+                BridgeHost.dumpTargets(),
         )
     }
 
