@@ -1,6 +1,8 @@
 package com.immoral.location.hook.framework
 
 import android.location.Location
+import com.immoral.location.core.engine.LocationAvailabilityDelivery
+import com.immoral.location.core.engine.LocationTruthGate
 import com.immoral.location.hook.EngineRuntime
 import com.immoral.location.hook.Fakes
 import com.immoral.location.hook.Log
@@ -11,6 +13,7 @@ import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Layer A — the location choke point inside `system_server`.
@@ -37,6 +40,15 @@ object LocationHooks {
     private const val ALP = "com.android.server.location.provider.AbstractLocationProvider"
     private const val LMS = "com.android.server.location.LocationManagerService"
     private const val LR_NAME = "android.location.LocationResult"
+
+    /** The availability half of the location contract: `onLocationAvailability(LocationAvailability)`. */
+    private const val LA_NAME = "android.location.LocationAvailability"
+
+    /** AIDL proxy the framework calls to reach an app's `ILocationListener` (API 31+). */
+    private const val ILL_PROXY = "android.location.ILocationListener\$Stub\$Proxy"
+
+    /** Client-process holder of the same callback (app side); inert when hooked in system_server. */
+    private const val LLT_APP = "android.location.LocationManager\$LocationListenerTransport"
 
     private val installed = AtomicBoolean(false)
 
@@ -83,6 +95,11 @@ object LocationHooks {
             hookLocationManagerService(loader)
         } catch (t: Throwable) {
             Log.e("LocationHooks: LocationManagerService stage failed", t)
+        }
+        try {
+            hookAvailability(loader)
+        } catch (t: Throwable) {
+            Log.e("LocationHooks: LocationAvailability stage failed", t)
         }
         Log.summary("framework/location", resolved, missed)
     }
@@ -250,6 +267,590 @@ object LocationHooks {
         } catch (t: Throwable) {
             Log.once("lms.localservice", "LocalService scan failed: " + t.javaClass.simpleName)
         }
+    }
+
+    // ------------------------------------------------------- availability (onLocationAvailability)
+
+    /**
+     * `LocationAvailability` — the second half of the location contract.
+     *
+     * `onLocationChanged` says *where*; `onLocationAvailability` says *whether there is a position at
+     * all*. Nothing in this module used to touch it, so the platform's own answer kept arriving
+     * untouched: while we inject a synthetic fix every tick, a device that is indoors / has GNSS
+     * switched off / has the provider disabled reports `isLocationAvailable() == false` — and the map
+     * SDKs (高德/百度/腾讯) treat that flag as "no location": they stop consuming the stream and some
+     * drop the registration. The app therefore received a good fix **and** "there is no location",
+     * and believed the second one. That is a functional break and an implausibility at once (a
+     * receiver that reports fixes while claiming no signal exists).
+     *
+     * The repair is a single argument substitution on the app-facing delivery. Which seam is that?
+     *
+     *  * **`android.location.ILocationListener$Stub$Proxy#onLocationAvailability`** — on API 31+ the
+     *    framework reaches every registered listener through this AIDL proxy (it is created inside
+     *    `system_server` by `ILocationListener.Stub.asInterface`), so it is the app-facing boundary,
+     *    and one substitution there reaches every app without scoping anything.
+     *  * **structural sweep** — `LocationManagerService`, `LocationProviderManager` and the classes
+     *    they declare are searched for methods that take a `LocationAvailability`. The names differ
+     *    between AOSP versions and OEM ROMs (`deliverOnLocationAvailability`,
+     *    `acceptLocationAvailability`, `dispatchLocationAvailability`, …), and matching on the shape
+     *    instead of a name list is what the rest of this file already does after a name list silently
+     *    missed a real path (2026-11-02). Only *delivery-shaped* names are hooked (`onLocationAvailability`,
+     *    `deliver*`, `accept*`, `dispatch*`, `notify*`, `send*`); a state-setting method that merely
+     *    takes the object (`set*`/`update*`/`store*`) is deliberately left alone **and logged**,
+     *    because writing our object into platform state would outlive the simulation. The substitution
+     *    is idempotent — a later seam sees an already-available object and the gate passes it through —
+     *    so overlapping hooks cost nothing.
+     *  * **`LocationManager$LocationListenerTransport`** — the app-side holder of the same callback.
+     *    It resolves out of `framework.jar` here, but it is only ever instantiated *inside an app
+     *    process*, so the hook is installed and reported as inert rather than silently skipped (this
+     *    module never injects an app process).
+     *  * **`ILocationListener$Stub$Proxy#onProviderEnabledChanged(String, boolean)`** — on API 31+ the
+     *    availability callback no longer exists at all (measured on Android 15 / SDK 35: the class is
+     *    absent and `LocationListener` exposes only `onLocationChanged`, `onProviderEnabled`,
+     *    `onProviderDisabled`, `onStatusChanged`, `onFlushComplete`). What an app is still told is
+     *    that the provider we simulate is *disabled* — the same contradiction, one generation later,
+     *    so it gets the same verdict from the same gate. On a ROM where the availability callback
+     *    *does* exist (API 31–34) both seams are live and idempotent.
+     *
+     * Everything is gated on [EngineRuntime.activeSnap]; the decision itself is the pure, unit-tested
+     * `LocationTruthGate` in `:core`; and a holder missing on this ROM produces an explicit
+     * `hook MISS` line instead of a silently inert install.
+     */
+    private fun hookAvailability(loader: ClassLoader?) {
+        var seams = 0
+        val proxy = Refl.findClassAnywhere(ILL_PROXY, loader)
+        if (proxy == null) {
+            Log.hook(false, ILL_PROXY, "class not found")
+            missed++
+        } else {
+            seams += hookAvailabilityMethods(proxy, "ILocationListener\$Stub\$Proxy", reportMiss = true)
+        }
+        // Framework-side holders: the manager services plus every class they declare.
+        for (holder in arrayOf(LMS, LPM)) {
+            val cls = Refl.findClassAnywhere(holder, loader)
+            if (cls == null) {
+                Log.hook(false, "$holder#<any>($LA_NAME)", "class not found")
+                missed++
+                continue
+            }
+            var swept = 0
+            for (candidate in declaredClassesOf(cls)) {
+                swept += hookAvailabilityMethods(
+                    candidate,
+                    candidate.name.substringAfterLast('.'),
+                    // "nothing here" is only evidence for the named holder itself, not for each of
+                    // its (mostly unrelated) inner classes.
+                    reportMiss = candidate == cls,
+                )
+            }
+            seams += swept
+        }
+        // App-process holder: prove we looked, and say plainly that it cannot help from here.
+        val appSide = Refl.findClassAnywhere(LLT_APP, loader)
+        if (appSide == null) {
+            Log.hook(false, LLT_APP, "not visible from system_server (app-process holder)")
+            missed++
+        } else {
+            val appHooked = hookAvailabilityMethods(appSide, "LocationManager\$LocationListenerTransport", reportMiss = false)
+            Log.i(
+                "availability: $LLT_APP resolved and hooked ($appHooked method(s)) — inert: that class " +
+                    "only exists inside app processes, which this module never injects",
+            )
+        }
+        // API 31+ replacement of the same signal (measured on Android 15 / SDK 35: the
+        // LocationAvailability class and every onLocationAvailability callback are gone from the
+        // platform, while ILocationListener#onProviderEnabledChanged(String, boolean) remains — that
+        // is now the app-facing "is there a location for this provider" answer).
+        seams += hookProviderEnabledDelivery(loader)
+        Log.i(
+            "availability: $seams delivery seam(s) hooked in system_server; " +
+                "gate=${if (locationTruthGateEnabled()) "on" else "off"} " +
+                "(persist.immoral.location_truth_gate), fabricated=${fabricatedAvailability() != null}",
+        )
+    }
+
+    /**
+     * `ILocationListener#onProviderEnabledChanged(String, boolean)` — the API-31+ face of the same
+     * "there is no location here" message.
+     *
+     * On this ROM (Android 15, SDK 35) `android.location.LocationAvailability` and every
+     * `onLocationAvailability` method are **absent from the platform** — verified on the device by
+     * reflecting the app-facing interfaces (`LocationListener` exposes `onLocationChanged`,
+     * `onProviderEnabled/Disabled`, `onStatusChanged`, `onFlushComplete` and nothing else). What a map
+     * SDK still gets told is that the provider we are simulating is *disabled*, which produces the
+     * same contradiction the availability flag used to: good fixes keep arriving while the app is
+     * told the source is off. The substitution is the same one, on the same proxy, with the same
+     * [LocationTruthGate] verdict (`alreadyAvailable` = "already reported enabled"), so the two
+     * generations of the signal cannot drift apart.
+     */
+    private fun hookProviderEnabledDelivery(loader: ClassLoader?): Int {
+        val proxy = Refl.findClassAnywhere(ILL_PROXY, loader)
+        if (proxy == null) {
+            Log.hook(false, "$ILL_PROXY#onProviderEnabledChanged", "class not found")
+            missed++
+            return 0
+        }
+        val methods = Refl.methodsWhere(proxy) { m ->
+            m.name == "onProviderEnabledChanged" &&
+                m.parameterTypes.any { it == String::class.java } &&
+                m.parameterTypes.any { it == java.lang.Boolean.TYPE }
+        }
+        var hooked = 0
+        for (m in methods) {
+            if (Refl.hook(m, providerEnabledHook(), "ILocationListener\$Stub\$Proxy#" + m.name)) {
+                hooked++
+                resolved++
+            } else {
+                missed++
+            }
+        }
+        if (hooked == 0) {
+            Log.hook(false, "$ILL_PROXY#onProviderEnabledChanged", "no matching method")
+            missed++
+        }
+        return hooked
+    }
+
+    /** `(providerIndex, enabledIndex)` per method, or `null`; cached so the callback allocates nothing. */
+    private val providerEnabledArgs = ConcurrentHashMap<Method, Pair<Int, Int>?>()
+
+    private fun providerEnabledArgsOf(method: Method): Pair<Int, Int>? =
+        providerEnabledArgs.getOrPut(method) {
+            val providerIndex = method.parameterTypes.indexOfFirst { it == String::class.java }
+            val enabledIndex = method.parameterTypes.indexOfFirst { it == java.lang.Boolean.TYPE }
+            if (providerIndex < 0 || enabledIndex < 0) null else providerIndex to enabledIndex
+        }
+
+    /** Providers this module fabricates fixes for; anything else keeps the platform's answer. */
+    private fun isSimulatedProvider(name: String): Boolean = when (name.lowercase()) {
+        "gps", "gnss", "network", "fused", "passive" -> true
+        else -> false
+    }
+
+    private fun providerEnabledHook(): XC_MethodHook = object : XC_MethodHook() {
+        override fun beforeHookedMethod(param: MethodHookParam) {
+            try {
+                val snap = EngineRuntime.activeSnap() ?: return
+                val method = param.method as? Method ?: return
+                val indexes = providerEnabledArgsOf(method) ?: return
+                val provider = param.args.getOrNull(indexes.first) as? String ?: return
+                if (!isSimulatedProvider(provider)) return
+                val enabled = param.args.getOrNull(indexes.second) as? Boolean ?: return
+                val verdict = LocationTruthGate.decide(
+                    engineRunning = true,
+                    gateEnabled = locationTruthGateEnabled(),
+                    independentMode = snap.config.independentMode,
+                    alreadyAvailable = enabled,
+                    canFabricate = true,
+                )
+                if (verdict == LocationAvailabilityDelivery.FABRICATE) {
+                    param.args[indexes.second] = java.lang.Boolean.TRUE
+                    Log.rate(
+                        "avail.provider." + provider,
+                        30_000L,
+                        "availability: reported provider '$provider' as enabled while the simulation runs " +
+                            "(the platform said disabled, " + availabilityForced.incrementAndGet() +
+                            " correction(s) this session)",
+                    )
+                } else {
+                    Log.rate(
+                        "avail.provider.pass." + provider,
+                        60_000L,
+                        "availability: provider '$provider' enabled=$enabled passed through" +
+                            if (snap.config.independentMode) " (independent)" else "",
+                    )
+                }
+            } catch (t: Throwable) {
+                Log.rate("avail.provider.err", 30_000L, "provider-enabled hook failed: ${t.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** [cls] plus every class it (or a superclass) declares, deduplicated. */
+    private fun declaredClassesOf(cls: Class<*>): List<Class<*>> {
+        val out = LinkedHashSet<Class<*>>()
+        out.add(cls)
+        var cursor: Class<*>? = cls
+        while (cursor != null && cursor != Any::class.java) {
+            try {
+                out.addAll(cursor.declaredClasses)
+            } catch (_: Throwable) {
+            }
+            cursor = cursor.superclass
+        }
+        return out.toList()
+    }
+
+    /**
+     * Hooks the delivery-shaped methods of [cls] that carry a `LocationAvailability`; returns how
+     * many were hooked (install-time cost only — the sweep runs once, never on the delivery path).
+     *
+     * [reportMiss] is on for the named holders (an absent one is a real ROM gap worth a `hook MISS`
+     * line) and off for the blanket inner-class sweep, which is expected to be empty on most classes.
+     */
+    private fun hookAvailabilityMethods(cls: Class<*>, label: String, reportMiss: Boolean): Int {
+        val withAvailability = Refl.methodsWhere(cls) { m -> m.parameterTypes.any { it.name == LA_NAME } }
+        var hooked = 0
+        for (m in withAvailability) {
+            if (!isAvailabilityDelivery(m)) {
+                // Visible rather than silently ignored: if a ROM delivers availability through a
+                // differently named method, this line is the evidence that we saw it and skipped it.
+                Log.i(
+                    "availability: skipped " + label + "#" + m.name + Refl.signatureOf(m) +
+                        " — takes $LA_NAME but does not look like a delivery seam",
+                )
+                continue
+            }
+            if (Refl.hook(m, availabilityHook(), "$label#" + m.name)) {
+                hooked++
+                resolved++
+            } else {
+                missed++
+            }
+        }
+        if (hooked == 0 && reportMiss) {
+            Log.hook(
+                false,
+                "$label#<any>($LA_NAME)",
+                if (withAvailability.isEmpty()) "no matching method" else "no delivery-shaped method",
+            )
+            missed++
+        }
+        return hooked
+    }
+
+    /**
+     * Does this method deliver availability towards a listener?
+     *
+     * Deliberately narrower than "takes a `LocationAvailability`": a setter/state-copy on the manager
+     * (`set*`, `update*`, `store*`, `cache*`) that we replaced would keep our fabricated object in
+     * platform state after the simulation stops — a leak that outlives the feature. Names checked:
+     * the exact AIDL callback plus the delivery verbs AOSP and OEM ROMs use.
+     */
+    private fun isAvailabilityDelivery(m: Method): Boolean {
+        val name = m.name
+        return name == "onLocationAvailability" ||
+            name.startsWith("deliver") ||
+            name.startsWith("accept") ||
+            name.startsWith("dispatch") ||
+            name.startsWith("notify") ||
+            name.startsWith("send")
+    }
+
+    /** Fabricated "available" availability, built once; `null` when this ROM does not allow it. */
+    @Volatile
+    private var fabricatedAvailability: Any? = null
+
+    /**
+     * Bounded retries for the fabrication, one attempt per availability delivery.
+     *
+     * The first attempt happens at install time, which is early: `framework.jar` may not be fully
+     * usable yet, so a single failure there must not disable the feature for the whole session (that
+     * is the boot race that made the cells channel serve one frozen set for hours — 2026-11-02).
+     * Five attempts is enough for the race to resolve and small enough that a ROM which genuinely
+     * cannot build the object never pays a reflection attempt per delivery.
+     */
+    private var availabilityBuildAttempts = 0
+
+    @Volatile
+    private var availabilityBuildGaveUp = false
+
+    private const val AVAILABILITY_BUILD_ATTEMPTS = 5
+
+    /** Why the fabrication failed, for the single always-emitted failure line. */
+    @Volatile
+    private var availabilityBuildFailure: String = "not attempted"
+
+    /** Deliveries whose `false` we replaced (acceptance evidence). */
+    private val availabilityForced = AtomicInteger(0)
+
+    /** `Availability` argument index per method — computed once, so the callback allocates nothing. */
+    private val availabilityArgIndex = ConcurrentHashMap<Method, Int>()
+
+    private val availabilityFailureReported = AtomicBoolean(false)
+
+    /**
+     * The app-facing availability callback.
+     *
+     * Cost on the hot path: one volatile read ([EngineRuntime.activeSnap]) plus a cached index and a
+     * cached object — deliberately no reflection beyond reading the flag the platform already put in
+     * the argument. The branch policy is [LocationTruthGate], not inline `if`s, so the 独立模拟 rule
+     * cannot drift away from the one `GnssTruthGate` applies at its equivalent delivery point.
+     */
+    private fun availabilityHook(): XC_MethodHook = object : XC_MethodHook() {
+        override fun beforeHookedMethod(param: MethodHookParam) {
+            try {
+                val snap = EngineRuntime.activeSnap() ?: return
+                val method = param.method as? Method ?: return
+                val index = availabilityArgumentIndex(method)
+                if (index < 0 || index >= param.args.size) return
+                val original = param.args[index]
+                val alreadyAvailable = isAvailable(original)
+                // Only materialise the replacement when there is something to replace: the common
+                // case (the platform already says "available") stays a pure read.
+                val fabricated = if (alreadyAvailable) null else fabricatedAvailability()
+                val verdict = LocationTruthGate.decide(
+                    engineRunning = true,
+                    gateEnabled = locationTruthGateEnabled(),
+                    independentMode = snap.config.independentMode,
+                    alreadyAvailable = alreadyAvailable,
+                    canFabricate = fabricated != null,
+                )
+                when (verdict) {
+                    LocationAvailabilityDelivery.PASS -> Log.rate(
+                        "avail.pass." + method.name,
+                        60_000L,
+                        "availability: passed through " + method.name +
+                            " available=" + alreadyAvailable +
+                            if (snap.config.independentMode) " (independent: this delivery carries no receiving package)" else "",
+                    )
+
+                    LocationAvailabilityDelivery.FABRICATE -> {
+                        if (fabricated == null) {
+                            // Unreachable by construction (the gate only says FABRICATE when the
+                            // object exists); handled so a race can never put `null` in the args.
+                            withholdAvailability(param, method, "fabricated object vanished")
+                        } else {
+                            param.args[index] = fabricated
+                            Log.rate(
+                                "avail.forced",
+                                15_000L,
+                                "availability: forced available on " + method.name + " (was false, " +
+                                    availabilityForced.incrementAndGet() + " forced this session)",
+                            )
+                        }
+                    }
+
+                    LocationAvailabilityDelivery.WITHHOLD -> withholdAvailability(
+                        param,
+                        method,
+                        "no fabricated $LA_NAME on this ROM",
+                    )
+                }
+            } catch (t: Throwable) {
+                Log.rate("avail.err", 30_000L, "availability hook failed: ${t.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /**
+     * Cancels an availability delivery when we wanted to repair it and could not.
+     *
+     * Letting the platform's `false` through is the defect this stage exists for, so the delivery is
+     * dropped — the app keeps its last known availability (normally `true`, since we *are* delivering
+     * fixes). A non-void method is not cancelled (setting a `null` result there would NPE inside the
+     * framework); that case is reported once, always, so it stays diagnosable on a production install.
+     */
+    private fun withholdAvailability(param: XC_MethodHook.MethodHookParam, method: Method, why: String) {
+        if (method.returnType == Void.TYPE) {
+            param.result = null
+            Log.rate("avail.withheld", 15_000L, "availability: withheld " + method.name + " ($why)")
+        } else {
+            Log.rate("avail.pass.nonvoid", 30_000L, "availability: " + method.name + " returns " + Refl.simpleName(method.returnType) + "; not cancelled ($why)")
+        }
+        if (availabilityFailureReported.compareAndSet(false, true)) {
+            Log.e(
+                "availability: cannot fabricate an available $LA_NAME ($availabilityBuildFailure) — " +
+                    "an unavailable flag from the platform may reach the app while fixes keep flowing; " +
+                    "deliveries are cancelled where the seam allows it",
+            )
+        }
+    }
+
+    private fun availabilityArgumentIndex(method: Method): Int =
+        availabilityArgIndex.getOrPut(method) {
+            method.parameterTypes.indexOfFirst { it.name == LA_NAME }
+        }
+
+    /** `isLocationAvailable()` of a platform availability object; `false` when unreadable/absent. */
+    private fun isAvailable(value: Any?): Boolean {
+        if (value == null) return false
+        val getter = Refl.methodOf(value.javaClass, "isLocationAvailable", 0)
+        if (getter != null) {
+            return (Refl.invoke(getter, value) as? Boolean) ?: false
+        }
+        // No public flag reader on this API level: read the field directly (same information, one
+        // reflection level lower) before giving up on the object.
+        val field = Refl.anyField(value.javaClass, "mLocationAvailable", "mIsLocationAvailable")
+        if (field != null) return (Refl.get(value, field) as? Boolean) ?: false
+        Log.once(
+            "avail.flag.absent",
+            "availability: " + value.javaClass.simpleName + " exposes neither isLocationAvailable() nor " +
+                "mLocationAvailable — every delivery is treated as unavailable",
+        )
+        return false
+    }
+
+    /**
+     * The fabricated "available" availability object, built at most once.
+     *
+     * Construction order (each step verified by reading the flag back, never trusted):
+     *  1. the hidden `LocationAvailability(boolean)` constructor;
+     *  2. else `Fakes.allocate` + write `mLocationAvailable` (`Fakes.setInstanceField`, which clears a
+     *     `final` access flag the way the rest of `hook/` does for hidden fields) and the
+     *     `mCellStatus`/`mWifiStatus` codes, each read back and logged.
+     *
+     * The object is immutable (`LocationAvailability` has no setters an app can reach), so one
+     * instance is reused for every delivery — a binder-facing callback must not build a parcelable
+     * per call. A failed build is retried a bounded number of times (see
+     * [AVAILABILITY_BUILD_ATTEMPTS]) and then abandoned, so a ROM that cannot build it never pays a
+     * reflection attempt per delivery.
+     */
+    private fun fabricatedAvailability(): Any? {
+        fabricatedAvailability?.let { return it }
+        if (availabilityBuildGaveUp) return null
+        synchronized(this) {
+            fabricatedAvailability?.let { return it }
+            if (availabilityBuildGaveUp) return null
+            availabilityBuildAttempts++
+            val built = buildAvailableAvailability()
+            if (built != null) {
+                fabricatedAvailability = built
+                return built
+            }
+            if (availabilityBuildFailure == "not attempted") {
+                availabilityBuildFailure = "unknown reason"
+            }
+            if (availabilityBuildAttempts >= AVAILABILITY_BUILD_ATTEMPTS) {
+                availabilityBuildGaveUp = true
+                Log.e(
+                    "availability: giving up on the fabricated $LA_NAME after $availabilityBuildAttempts " +
+                        "attempt(s) ($availabilityBuildFailure) — unavailable flags from the platform are " +
+                        "cancelled where the delivery seam allows it",
+                )
+            }
+            return null
+        }
+    }
+
+    /**
+     * Builds one verified "available" `LocationAvailability`, or returns `null` after recording why.
+     *
+     * Every write is followed by a read-back: a fabricated object that does not *read* available is
+     * worse than none, because it would silently hand the app another "no location" answer.
+     */
+    private fun buildAvailableAvailability(): Any? {
+        val cls = Refl.findClassAnywhere(LA_NAME)
+        if (cls == null) {
+            availabilityBuildFailure = "$LA_NAME not found"
+            return null
+        }
+        val ctor = Refl.constructorsWhere(cls) { c ->
+            c.parameterTypes.size == 1 && c.parameterTypes[0] == java.lang.Boolean.TYPE
+        }.firstOrNull()
+        if (ctor != null) {
+            val made = Refl.newInstance(ctor, java.lang.Boolean.TRUE)
+            if (made != null && isAvailable(made)) {
+                Log.i(
+                    "availability: fabricated via hidden " + cls.simpleName + "(" +
+                        Refl.simpleName(ctor.parameterTypes[0]) + "); reads back isLocationAvailable()=true " +
+                        describeAvailabilityFields(made),
+                )
+                return made
+            }
+            Log.once(
+                "avail.ctor.nn",
+                "availability: the hidden " + cls.simpleName + "(boolean) constructor ran but the object does " +
+                    "not read back as available — falling back to private-field writes",
+            )
+        } else {
+            Log.once(
+                "avail.ctor.absent",
+                "availability: no " + cls.simpleName + "(boolean) constructor on this ROM — using the " +
+                    "private-field fallback",
+            )
+        }
+        val instance = Fakes.allocate(cls)
+        if (instance == null) {
+            availabilityBuildFailure = "allocateInstance(${cls.simpleName}) failed"
+            return null
+        }
+        var flagField: String? = null
+        for (name in arrayOf("mLocationAvailable", "mIsLocationAvailable")) {
+            if (Fakes.setInstanceField(instance, name, java.lang.Boolean.TRUE)) {
+                flagField = name
+                break
+            }
+        }
+        val writtenFlag: String = flagField ?: run {
+            availabilityBuildFailure = "no writable availability flag field (tried mLocationAvailable, mIsLocationAvailable)"
+            return null
+        }
+        // "unknown" is what the platform itself reports when the modem/Wi-Fi did not contribute to
+        // the answer; the app only reads the flag, but `dumpsys location` shows these and a made-up
+        // "available" cell/wifi status would be a gratuitous tell.
+        val cellStatus = namedIntConstant(cls, "CELL_STATUS_UNKNOWN", 0)
+        val wifiStatus = namedIntConstant(cls, "WIFI_STATUS_UNKNOWN", 0)
+        Fakes.setInstanceField(instance, "mCellStatus", cellStatus)
+        Fakes.setInstanceField(instance, "mWifiStatus", wifiStatus)
+        // Read back everything we wrote: the flag decides the feature, the two status codes decide
+        // whether the object looks like a platform-built one.
+        val flagRead = Refl.get(instance, Refl.anyField(cls, writtenFlag))
+        val cellRead = Refl.get(instance, Refl.anyField(cls, "mCellStatus"))
+        val wifiRead = Refl.get(instance, Refl.anyField(cls, "mWifiStatus"))
+        if (flagRead != java.lang.Boolean.TRUE || !isAvailable(instance)) {
+            availabilityBuildFailure =
+                "field write did not stick ($writtenFlag read back as $flagRead)"
+            return null
+        }
+        Log.i(
+            "availability: fabricated by field writes (" + writtenFlag + "=true read back $flagRead, " +
+                "cellStatus=$cellRead, wifiStatus=$wifiRead); isLocationAvailable() reads back true",
+        )
+        return instance
+    }
+
+    /** Read-only description of the fields we care about, for the build log line. */
+    private fun describeAvailabilityFields(value: Any): String {
+        val cls = value.javaClass
+        val flag = Refl.get(value, Refl.anyField(cls, "mLocationAvailable", "mIsLocationAvailable"))
+        val cell = Refl.get(value, Refl.anyField(cls, "mCellStatus"))
+        val wifi = Refl.get(value, Refl.anyField(cls, "mWifiStatus"))
+        return "mLocationAvailable=$flag mCellStatus=$cell mWifiStatus=$wifi"
+    }
+
+    /**
+     * Value of a `static final int` on [cls] (public *or* hidden — some ROMs make the status
+     * constants package-private), or [fallback] when the ROM does not define it.
+     */
+    private fun namedIntConstant(cls: Class<*>, name: String, fallback: Int): Int {
+        val field = Refl.anyField(cls, name) ?: return fallback
+        return try {
+            field.isAccessible = true
+            (field.get(null) as? Number)?.toInt() ?: fallback
+        } catch (_: Throwable) {
+            fallback
+        }
+    }
+
+    /**
+     * Acceptance control switch (runtime, not build-time), same shape as `GnssHooks`' GNSS gate:
+     * `setprop persist.immoral.location_truth_gate 0` lets the platform's own `LocationAvailability`
+     * through again and changes nothing else, so both arms of an experiment can run on the same boot,
+     * the same APK and the same scope. Default (absent) = **gate on**.
+     *
+     * Memoised for 2 s: the property is read on a binder-facing callback, and a `SystemProperties`
+     * round trip per delivery is not affordable.
+     */
+    @Volatile
+    private var locationGateEnabled = true
+
+    @Volatile
+    private var locationGateCheckedAt = 0L
+
+    private fun locationTruthGateEnabled(): Boolean {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - locationGateCheckedAt > 2_000L) {
+            locationGateCheckedAt = now
+            locationGateEnabled = try {
+                val sp = Class.forName("android.os.SystemProperties")
+                val get = sp.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
+                get.invoke(null, "persist.immoral.location_truth_gate", java.lang.Boolean.TRUE) as Boolean
+            } catch (_: Throwable) {
+                true
+            }
+        }
+        return locationGateEnabled
     }
 
     // ------------------------------------------------------------------ capture + inject

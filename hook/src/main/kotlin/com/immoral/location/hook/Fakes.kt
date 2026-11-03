@@ -43,15 +43,43 @@ object Fakes {
             snap.accuracyFor(provider),
             snap.steps,
         )
+        // Android 14+ reports two heights: the ellipsoid one (`getAltitude`) and the MSL one. A
+        // device that normally reports both and suddenly reports only the ellipsoid height is
+        // describing a receiver without a geoid model, so the MSL fields are populated as well.
+        setOptionalDouble(location, "setMslAltitudeMeters", snap.mslAltM)
+        setOptionalNumber(
+            location,
+            "setMslAltitudeAccuracyMeters",
+            snap.accuracyFor(provider) * 1.5,
+        )
         // Remember every point we fabricate. A Parcelable round-trip loses the object identity, and
         // a build without the immoral.* extras leaves nothing else marking it as ours, so a delayed
         // report of an earlier fake can arrive after the engine has moved. That is how a previous
         // check's simulated point was once remembered as "the real fix" (2026-11-02).
         rememberFabricatedPoint(snap.lat, snap.lon)
+        // The platform's OWN extras are always written, including in production: a real `gps` fix
+        // carries `satellites` (and usually `maxCn0`/`meanCn0`), and the Chinese map SDKs
+        // (高德/百度/腾讯) *discard* a gps fix whose extras lack `satellites`. They are neutral
+        // platform key names, so writing them cannot fingerprint the module — the opposite of the
+        // `immoral.*` diagnostic keys below, which stay behind the property gate.
+        try {
+            val extras = location.extras ?: Bundle()
+            val usedInFix = snap.satellites.count { it.usedInFix }
+            extras.putInt(
+                EXTRA_SATELLITES,
+                if (usedInFix > 0) usedInFix else plausibleSatelliteCount(snap.lat, snap.lon),
+            )
+            if (snap.satellites.isNotEmpty()) {
+                extras.putInt(EXTRA_MAX_CN0, snap.satellites.maxOf { it.cn0DbHz }.toInt())
+                extras.putInt(EXTRA_MEAN_CN0, snap.satellites.map { it.cn0DbHz }.average().toInt())
+            }
+            location.extras = extras
+        } catch (t: Throwable) {
+            Log.once("fakes.extras.platform", "location platform extras failed: ${t.javaClass.simpleName}")
+        }
         if (Log.extrasEnabled()) {
             try {
                 val extras = location.extras ?: Bundle()
-                extras.putInt("satellites", snap.satellites.count { it.usedInFix })
                 extras.putLong(EXTRA_STEPS, snap.steps)
                 extras.putInt(EXTRA_CADENCE, snap.config.stepCadenceBpm)
                 extras.putBoolean(EXTRA_STEP_SIM, snap.config.stepSimulation)
@@ -73,6 +101,17 @@ object Fakes {
         }
         return location
     }
+
+    /**
+     * The platform's own extra keys on a `gps` fix (`android.location.LocationExtras`).
+     *
+     * Written on **every** fix, in every build: see the comment in [location] for why a missing
+     * `satellites` key breaks real map SDKs. The names are the platform's, so they carry no
+     * fingerprint of this module.
+     */
+    const val EXTRA_SATELLITES = "satellites"
+    const val EXTRA_MAX_CN0 = "maxCn0"
+    const val EXTRA_MEAN_CN0 = "meanCn0"
 
     /** Extras keys set by [location]; the client layer's state bus. */
     const val EXTRA_STEPS = "immoral.steps"
@@ -110,7 +149,20 @@ object Fakes {
             location.elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
             setOptionalNumber(location, "setVerticalAccuracyMeters", accuracyM * 1.5)
             setOptionalNumber(location, "setSpeedAccuracyMetersPerSecond", 0.5 + speedMps * 0.05)
-            setOptionalNumber(location, "setBearingAccuracyDegrees", 5.0)
+            // Bearing is meaningless while the receiver stands still: a real chipset either leaves
+            // the bearing accuracy unset or reports a very large uncertainty, never a confident
+            // 5 degrees on a fix whose speed is 0.0 m/s.
+            if (speedMps >= 0.3) {
+                setOptionalNumber(location, "setBearingAccuracyDegrees", 3.5 + (speedMps % 4.0))
+            }
+            // API 29+: how uncertain the *receiver clock* behind `elapsedRealtimeNanos` is. Real
+            // chipset fixes report a small non-zero value (order of a millisecond); a fix that
+            // reports exactly 0 ns looks like a hand-built object to anyone who reads it.
+            setOptionalLong(
+                location,
+                "setElapsedRealtimeUncertaintyNanos",
+                (1_000_000.0 + accuracyM * 100_000.0).toLong(),
+            )
             // Never advertise ourselves as a mock provider — that is the whole point.
             try {
                 setIsFromMockProvider.invoke(location, false)
@@ -120,15 +172,14 @@ object Fakes {
                 setMock?.let { Refl.invoke(it, location, false) }
             } catch (_: Throwable) {
             }
-            // Same diagnostic-bus gate as [location] above: no keys at all unless the property is set.
-            if (Log.extrasEnabled()) {
-                val extras = Bundle()
-                extras.putInt("satellites", 0)
-                extras.putLong(EXTRA_STEPS, steps)
-                try {
-                    location.extras = extras
-                } catch (_: Throwable) {
-                }
+            // Same split as [location] above: the platform's neutral `satellites` count is always
+            // present (map SDKs drop a gps fix without it), the `immoral.*` keys stay gated.
+            try {
+                val extras = location.extras ?: Bundle()
+                extras.putInt(EXTRA_SATELLITES, plausibleSatelliteCount(lat, lon))
+                if (Log.extrasEnabled()) extras.putLong(EXTRA_STEPS, steps)
+                location.extras = extras
+            } catch (_: Throwable) {
             }
         } catch (t: Throwable) {
             Log.once("fakes.location", "location build failed: ${t.javaClass.simpleName}")
@@ -149,6 +200,24 @@ object Fakes {
         try {
             val m = Refl.methodOf(Location::class.java, method, 1) ?: return
             Refl.invoke(m, location, value.toFloat())
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Hidden/public `double` setter (e.g. `setMslAltitudeMeters`). */
+    private fun setOptionalDouble(location: Location, method: String, value: Double) {
+        try {
+            val m = Refl.methodOf(Location::class.java, method, 1) ?: return
+            Refl.invoke(m, location, value)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Hidden numeric setter taking a `long` (e.g. `setElapsedRealtimeUncertaintyNanos`). */
+    private fun setOptionalLong(location: Location, method: String, value: Long) {
+        try {
+            val m = Refl.methodOf(Location::class.java, method, 1) ?: return
+            Refl.invoke(m, location, value)
         } catch (_: Throwable) {
         }
     }
@@ -197,6 +266,19 @@ object Fakes {
                 Math.sqrt(dLat * dLat + dLon * dLon * 0.66) * 111_320.0 <= meters
             }
         }
+
+    /**
+     * A plausible in-view satellite count (8..13) for a fix that is delivered while 信号模拟 is off.
+     *
+     * Why invent a number at all: a real `gps` fix always carries `satellites` in its extras, and a
+     * fix without it is dropped by the Chinese map SDKs. With 信号模拟 on, the real synthesized
+     * count is used instead and this value never appears. Stable while the position does not move,
+     * so two reads of the same fix cannot disagree.
+     */
+    private fun plausibleSatelliteCount(lat: Double, lon: Double): Int {
+        val a = kotlin.math.abs((lat * 1_000.0).toLong() + (lon * 1_000.0).toLong() * 31L)
+        return 8 + (a % 6L).toInt()
+    }
 
     private val fabricatedResults: MutableSet<Any> =
         java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Any, Boolean>()))
@@ -404,6 +486,25 @@ object Fakes {
         Log.i("Fakes: GnssStatus builder=" + (gnssBuilder != null) + " ctor=" + (gnssCtor != null) + " shapes=" + shapes)
     }
 
+    /**
+     * Nominal carrier frequency for a constellation's primary band, in Hz.
+     *
+     * `GnssStatus.getCarrierFrequencyHz()` reports 0 for "unknown", and a receiver that delivers a
+     * full constellation while claiming not to know a single carrier frequency describes hardware
+     * that does not exist. Values: GPS/QZSS/SBAS L1 1575.42 MHz, Galileo E1 1575.42 MHz,
+     * GLONASS L1 1602.0 MHz, BeiDou B1 1561.098 MHz, IRNSS L5 1176.45 MHz.
+     *
+     * Constellation ids are `GnssStatus.CONSTELLATION_*` (GPS 1, SBAS 2, GLONASS 3, QZSS 4,
+     * BEIDOU 5, GALILEO 6, IRNSS 7); `:core` keeps its own inlined copies, so they are spelled out
+     * here again rather than reaching into an internal object.
+     */
+    private fun carrierFrequencyHz(constellation: Int): Float = when (constellation) {
+        3 -> 1_602.0e6f // GLONASS L1
+        5 -> 1_561.098e6f // BeiDou B1I
+        7 -> 1_176.45e6f // IRNSS L5
+        else -> 1_575.42e6f // GPS L1 / Galileo E1 / QZSS / SBAS
+    }
+
     private fun buildGnssViaBuilder(satellites: List<Satellite>): Any? {
         val builderClass = gnssBuilder ?: return null
         val builder = newBuilderInstance(builderClass) ?: return null
@@ -417,7 +518,7 @@ object Fakes {
         setter("setAzimuthDegrees", satellites.map { it.azimuthDeg }.toFloatArray())
         setter("setUsedInFix", satellites.map { it.usedInFix }.toBooleanArray())
         setter("setConstellationType", satellites.map { it.constellation }.toIntArray())
-        setter("setCarrierFrequencyHz", satellites.map { 0f }.toFloatArray())
+        setter("setCarrierFrequencyHz", satellites.map { carrierFrequencyHz(it.constellation) }.toFloatArray())
         if (missing.isNotEmpty()) Log.once("fakes.gnss.setters", "GnssStatus.Builder missing setters: " + missing.joinToString())
         return Refl.invoke(Refl.methodOf(builderClass, "build", 0), builder)
     }
@@ -431,7 +532,7 @@ object Fakes {
                 satellites.map { it.cn0DbHz }.toFloatArray(),
                 satellites.map { it.elevationDeg }.toFloatArray(),
                 satellites.map { it.azimuthDeg }.toFloatArray(),
-                satellites.map { 0f }.toFloatArray(),
+                satellites.map { carrierFrequencyHz(it.constellation) }.toFloatArray(),
                 satellites.map { it.usedInFix }.toBooleanArray(),
                 satellites.map { it.constellation }.toIntArray(),
             )
@@ -639,15 +740,18 @@ object Fakes {
         // system_server NPEs on a null SSID/capabilities/wifiSsid and takes the whole system down.
         Refl.setField(instance, "SSID", ap.ssid)
         Refl.setField(instance, "BSSID", ap.bssid)
-        Refl.setField(instance, "capabilities", CAPABILITIES)
+        Refl.setField(instance, "capabilities", capabilitiesFor(ap))
         Refl.setField(instance, "level", ap.level)
         Refl.setField(instance, "frequency", ap.frequencyMhz)
         Refl.setField(instance, "timestamp", nowMs * 1000L)
         Refl.setField(instance, "seen", nowMs)
-        Refl.setField(instance, "channelWidth", 0)
-        Refl.setField(instance, "centerFreq0", ap.frequencyMhz)
+        // Band-consistent PHY fields. Leaving every AP at `channelWidth=0 / wifiStandard=0` made
+        // the whole scan list report "unknown PHY", which no real dual-band neighbourhood does.
+        val phy = phyFor(ap.frequencyMhz)
+        Refl.setField(instance, "channelWidth", phy.widthMhz)
+        Refl.setField(instance, "centerFreq0", phy.centerFreqMhz)
         Refl.setField(instance, "centerFreq1", 0)
-        Refl.setField(instance, "wifiStandard", 0)
+        Refl.setField(instance, "wifiStandard", phy.standard)
         wifiSsid(ap.ssid)?.let { Refl.setField(instance, "wifiSsid", it) }
         if (!verifyScanResult(instance, ap)) {
             Log.once("fakes.scanitem.incomplete", "dropping an incompletely populated ScanResult")
@@ -674,8 +778,52 @@ object Fakes {
         }
     }
 
-    /** Non-null capabilities: platform code parses these strings. */
-    private const val CAPABILITIES = "[WPA2-PSK-CCMP][ESS]"
+    /**
+     * Security capabilities for one access point, varied per AP.
+     *
+     * A real scan list is *heterogeneous*: a legacy TKIP router, an open guest network, a WPS
+     * repeater and a WPA3 mesh node all appear in the same scan. Emitting one identical
+     * `[WPA2-PSK-CCMP][ESS]` string for every AP is a zero-variance signature that any app can
+     * compute without a single permission. The choice is derived from the BSSID, so an AP keeps
+     * the same capabilities for as long as it is visible (a router does not change its security
+     * mode between scans).
+     */
+    private fun capabilitiesFor(ap: SimulatedAp): String {
+        val selector = (ap.bssid.hashCode() and 0x7fffffff)
+        return if (ap.frequencyMhz >= 5000) {
+            when (selector % 3) {
+                0 -> "[WPA2-PSK-CCMP][RSN-PSK-CCMP][ESS]"
+                1 -> "[WPA2-PSK-CCMP][WPA3-SAE-CCMP][ESS]"
+                else -> "[WPA2-PSK-CCMP][RSN-PSK+SAE-CCMP][ESS]"
+            }
+        } else {
+            when (selector % 4) {
+                0 -> "[WPA2-PSK-CCMP][RSN-PSK-CCMP][ESS]"
+                1 -> "[WPA-PSK-TKIP+CCMP][WPA2-PSK-CCMP][ESS]"
+                2 -> "[ESS]"
+                else -> "[WPA2-PSK-CCMP][WPS][ESS]"
+            }
+        }
+    }
+
+    /** `(channel width MHz, center frequency MHz, SCAN_RESULT_WIFI_STD_*)` for a frequency. */
+    private class Phy(val widthMhz: Int, val centerFreqMhz: Int, val standard: Int)
+
+    /**
+     * Plausible PHY parameters for [frequencyMhz].
+     *
+     * 2.4 GHz is 20 MHz on 802.11n; UNII-1/2 is usually an 80 MHz VHT block (whose *centre* is not
+     * the primary channel — the two fields must agree); UNII-3 is mostly 20 MHz channels. Reporting
+     * `0` (unknown) for both fields everywhere is legal but describes hardware that does not exist.
+     */
+    private fun phyFor(frequencyMhz: Int): Phy = when {
+        frequencyMhz >= 5745 -> Phy(widthMhz = 20, centerFreqMhz = frequencyMhz, standard = 4)
+        frequencyMhz >= 5000 -> {
+            val blockStart = 5180 + ((frequencyMhz - 5180) / 80) * 80
+            Phy(widthMhz = 80, centerFreqMhz = blockStart + 40, standard = 5)
+        }
+        else -> Phy(widthMhz = 20, centerFreqMhz = frequencyMhz, standard = 4)
+    }
 
     private fun wifiSsid(ssid: String): Any? {
         val cls = Refl.findClassAnywhere("android.net.wifi.WifiSsid") ?: return null
@@ -848,6 +996,7 @@ object Fakes {
             Refl.setField(instance, "mRsrp", cell.dbm)
             Refl.setField(instance, "mRssi", cell.dbm)
             Refl.setField(instance, "mSignalLevel", cell.level)
+            applyDerivedSignalQuality(instance, cell)
             if (strengthSane(instance, cell)) return instance
         }
         val ctors = Refl.constructorsWhere(cls) { c ->
@@ -888,8 +1037,131 @@ object Fakes {
         }
     }
 
-    private fun applyStrength(target: Any, cell: SimulatedCell) {
-        if (target == null) return
+    /*
+     * Signal-quality constants, with their AOSP-sanctioned units and ranges.
+     *
+     * They are taken from the platform source rather than guessed, because a value in the wrong unit
+     * is worse than a field left at `CellInfo.UNAVAILABLE`:
+     *
+     *  * `CellSignalStrengthLte`: `mRsrq` in dB (the constructor clamps to `-34..3`), `mRssnr` in
+     *    **whole dB** (clamped to `-20..30` and compared against the bar thresholds `-3/1/5/13` —
+     *    the `convertRssnrUnitFromTenDbToDB` helper belongs to the RIL `SignalStrength` path, not to
+     *    this field), `mCqi` `0..15` (TS 36.213 §7.2.3), `mTimingAdvance` `0..1282`.
+     *  * `CellSignalStrengthGsm`: `mRssi` in dBm (`-113..-51`, and it *is* `getDbm()`), `mBitErrorRate`
+     *    `0..7` as RXQUAL per TS 27.007 §8.5, `mTimingAdvance` `0..219` in GSM bit periods.
+     */
+
+    /** Noise + interference floor of a loaded urban macro, in dBm per 15 kHz reference element. */
+    private const val INTERFERENCE_FLOOR_DB = 95
+
+    /** `CellSignalStrengthLte.mRssnr` is clamped to this range by its own constructor. */
+    private const val MIN_SINR_DB = -20
+    private const val MAX_SINR_DB = 30
+
+    /** 10·log10(100 resource blocks) = 20 dB: RSRQ is the band-wide version of the same ratio. */
+    private const val BANDWIDTH_OFFSET_DB = 20
+
+    /** RSRQ of a busy 20 MHz carrier: never better than ≈-8 dB, never worse than ≈-20 dB. */
+    private const val MIN_RSRQ_DB = -20
+    private const val MAX_RSRQ_DB = -8
+
+    /** Lowest CQI a camped-on cell reports here (0 and 1..4 mean "cannot even decode the control"). */
+    private const val MIN_CQI = 5
+    private const val MAX_CQI = 15
+
+    /** Approximate minimum SINR at which each CQI is usable, from the TS 36.213 §7.2.3 tables. */
+    private val CQI_MIN_SINR_DB = intArrayOf(-6, -4, -2, 0, 2, 4, 6, 8, 10, 12, 14, 16, 19, 22, 25)
+
+    /** One LTE timing-advance step is 16·Ts ≈ 0.52 µs ≈ 78 m of one-way distance (TS 36.213 §4.2.3). */
+    private const val LTE_TA_STEP_M = 78.0
+    private const val MAX_LTE_TIMING_ADVANCE = 1282
+
+    /** One GSM bit period is ≈3.69 µs ≈ 1.1 km round trip ≈ 554 m of one-way distance (TS 45.010). */
+    private const val GSM_TA_STEP_M = 554.0
+    private const val MAX_GSM_TIMING_ADVANCE = 219
+
+    /**
+     * Inverse of the core synthesizer's log-distance law, to turn an RSRP back into a distance.
+     *
+     * The three numbers repeat `CellSynth`'s calibration (100 m → -86 dBm, urban n = 3.2) on purpose:
+     * that object is `internal` to `:core`, so `:hook` cannot import the constants, and a TA derived
+     * from a *different* law than the level would contradict the RSRP it is reported next to. They
+     * must be changed together.
+     */
+    private const val RSRP_REFERENCE_DBM = -86.0
+    private const val RSRP_REFERENCE_DISTANCE_M = 100.0
+    private const val PATH_LOSS_EXPONENT = 3.2
+
+    /** RSSI at which RXQUAL 0 is the honest answer, and the dB span over which it degrades to 7. */
+    private const val RXQUAL_CLEAN_DBM = -75
+    private const val RXQUAL_SPAN_DB = 4
+    private const val MAX_BIT_ERROR_RATE = 7
+
+    /**
+     * Fills the derived signal-quality fields a real cell reports next to its RSRP.
+     *
+     * A camped-on `CellSignalStrengthLte` carries RSRQ, RSSNR, CQI and a timing advance; leaving them
+     * at the `UNAVAILABLE` sentinels while `getDbm()` claims a strong signal is a contradiction an app
+     * can read for free. All of them are derived from the one physical quantity we do know — the
+     * received level — so they stay mutually consistent as the phone walks:
+     *
+     *  * SINR = RSRP + [INTERFERENCE_FLOOR_DB] (an interference-limited urban carrier, not a noise-
+     *    limited one), clamped to the range AOSP documents for the field,
+     *  * RSRQ = SINR − [BANDWIDTH_OFFSET_DB], i.e. the same ratio measured across the carrier,
+     *  * CQI = the highest entry of the TS 36.213 table whose operating point the SINR reaches,
+     *  * TA = distance / step, where the distance comes from inverting the path-loss law, so a phone
+     *    two hundred metres from the mast reports TA 2..3 instead of a hash.
+     *
+     * CQI, RSSNR, TA and the GSM error rate need an RRC/RR connection, so they are set for the serving
+     * cell only; a neighbour reports RSRQ, which the reference signals carry by themselves. [cell]'s
+     * `dbm` is never touched: on LTE `getDbm()` reads `mRsrp` and on GSM it reads `mRssi`, and
+     * [strengthSane] checks that read-back.
+     */
+    private fun applyDerivedSignalQuality(instance: Any, cell: SimulatedCell) {
+        val sinr = (cell.dbm + INTERFERENCE_FLOOR_DB).coerceIn(MIN_SINR_DB, MAX_SINR_DB)
+        Refl.setField(
+            instance,
+            "mRsrq",
+            (sinr - BANDWIDTH_OFFSET_DB).coerceIn(MIN_RSRQ_DB, MAX_RSRQ_DB),
+        )
+        if (!cell.registered) return
+        val distanceM = RSRP_REFERENCE_DISTANCE_M *
+            Math.pow(10.0, (RSRP_REFERENCE_DBM - cell.dbm) / (10.0 * PATH_LOSS_EXPONENT))
+        if (cell.type.equals("GSM", ignoreCase = true)) {
+            Refl.setField(instance, "mBitErrorRate", bitErrorRateFor(cell.dbm))
+            Refl.setField(
+                instance,
+                "mTimingAdvance",
+                timingAdvance(distanceM, GSM_TA_STEP_M, MAX_GSM_TIMING_ADVANCE),
+            )
+        } else {
+            Refl.setField(instance, "mRssnr", sinr)
+            Refl.setField(instance, "mCqi", cqiForSinr(sinr))
+            Refl.setField(
+                instance,
+                "mTimingAdvance",
+                timingAdvance(distanceM, LTE_TA_STEP_M, MAX_LTE_TIMING_ADVANCE),
+            )
+        }
+    }
+
+    /** Highest CQI whose operating point [sinrDb] reaches, clamped to what a served cell reports. */
+    private fun cqiForSinr(sinrDb: Int): Int {
+        var cqi = MIN_CQI
+        for (index in CQI_MIN_SINR_DB.indices) {
+            if (sinrDb >= CQI_MIN_SINR_DB[index]) cqi = index + 1
+        }
+        return cqi.coerceIn(MIN_CQI, MAX_CQI)
+    }
+
+    /** RXQUAL 0..7: the error rate rises as the received level falls towards sensitivity. */
+    private fun bitErrorRateFor(rssiDbm: Int): Int =
+        ((RXQUAL_CLEAN_DBM - rssiDbm) / RXQUAL_SPAN_DB).coerceIn(0, MAX_BIT_ERROR_RATE)
+
+    private fun timingAdvance(distanceM: Double, stepM: Double, max: Int): Int =
+        Math.round(distanceM / stepM).toInt().coerceIn(0, max)
+
+    private fun applyStrength(target: Any, cell: SimulatedCell) {        if (target == null) return
         Refl.setField(target, "mLevel", cell.level)
         Refl.setField(target, "mRsrp", cell.dbm)
         Refl.setField(target, "mRssi", cell.dbm)
@@ -953,7 +1225,7 @@ object Fakes {
         val cn0 = FloatArray(n) { satellites[it].cn0DbHz }
         val elev = FloatArray(n) { satellites[it].elevationDeg }
         val azim = FloatArray(n) { satellites[it].azimuthDeg }
-        val freq = FloatArray(n) { 0f }
+        val freq = FloatArray(n) { carrierFrequencyHz(satellites[it].constellation) }
         val baseband = FloatArray(n) { satellites[it].cn0DbHz }
         val arraysOk = setFinal(instance, "mCn0DbHz", cn0) &&
             setFinal(instance, "mElevationDegrees", elev) &&

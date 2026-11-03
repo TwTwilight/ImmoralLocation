@@ -29,6 +29,11 @@ import kotlin.test.assertTrue
  * carries the app default of 2.0) silently retuned the running route. Covered by
  * [routeSpeedSurvivesRepeatedConfigPushes].
  *
+ * Since the longitudinal model landed, "10 s at 6 m/s" is 60 m *minus* the ramp from rest
+ * (`v²/2a` = 6 m), so the expected distances below are 54 m / 48 m instead of 60 m. The ramp is
+ * the only difference; the defect this suite guards against would still show up as a fraction of
+ * the plan speed.
+ *
  * ### Case 3 — route speed vs speed level
  * Route playback must use the plan speed, never [SimulationConfig.speed], and
  * `setJoystick` must never take the engine out of [MoveMode.ROUTE].
@@ -195,11 +200,13 @@ class MovementAccuracyTest {
         engine.startRoute(straightRoute, speedMps = 6.0)
         engine.run(10)
         val moved = GeoMath.distanceMeters(straightRoute[0], engine.position)
-        assertNear(60.0, moved, 0.6, "10 s on a 6 m/s route must be 60 m")
+        // 10 s at 6 m/s is 60 m of cruise, minus the ramp from rest: v²/2a = 36/6 = 6 m. The
+        // vehicle is a vehicle now, so the first two seconds are spent accelerating.
+        assertNear(54.0, moved, 0.6, "10 s on a 6 m/s route is 60 m minus the 6 m ramp")
         assertNear(6.0, engine.state.speedMps, 1e-9, "reported route speed")
         val total = GeoMath.distanceMeters(straightRoute[0], straightRoute[1]) +
             GeoMath.distanceMeters(straightRoute[1], straightRoute[2])
-        assertNear(60.0 / total, engine.state.routeProgress, 0.002, "progress after 60 m")
+        assertNear(54.0 / total, engine.state.routeProgress, 0.002, "progress after 54 m")
     }
 
     @Test
@@ -243,11 +250,12 @@ class MovementAccuracyTest {
         engine.playRoute()
         engine.run(5)
         assertTrue(engine.state.routeProgress > pausedProgress)
-        // 5 s before the pause plus 5 s after it => 60 m from the route start.
-        assertNear(60.0, GeoMath.distanceMeters(straightRoute[0], engine.position), 0.6)
+        // A pause is a standstill: 5 s from rest before it (30 m minus the 6 m ramp) and 5 s from
+        // rest after it cost another 6 m of ramp, so the second leg is 24 m and the total 48 m.
+        assertNear(48.0, GeoMath.distanceMeters(straightRoute[0], engine.position), 0.6)
         assertNear(6.0, engine.state.speedMps, 1e-9)
         val expectedAdvance = GeoMath.distanceMeters(pausedPoint, engine.position)
-        assertNear(30.0, expectedAdvance, 0.3, "resumed movement is 5 s at 6 m/s")
+        assertNear(24.0, expectedAdvance, 0.3, "resumed movement is 5 s at 6 m/s from rest")
     }
 
     @Test
@@ -260,7 +268,7 @@ class MovementAccuracyTest {
             engine.config = engine.config
             engine.tick(1_000L)
         }
-        assertNear(60.0, GeoMath.distanceMeters(straightRoute[0], engine.position), 0.6)
+        assertNear(54.0, GeoMath.distanceMeters(straightRoute[0], engine.position), 0.6)
         assertNear(6.0, engine.state.speedMps, 1e-9, "the plan speed must still be 6.0")
         assertEquals(6.0, engine.activeRouteSpeedMps)
     }
@@ -276,7 +284,7 @@ class MovementAccuracyTest {
             gpsJitterMeters = 2.0,
             stepSimulation = true,
         )
-        engine.tick(1_000L)
+        engine.run(5) // 6 m/s needs 2 s of ramp, so five ticks are cruise
         assertNear(6.0, engine.state.speedMps, 1e-9)
         assertNear(6.0, engine.activeRouteSpeedMps, 1e-9)
     }
@@ -288,9 +296,10 @@ class MovementAccuracyTest {
         assertEquals(2.0, engine.activeRouteSpeedMps)
         engine.config = engine.config.copy(routeSpeedMps = 8.0)
         assertEquals(8.0, engine.activeRouteSpeedMps)
-        engine.tick(1_000L)
+        engine.run(5) // 8 m/s needs 2.67 s of ramp
         assertNear(8.0, engine.state.speedMps, 1e-9)
-        assertNear(8.0, GeoMath.distanceMeters(straightRoute[0], engine.position), 0.08)
+        // 5 s at 8 m/s minus v²/2a = 64/6 = 10.67 m of ramp.
+        assertNear(29.33, GeoMath.distanceMeters(straightRoute[0], engine.position), 0.08)
     }
 
     @Test
@@ -316,7 +325,8 @@ class MovementAccuracyTest {
         assertEquals(MoveMode.ROUTE, engine.state.mode, "route mode must survive setJoystick")
         engine.tick(1_000L)
         assertNear(6.0, engine.state.speedMps, 1e-9, "movement must stay route driven")
-        assertNear(6.0, GeoMath.distanceMeters(straightRoute[0], engine.position) - 30.0, 0.3)
+        // 5 s before the stick nudge (30 m minus the 6 m ramp) plus one cruise second.
+        assertNear(30.0, GeoMath.distanceMeters(straightRoute[0], engine.position), 0.3)
     }
 
     @Test
@@ -340,13 +350,13 @@ class MovementAccuracyTest {
                 SimulationConfig(mode = MoveMode.ROUTE, speed = level, routeSpeedMps = 6.0),
             )
             engine.startRoute(straightRoute, speedMps = 6.0)
-            engine.tick(1_000L)
+            engine.run(5) // 6 m/s needs 2 s of ramp
             assertNear(6.0, engine.state.speedMps, 1e-9, "speed level $level must not matter")
             assertNear(
-                6.0,
+                24.0,
                 GeoMath.distanceMeters(straightRoute[0], engine.position),
                 0.06,
-                "distance after 1 s at route speed 6.0 (level $level)",
+                "distance after 5 s at route speed 6.0 (level $level)",
             )
         }
     }
@@ -356,7 +366,7 @@ class MovementAccuracyTest {
         val engine = engine(SimulationConfig(routeSpeedMps = 4.5))
         engine.startRoute(straightRoute)
         assertEquals(4.5, engine.activeRouteSpeedMps)
-        engine.tick(1_000L)
+        engine.run(3) // 4.5 m/s needs 1.5 s of ramp
         assertNear(4.5, engine.state.speedMps, 1e-9)
     }
 
@@ -376,7 +386,7 @@ class MovementAccuracyTest {
     // ------------------------------------------------- paused/static jitter drift
 
     @Test
-    fun staticJitterDoesNotWanderWhileNothingMoves() {
+    fun staticJitterWandersSlowlyWithoutDrifting() {
         val engine = engine(
             SimulationConfig(mode = MoveMode.STATIC, gpsJitterMeters = 20.0),
             Reference.BEIJING,
@@ -385,8 +395,22 @@ class MovementAccuracyTest {
         engine.tick(1_000L)
         val first = engine.position
         assertTrue(GeoMath.distanceMeters(Reference.BEIJING, first) in 0.0..20.0)
-        repeat(20) { engine.tick(1_000L) }
-        assertSamePoint(first, engine.position, 1e-9)
+        // A parked receiver still reports a slightly different coordinate every second (that is what
+        // real noise looks like); what must never happen is a jump of the whole error envelope...
+        var previous = first
+        var maxStep = 0.0
+        repeat(20) {
+            engine.tick(1_000L)
+            val current = engine.position
+            maxStep = maxOf(maxStep, GeoMath.distanceMeters(previous, current))
+            previous = current
+        }
+        assertTrue(maxStep < 8.0, "a parked fix jumped $maxStep m between two seconds")
+        // ...and it must not drift away from the true position.
+        assertTrue(
+            GeoMath.distanceMeters(Reference.BEIJING, engine.position) <= 20.0 + 1e-6,
+            "the parked error drifted outside the configured radius",
+        )
     }
 
     @Test
@@ -402,13 +426,16 @@ class MovementAccuracyTest {
         engine.run(3)
         engine.pauseRoute()
         engine.tick(1_000L)
-        val first = engine.position
+        val paused = engine.position
         repeat(10) { engine.tick(1_000L) }
-        assertSamePoint(first, engine.position, 1e-9)
+        // Paused means "does not advance along the route": the only movement allowed is the
+        // receiver's own noise, which is bounded by the configured error envelope and never drifts.
+        val moved = GeoMath.distanceMeters(paused, engine.position)
+        assertTrue(moved <= 20.0 + 1e-6, "a paused route moved $moved m, outside the 20 m error envelope")
     }
 
     @Test
-    fun jitterStillVariesWhileTheEngineMoves() {
+    fun jitterMovesEveryTickWhileTheEngineMoves() {
         val start = GeoPoint(0.0, 0.0)
         val engine = engine(
             SimulationConfig(
@@ -425,18 +452,25 @@ class MovementAccuracyTest {
         engine.tick(1_000L)
         val baseAfterFirst = GeoMath.destination(start, 0.0, 3.3)
         val firstOffset = GeoMath.distanceMeters(baseAfterFirst, engine.position)
-        val firstBearing = GeoMath.bearingDegrees(baseAfterFirst, engine.position)
+        val first = engine.position
 
         engine.tick(1_000L)
         val baseAfterSecond = GeoMath.destination(start, 0.0, 6.6)
         val secondOffset = GeoMath.distanceMeters(baseAfterSecond, engine.position)
-        val secondBearing = GeoMath.bearingDegrees(baseAfterSecond, engine.position)
 
         assertTrue(firstOffset in 0.0..20.0, "first jitter $firstOffset m")
         assertTrue(secondOffset in 0.0..20.0, "second jitter $secondOffset m")
+        // The error is a random walk: every tick it moves by a small amount in a new direction, so
+        // the *offset vector* (not the error magnitude, which is already large) changes.
+        val offsetFirst = GeoPoint(first.lat - baseAfterFirst.lat, first.lon - baseAfterFirst.lon, 0.0)
+        val offsetSecond = GeoPoint(
+            engine.position.lat - baseAfterSecond.lat,
+            engine.position.lon - baseAfterSecond.lon,
+            0.0,
+        )
         assertTrue(
-            abs(GeoMath.shortestAngleDelta(firstBearing, secondBearing)) > 0.5,
-            "jitter must re-randomize while moving ($firstBearing vs $secondBearing)",
+            GeoMath.distanceMeters(offsetFirst, offsetSecond) > 0.01,
+            "the receiver error did not move between two ticks",
         )
     }
 }

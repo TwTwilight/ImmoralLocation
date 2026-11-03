@@ -69,6 +69,14 @@ data class WireConfig(
     val independentPackages: List<String>,
     val routeRepeat: Boolean,
     val routeSpeedMps: Double,
+    /**
+     * Whether a vehicle-speed route simulates traffic standstills.
+     *
+     * Added last so the parcel layout only grows: both sides of the bridge ship in the same APK,
+     * and a config written by an older build simply deserialises to the default (`false`), which is
+     * exactly the behaviour before the field existed.
+     */
+    val routeTrafficStops: Boolean,
 ) : Parcelable {
 
     override fun describeContents(): Int = 0
@@ -91,6 +99,7 @@ data class WireConfig(
         dest.writeStringList(independentPackages)
         dest.writeInt(if (routeRepeat) 1 else 0)
         dest.writeDouble(routeSpeedMps)
+        dest.writeInt(if (routeTrafficStops) 1 else 0)
     }
 
     companion object CREATOR : Parcelable.Creator<WireConfig> {
@@ -112,6 +121,7 @@ data class WireConfig(
             independentPackages = parcel.createStringArrayList() ?: emptyList(),
             routeRepeat = parcel.readInt() != 0,
             routeSpeedMps = parcel.readDouble(),
+            routeTrafficStops = parcel.readInt() != 0,
         )
 
         override fun newArray(size: Int): Array<WireConfig?> = arrayOfNulls(size)
@@ -443,10 +453,10 @@ fun SimulationConfig.toWire(): WireConfig = WireConfig(
     independentPackages = independentPackages.toList(),
     routeRepeat = routeRepeat,
     routeSpeedMps = routeSpeedMps,
+    routeTrafficStops = routeTrafficStops,
 )
 
-fun WireConfig.toCore(): SimulationConfig = SimulationConfig(
-    mode = WireMode.toMode(mode),
+fun WireConfig.toCore(): SimulationConfig = SimulationConfig(    mode = WireMode.toMode(mode),
     speed = WireSpeed.toLevel(speed),
     customSpeedMps = customSpeedMps,
     followHeading = followHeading,
@@ -463,6 +473,7 @@ fun WireConfig.toCore(): SimulationConfig = SimulationConfig(
     independentPackages = independentPackages.toSet(),
     routeRepeat = routeRepeat,
     routeSpeedMps = routeSpeedMps,
+    routeTrafficStops = routeTrafficStops,
 )
 
 fun EngineState.toWire(): WireState = WireState(

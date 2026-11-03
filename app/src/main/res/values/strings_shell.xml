@@ -75,6 +75,8 @@
     <string name="shell_step_desc">移动时同步增加计步器步数</string>
     <string name="shell_section_fix">定位参数</string>
     <string name="shell_route_repeat_desc">到达终点后从起点重新开始</string>
+    <string name="route_traffic_stops">交通停候</string>
+    <string name="shell_route_traffic_desc">车辆速度下按路线模拟起步、停车与红绿灯等待</string>
     <string name="shell_section_map">地图</string>
     <string name="shell_layers_row">图层与图源</string>
     <string name="shell_tile_template">瓦片模板</string>

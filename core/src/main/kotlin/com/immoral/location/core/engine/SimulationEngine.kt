@@ -13,6 +13,9 @@ import com.immoral.location.core.protocol.CORE_ENGINE_VERSION
 import com.immoral.location.core.route.RoutePlan
 import kotlin.math.atan2
 import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
  * The simulation core: owns the spoofed position, the movement model and every deterministic
@@ -26,11 +29,35 @@ import kotlin.math.hypot
  * caller needs to publish the state to other threads, it should copy the [EngineState] snapshot,
  * which is an immutable value.
  *
+ * ### Route playback (longitudinal model)
+ * A loaded [RoutePlan] is not a constant-speed cursor. [advanceRoute] integrates a small vehicle
+ * model along the polyline: acceleration at [RoutePlan.ACCELERATION_MPS2] up to the plan's cruise
+ * speed, braking at [RoutePlan.DECELERATION_MPS2] into the end of the route and into every
+ * scheduled stop, plus the optional standstills described by [RoutePlan.trafficStops] (enabled by
+ * [SimulationConfig.routeTrafficStops]).
+ *
+ * The model has one hard invariant, and everything else in this class is written around it:
+ *
+ * **The reported speed is the displacement.** [EngineState.speedMps] of a tick is
+ * `(distance covered in that tick) / (tick length)` — the secant derivative of the position, not a
+ * separately tracked "velocity" that could disagree with the coordinates. A consumer that
+ * differentiates consecutive fixes and compares the result with `Location.getSpeed()` therefore
+ * sees one number, in every phase: cruising, ramping, standing at a stop, or the tick that reaches
+ * the last point. (This is the contradiction mock-provider detectors look for; see also the
+ * Ornstein-Uhlenbeck jitter below, which is deliberately *slow* for the same reason.)
+ *
+ * Limits, stated up front: there is no road graph, no speed limit data and no intersection
+ * knowledge. Stops are synthetic points on the polyline (see [RoutePlan.trafficStops]), the speed
+ * profile is one constant cruise speed per plan, and lateral acceleration on a curve is not
+ * modelled — only the bearing snaps to the segment direction.
+ *
  * ### Determinism
  * Every synthesis function is a pure function of the current position (and the config), seeded
  * from the latitude/longitude rounded to four decimals. Two engines at the same position
  * therefore report byte-identical satellites, cells and access points, which is what lets the
- * UI preview exactly what the hook will inject.
+ * UI preview exactly what the hook will inject. Route playback is deterministic in the same
+ * sense: same plan + same tick deltas => same trajectory, because the stop schedule is seeded from
+ * the geometry and the integrator has no clock and no unseeded randomness.
  *
  * @param initialPosition Starting position; ignored when it is not a valid latitude/longitude.
  * @param initialConfig Starting configuration; sanitized before use.
@@ -54,11 +81,57 @@ class SimulationEngine(
     private var routePlan: RoutePlan? = null
     private var routeProgressValue: Double = 0.0
     private var routeStateValue: RouteState = RouteState.IDLE
+
+    /**
+     * Longitudinal state of the route player: distance already covered along the polyline, the
+     * instantaneous speed at the end of the last tick, and the remaining standstill at a traffic
+     * stop, in meters, m/s and seconds.
+     *
+     * These three are *not* derivable from [routeProgressValue]: the progress is a position, and
+     * the whole point of this model is that the speed at that position depends on how the vehicle
+     * got there (accelerating away from a stop vs. braking into one). They are advanced by
+     * [advanceRoute] only, i.e. on the single ticker thread.
+     */
+    private var routeTravelledM: Double = 0.0
+    private var routeLongitudinalSpeedMps: Double = 0.0
+    private var routeDwellRemainingS: Double = 0.0
+
     private var tickCounter: Long = 0L
     private var lastTickDelta: Long = 0L
-    private var jitterEpoch: Long = 0L
     private var updatedAtMs: Long = 0L
     private var impactCounterValue: Long = 0L
+
+    /**
+     * Simulated GPS error, as a correlated (Ornstein-Uhlenbeck) offset in the local east/north/up
+     * frame, in meters.
+     *
+     * Why not "pick a random point within the radius every tick": that makes two consecutive fixes
+     * jump by the whole radius, so any app that derives speed from consecutive coordinates computes
+     * tens of m/s while the fix claims 1.4 m/s — the classic "mock provider" contradiction. A
+     * receiver's error wanders *slowly* instead: it is a filtered random walk (an OU process), so a
+     * 1 s step moves the reported position by centimeters to a meter, while reported speed stays
+     * independently accurate. The parameters (σ = radius/3, mean reversion 0.05/s) follow the
+     * standard three-sigma reading of "accuracy radius".
+     *
+     * Written only on the ticker thread, read by hook threads: volatile so a reader never observes
+     * a half-updated offset.
+     */
+    @Volatile
+    private var jitterEastM: Double = 0.0
+
+    @Volatile
+    private var jitterNorthM: Double = 0.0
+
+    @Volatile
+    private var jitterUpM: Double = 0.0
+
+    /** Deterministic Gaussian source for [advanceJitter]; seeded from the starting position. */
+    private val jitterRandom: SeededRandom = SeededRandom(
+        seedFor(
+            if (initialPosition.isValidLatLon()) initialPosition else GeoPoint.ZERO,
+            SALT_JITTER,
+        ),
+    )
 
     /** Clock used for [EngineState.updatedAtMs]; injectable so tests can be fully deterministic. */
     internal var clock: () -> Long = System::currentTimeMillis
@@ -77,6 +150,10 @@ class SimulationEngine(
      * simulated movement was a fraction of `RoutePlan.speedMps`. Comparing against the previous
      * config keeps "the user moved the route-speed slider" working while making unrelated
      * config updates harmless.
+     *
+     * [SimulationConfig.routeTrafficStops] is deliberately *not* a re-seed trigger: the stop
+     * schedule is a property of the plan geometry, so flipping the flag only starts or stops
+     * serving the stops that already exist, and a running route keeps its progress and its speed.
      */
     var config: SimulationConfig
         get() = currentConfig
@@ -165,11 +242,13 @@ class SimulationEngine(
         get() = routePlan?.points ?: emptyList()
 
     /**
-     * Ground speed the loaded route is actually played at, in meters/second.
+     * Cruise ground speed the loaded route is played at, in meters/second.
      *
      * This is the plan's own [RoutePlan.speedMps] (the authoritative value), falling back to
      * [SimulationConfig.routeSpeedMps] when no route is loaded. It is *not* derived from
-     * [SimulationConfig.speed], so a WALK/RUN/… level never slows a route down.
+     * [SimulationConfig.speed], so a WALK/RUN/… level never slows a route down. It is the speed the
+     * vehicle *cruises* at, not the instantaneous speed: ramps and traffic stops make
+     * [currentSpeedMps] differ from it by design.
      */
     val activeRouteSpeedMps: Double
         get() = routePlan?.speedMps ?: currentConfig.routeSpeedMps
@@ -238,8 +317,14 @@ class SimulationEngine(
      * playback. The plan is authoritative until the caller actually *changes*
      * [SimulationConfig.routeSpeedMps] (see [config]).
      *
+     * The vehicle starts **from rest**: the first ticks accelerate at [RoutePlan.ACCELERATION_MPS2]
+     * until the plan speed is reached, so the reported speed and the coordinate delta both say
+     * "1.5 m/s" on the first second of a 5 m/s route instead of the coordinate jumping to 5 m/s.
+     * The distance lost to that ramp (`v² / 2a` = 4.2 m for 5 m/s) is the only difference from the
+     * old constant-speed glide, and it is the honest way to start a drive.
+     *
      * @param repeat Whether playback restarts after the last point.
-     * @param speedMps Route ground speed; non-finite or non-positive values fall back to the
+     * @param speedMps Cruise ground speed; non-finite or non-positive values fall back to the
      *   configured [SimulationConfig.routeSpeedMps], and the result is clamped to `0.1..1000`.
      */
     fun startRoute(
@@ -260,12 +345,15 @@ class SimulationEngine(
             routePlan = null
             routeProgressValue = 0.0
             routeStateValue = RouteState.IDLE
+            resetRouteMotion()
             speedValue = 0.0
             return
         }
         routePlan = plan
         routeProgressValue = 0.0
         routeStateValue = RouteState.PLAYING
+        resetRouteMotion()
+        speedValue = 0.0
         runningFlag = true
         // Only the mode is published into the config: writing the plan's speed/repeat back would
         // make a later stale SetConfig look like a user change and retune the running route.
@@ -273,18 +361,34 @@ class SimulationEngine(
         applyRouteSample(plan, 0.0)
     }
 
-    /** Resumes a paused (or finished-with-repeat) route. */
+    /**
+     * Resumes a paused (or finished-with-repeat) route.
+     *
+     * Resuming assumes the vehicle is at rest: [pauseRoute] already dropped the reported speed to
+     * zero, so the longitudinal model restarts from zero too and accelerates again. That keeps the
+     * "speed equals the coordinate derivative, and it never changes faster than 3 m/s²" contract
+     * true across the pause as well — a resume that instantly reported the old cruise speed would
+     * contradict the position, which did not move while paused.
+     */
     fun playRoute() {
         val plan = routePlan ?: return
         if (plan.points.size < 2) return
         routeStateValue = RouteState.PLAYING
         runningFlag = true
+        routeLongitudinalSpeedMps = 0.0
     }
 
-    /** Pauses route playback, keeping the current progress. */
+    /**
+     * Pauses route playback, keeping the current progress.
+     *
+     * A pause is a vehicle coming to rest: the reported speed becomes zero, the longitudinal speed
+     * is dropped, and a traffic-stop standstill that is in progress keeps its remaining wait (the
+     * light does not turn green because the simulation was paused).
+     */
     fun pauseRoute() {
         if (routeStateValue == RouteState.PLAYING) routeStateValue = RouteState.PAUSED
         speedValue = 0.0
+        routeLongitudinalSpeedMps = 0.0
     }
 
     /**
@@ -297,6 +401,7 @@ class SimulationEngine(
         routePlan = null
         routeProgressValue = 0.0
         routeStateValue = RouteState.IDLE
+        resetRouteMotion()
         speedValue = 0.0
         releaseJoystick()
         if (currentConfig.mode == MoveMode.ROUTE) {
@@ -322,13 +427,16 @@ class SimulationEngine(
      * the timestamp.
      *
      * ### Exactly one distance application per call
-     * The distance travelled is `speed * deltaMs / 1000`, computed **once** per call and applied
-     * to the unjittered base position. The engine keeps no notion of "a second" of its own, so
-     * deltas are strictly additive: `tick(500) + tick(500)` moves exactly as far as
-     * `tick(1000)`, and two `tick(1000)` calls inside the same wall-clock second legitimately
-     * move twice as far as one. The caller (the ticker) owns the cadence and must call this
-     * method exactly once per [SimulationConfig.updateIntervalMs]; a duplicated ticker start
-     * therefore doubles the observed ground speed even though this method is correct.
+     * The distance travelled is decided **once** per call and applied to the unjittered base
+     * position: joystick movement uses `speed * deltaMs / 1000`, route playback integrates the
+     * longitudinal profile over the same delta (in sub-steps, but in one pass — no state is carried
+     * from one call to the next). The engine keeps no notion of "a second" of its own, so deltas
+     * are additive: `tick(500) + tick(500)` moves as far as `tick(1000)` (exactly for the joystick,
+     * to within sub-step discretisation — millimetres — for a route), and two `tick(1000)` calls
+     * inside the same wall-clock second legitimately move twice as far as one. The caller (the
+     * ticker) owns the cadence and must call this method exactly once per
+     * [SimulationConfig.updateIntervalMs]; a duplicated ticker start therefore doubles the observed
+     * ground speed even though this method is correct.
      *
      * @return the engine state after the tick.
      */
@@ -341,16 +449,14 @@ class SimulationEngine(
             speedValue = 0.0
             return state
         }
-        val positionBefore = basePosition
-        when (resolvedMode()) {
-            MoveMode.ROUTE -> advanceRoute(delta)
+        when (resolvedMode()) {            MoveMode.ROUTE -> advanceRoute(delta)
             MoveMode.JOYSTICK -> advanceJoystick(delta)
             MoveMode.STATIC -> speedValue = 0.0
         }
-        // Jitter re-seeds only when the engine actually moved. A stationary or paused engine
-        // therefore reports one stable position instead of wandering inside the jitter radius,
-        // which used to look like "the route drifts while paused" on device.
-        if (basePosition != positionBefore) jitterEpoch++
+        // The simulated receiver error keeps wandering while the engine runs, including when the
+        // position is parked: a stationary phone still reports a slightly different coordinate every
+        // second, and the wander is what makes that difference *small* instead of a jump.
+        advanceJitter(delta)
         if (currentConfig.stepSimulation) {
             accumulateSteps(delta)
         } else {
@@ -360,27 +466,59 @@ class SimulationEngine(
     }
 
     /**
-     * Deterministic GNSS constellation for the current position.
+     * Deterministic GNSS constellation for the current position **and the current epoch**.
      *
-     * 8..14 satellites spread over GPS/GLONASS/GALILEO/BEIDOU, C/N0 in 20..45 dB-Hz and 7..9 of
-     * them flagged as used in the fix. The result is a pure function of the position, so the UI
-     * and the hook agree. Whether these values are injected at all is decided by the caller
-     * through [SimulationConfig.gpsSignalSimulation].
+     * The visible set comes from a coarse sky anchor (~55 km) and each satellite follows its own
+     * slow elevation/azimuth track, with C/N0 riding on the elevation plus a slow wander — so the
+     * constellation is stable while you walk, physically continuous from one second to the next, and
+     * still different in a different city. The result is a pure function of `(position, epoch)`,
+     * where the epoch is the last tick's timestamp (not "now"), which is what keeps the GNSS status
+     * and the NMEA stream of one epoch describing the *same* sky.
+     *
+     * Whether these values are injected at all is decided by the caller through
+     * [SimulationConfig.gpsSignalSimulation].
      */
-    fun satellites(): List<Satellite> = SatelliteSynth.synthesize(basePosition)
+    fun satellites(): List<Satellite> = SatelliteSynth.synthesize(basePosition, skyEpochMs())
 
     /**
-     * NMEA 0183 sentences (`$GPGGA`, `$GPRMC`, `$GPGSV…`) describing the current state.
+     * The epoch every synthesizer describes: the timestamp of the last [tick].
+     *
+     * Using a stored epoch instead of `clock()` at each call site matters: `buildSnap` asks for the
+     * satellites and then for the NMEA lines, and if each call read the clock the GNSS status and the
+     * GSV sentences of one published snapshot would describe skies microseconds apart. Before the
+     * first tick the engine falls back to the wall clock so a preview still has a valid epoch.
+     */
+    private fun skyEpochMs(): Long = if (updatedAtMs > 0L) updatedAtMs else clock()
+
+    /**
+     * NMEA 0183 sentences describing the current state: fix data, recommended minimum, per-talker
+     * GSA/VTG and the multi-constellation GSV stream.
+     *
+     * The coordinates are the *jittered* ones — the same value the hook puts into `Location` — so
+     * `$GPGGA` and `getLatitude()/getLongitude()` of one epoch cannot disagree by the jitter radius.
+     * The sky comes from [satellites], which uses the same stored epoch as [accessPoints].
      *
      * @param nowMs Wall clock in epoch milliseconds used for the UTC time/date fields.
      */
     fun nmea(nowMs: Long): List<String> = NmeaSynth.build(
-        position = basePosition,
+        position = position,
         satellites = satellites(),
         speedMps = speedValue,
         bearingDeg = bearingValue,
         nowMs = nowMs,
     )
+
+    /**
+     * Height of the geoid above the WGS-84 ellipsoid at [point], in meters.
+     *
+     * A real GNSS fix carries **two** heights: `Location.getAltitude()` is the ellipsoid height and
+     * (on Android 14+) `getMslAltitudeMeters()` is the height above mean sea level. They differ by
+     * this geoid separation, which is a property of the place — roughly +1.5 m in Beijing, -20 m in
+     * New York, +22 m in the Gulf of Guinea. The hook layer uses it to populate the MSL fields so a
+     * device that normally reports both heights does not suddenly report only one.
+     */
+    fun geoidSeparationMeters(point: GeoPoint = basePosition): Double =
+        NmeaSynth.geoidSeparationMeters(point)
 
     /**
      * Deterministic serving cell plus 1..3 neighbours around the current position.
@@ -390,11 +528,14 @@ class SimulationEngine(
     fun cells(): List<SimulatedCell> = CellSynth.synthesize(basePosition)
 
     /**
-     * Deterministic Wi-Fi scan result (4..8 access points) around the current position.
+     * Deterministic Wi-Fi scan result around the current position, from the access-point field.
+     *
+     * Same `(position, epoch)` contract as [satellites]: the access points around you persist while
+     * you walk, RSSI changes with distance and fades slowly in time.
      *
      * Gating on [SimulationConfig.wifiSimulation] is the caller's responsibility.
      */
-    fun accessPoints(): List<SimulatedAp> = WifiSynth.synthesize(basePosition)
+    fun accessPoints(): List<SimulatedAp> = WifiSynth.synthesize(basePosition, skyEpochMs())
 
     /**
      * Number of steps that [deltaMs] at the configured cadence produces.
@@ -443,6 +584,28 @@ class SimulationEngine(
         basePosition = GeoMath.destination(basePosition, bearingValue, distance)
     }
 
+    /**
+     * Advances the route player by one tick.
+     *
+     * The tick is integrated in sub-steps of [ROUTE_SUBSTEP_SECONDS] so the acceleration-limited
+     * profile — including the braking curve into a stop, `v = sqrt(2·a·remaining)` — is followed
+     * *inside* one tick. A single 1 s Euler step cannot do that: it would arrive at the stop with
+     * several m/s left and then have to clamp the position, reporting a speed drop far steeper than
+     * any car can brake.
+     *
+     * Per tick the player decides the speed for the whole tick and moves at it, and
+     * [EngineState.speedMps] is set to `distance covered / tick length` — the exact secant
+     * derivative of the position, which is what makes the reported speed and the coordinates tell
+     * the same story. Consequences worth naming:
+     *
+     *  * the speed sequence of an accelerating drive is non-decreasing by at most
+     *    `ACCELERATION_MPS2 * tickSeconds` per tick (interval averages of a Lipschitz profile), so
+     *    a 1 s ticker never shows the speed jumping;
+     *  * standing at a traffic stop reports exactly `0.0` and the position is bit-identical from
+     *    one tick to the next;
+     *  * the tick that reaches the last point reports the (small) speed it actually travelled at;
+     *    every later tick sees [RouteState.FINISHED] and reports zero.
+     */
     private fun advanceRoute(deltaMs: Long) {
         val plan = routePlan
         if (plan == null || routeStateValue != RouteState.PLAYING) {
@@ -454,29 +617,120 @@ class SimulationEngine(
             routeProgressValue = 1.0
             routeStateValue = RouteState.FINISHED
             speedValue = 0.0
+            routeLongitudinalSpeedMps = 0.0
             return
         }
-        val speed = plan.speedMps.coerceIn(
+        val dt = deltaMs / 1_000.0
+        val cruiseSpeed = plan.speedMps.coerceIn(
             SimulationConfig.MIN_CUSTOM_SPEED_MPS,
             SimulationConfig.MAX_CUSTOM_SPEED_MPS,
         )
-        val deltaMeters = speed * deltaMs / 1_000.0
-        val travelled = routeProgressValue * total + deltaMeters
-        if (travelled >= total) {
-            if (plan.repeat) {
-                val wrapped = travelled % total
-                routeProgressValue = (wrapped / total).coerceIn(0.0, 1.0)
-                speedValue = speed
-            } else {
-                routeProgressValue = 1.0
-                routeStateValue = RouteState.FINISHED
-                speedValue = 0.0
-            }
+        // The schedule is a property of the plan (deterministic); the flag is what switches it on.
+        // Reading it per tick means the user can turn stops on/off mid-route without the plan
+        // being retuned — the stop *positions* never change with the flag, only whether they are
+        // served.
+        val stops = if (currentConfig.routeTrafficStops) plan.trafficStops else emptyList()
+        val repeat = plan.repeat
+
+        var travelled = routeTravelledM
+        if (!travelled.isFinite()) travelled = 0.0
+        travelled = travelled.coerceIn(0.0, total)
+        var speed = if (routeLongitudinalSpeedMps.isFinite()) {
+            routeLongitudinalSpeedMps.coerceAtLeast(0.0)
         } else {
-            routeProgressValue = (travelled / total).coerceIn(0.0, 1.0)
-            speedValue = speed
+            0.0
         }
+        var dwell = if (routeDwellRemainingS.isFinite()) {
+            routeDwellRemainingS.coerceAtLeast(0.0)
+        } else {
+            0.0
+        }
+        var moved = 0.0
+        var budget = dt
+        var finished = false
+        var segments = 0
+
+        while (budget > TIME_EPSILON_SECONDS && segments++ < MAX_ROUTE_SEGMENTS_PER_TICK) {
+            if (dwell > 0.0) {
+                // Standing at a stop: no distance at all, so the reported speed is a hard zero.
+                val used = min(dwell, budget)
+                dwell -= used
+                budget -= used
+                if (dwell <= TIME_EPSILON_SECONDS) dwell = 0.0
+                continue
+            }
+            val nextStop = stops.firstOrNull {
+                it.distanceMeters > travelled + ARRIVAL_EPSILON_METERS
+            }
+            val eventAt = nextStop?.distanceMeters
+                ?: if (repeat) Double.POSITIVE_INFINITY else total
+            val remaining = eventAt - travelled
+            if (remaining <= ARRIVAL_EPSILON_METERS) {
+                if (nextStop != null) {
+                    dwell = nextStop.waitSeconds
+                    continue
+                }
+                // Standing exactly on the last point of a non-repeating route.
+                finished = true
+                break
+            }
+            val stepSeconds = min(ROUTE_SUBSTEP_SECONDS, budget)
+            // Slowest speed from which the vehicle can still stop inside `remaining` meters.
+            val stopLimit = sqrt(2.0 * RoutePlan.DECELERATION_MPS2 * remaining)
+            val target = min(cruiseSpeed, stopLimit)
+            val nextSpeed = if (speed < target) {
+                min(speed + RoutePlan.ACCELERATION_MPS2 * stepSeconds, target)
+            } else {
+                max(speed - RoutePlan.DECELERATION_MPS2 * stepSeconds, target)
+            }
+            val averageSpeed = (speed + nextSpeed) * 0.5
+            val stepDistance = averageSpeed * stepSeconds
+            if (stepDistance >= remaining) {
+                // Arrive exactly on the event point instead of overshooting it. Time is charged for
+                // the distance actually covered, so the leftover of this tick goes to the stop.
+                val used = if (averageSpeed > 0.0) remaining / averageSpeed else stepSeconds
+                moved += remaining
+                travelled = eventAt
+                budget -= used
+                speed = 0.0
+                if (nextStop != null) {
+                    dwell = nextStop.waitSeconds
+                    continue
+                }
+                finished = true
+                break
+            }
+            moved += stepDistance
+            travelled += stepDistance
+            budget -= stepSeconds
+            speed = nextSpeed
+            if (repeat && travelled >= total) {
+                // The loop seam is not an event: a repeating route is a circuit, so the position
+                // wraps at cruise speed instead of braking to a standstill that the geometry does
+                // not contain. `%` (not `-`) because one sub-step can span more than a lap when a
+                // fast plan is played on a very short polyline.
+                travelled %= total
+            }
+        }
+
+        routeTravelledM = if (finished) total else travelled.coerceIn(0.0, total)
+        routeLongitudinalSpeedMps = if (finished) 0.0 else speed
+        routeDwellRemainingS = if (finished) 0.0 else dwell
+        if (finished) {
+            routeProgressValue = 1.0
+            routeStateValue = RouteState.FINISHED
+        } else {
+            routeProgressValue = (routeTravelledM / total).coerceIn(0.0, 1.0)
+        }
+        speedValue = if (dt > 0.0) moved / dt else 0.0
         applyRouteSample(plan, routeProgressValue)
+    }
+
+    /** Puts the longitudinal model at rest, without touching the loaded plan. */
+    private fun resetRouteMotion() {
+        routeTravelledM = 0.0
+        routeLongitudinalSpeedMps = 0.0
+        routeDwellRemainingS = 0.0
     }
 
     private fun applyRouteSample(plan: RoutePlan, progress: Double) {
@@ -521,23 +775,72 @@ class SimulationEngine(
     }
 
     private fun jitteredPosition(): GeoPoint {
-        val gpsJitter = currentConfig.gpsJitterMeters
-        val altitudeJitter = currentConfig.altitudeJitterMeters
-        if (gpsJitter <= 0.0 && altitudeJitter <= 0.0) return basePosition
-        val seed = seedFor(basePosition, SALT_JITTER) xor (jitterEpoch * -0x61c8864680b583ebL)
-        val random = SeededRandom(seed)
-        var point = basePosition
-        if (gpsJitter > 0.0) {
-            point = GeoMath.destination(
-                point,
-                random.nextDouble() * 360.0,
-                random.nextDouble() * gpsJitter,
-            )
+        val gpsRadius = currentConfig.gpsJitterMeters
+        val altitudeRadius = currentConfig.altitudeJitterMeters
+        if (gpsRadius <= 0.0 && altitudeRadius <= 0.0) return basePosition
+        val east = if (gpsRadius > 0.0) jitterEastM else 0.0
+        val north = if (gpsRadius > 0.0) jitterNorthM else 0.0
+        val up = if (altitudeRadius > 0.0) jitterUpM else 0.0
+        if (east == 0.0 && north == 0.0 && up == 0.0) return basePosition
+        val horizontal = GeoMath.offsetMeters(basePosition, east, north)
+        return if (up == 0.0) horizontal else horizontal.copy(alt = basePosition.alt + up)
+    }
+
+    /**
+     * Advances the simulated receiver error by [deltaMs] of simulated time.
+     *
+     * Discrete Ornstein-Uhlenbeck step per axis: `x += σ·√dt·N(0,1) − α·x·dt`, with `σ` set so that
+     * three sigma equals the configured radius (the reading every Android location setting implies)
+     * and `α = 0.05 /s` as the mean reversion, then clamped to the radius. Properties this buys:
+     *
+     * * consecutive fixes differ by centimeters to a meter, not by the whole radius, so a consumer
+     *   that differentiates consecutive coordinates does not compute a 30 m/s "speed" from a 1.4 m/s
+     *   fix (that contradiction is the cheapest mock-provider tell there is);
+     * * the error is stationary — it does not drift away over a long walk;
+     * * the sequence is deterministic in the tick history, because the Gaussian source is a seeded
+     *   PRNG owned by this engine instance.
+     *
+     * A zero radius pins the corresponding axes to zero, so disabling jitter restores an exact
+     * position immediately instead of leaving the last offset behind.
+     */
+    private fun advanceJitter(deltaMs: Long) {
+        val gpsRadius = currentConfig.gpsJitterMeters
+        val altitudeRadius = currentConfig.altitudeJitterMeters
+        if (gpsRadius <= 0.0) {
+            jitterEastM = 0.0
+            jitterNorthM = 0.0
         }
-        if (altitudeJitter > 0.0) {
-            point = point.copy(alt = basePosition.alt + (random.nextDouble() * 2.0 - 1.0) * altitudeJitter)
+        if (altitudeRadius <= 0.0) jitterUpM = 0.0
+        val dt = (deltaMs / 1_000.0).coerceIn(MIN_JITTER_STEP_S, MAX_TICK_DELTA_MS / 1_000.0)
+        val decay = JITTER_MEAN_REVERSION_PER_S * dt
+        // Discretisation of an OU process with stationary standard deviation `radius/3`:
+        // Var(x∞) = σ²/(2α), so the per-step diffusion coefficient is σ_step = σ_stat·√(2α).
+        // Using σ_stat directly (the naive reading) would make one 1 s step as large as the whole
+        // envelope, which is the very defect this model removes.
+        val stepFraction = JITTER_SIGMA_FRACTION * sqrt(2.0 * JITTER_MEAN_REVERSION_PER_S)
+        if (gpsRadius > 0.0) {
+            val sigma = gpsRadius * stepFraction
+            jitterEastM += sigma * sqrt(dt) * nextGaussian() - decay * jitterEastM
+            jitterNorthM += sigma * sqrt(dt) * nextGaussian() - decay * jitterNorthM
+            val magnitude = hypot(jitterEastM, jitterNorthM)
+            if (magnitude > gpsRadius) {
+                val scale = gpsRadius / magnitude
+                jitterEastM *= scale
+                jitterNorthM *= scale
+            }
         }
-        return point
+        if (altitudeRadius > 0.0) {
+            val sigma = altitudeRadius * stepFraction
+            jitterUpM += sigma * sqrt(dt) * nextGaussian() - decay * jitterUpM
+            jitterUpM = jitterUpM.coerceIn(-altitudeRadius, altitudeRadius)
+        }
+    }
+
+    /** Standard normal sample (Box-Muller) from the deterministic per-engine source. */
+    private fun nextGaussian(): Double {
+        val u1 = jitterRandom.nextDouble().coerceAtLeast(1e-12)
+        val u2 = jitterRandom.nextDouble()
+        return sqrt(-2.0 * kotlin.math.ln(u1)) * kotlin.math.cos(2.0 * Math.PI * u2)
     }
 
     private fun sanitizeAxis(value: Float): Float = when {
@@ -558,8 +861,40 @@ class SimulationEngine(
         /** Maximum bearing change per second, in degrees; keeps heading turns smooth. */
         const val MAX_TURN_RATE_DEG_PER_SEC: Double = 360.0
 
+        /**
+         * Integration step of the route's longitudinal model, in seconds.
+         *
+         * 50 ms is short enough that the braking curve into a stop is followed to within a
+         * centimetre per step at city speeds, and long enough that a 5 s (clamped) tick costs only
+         * 100 steps. It is *not* a tick: the engine still applies exactly one distance per [tick].
+         */
+        const val ROUTE_SUBSTEP_SECONDS: Double = 0.05
+
+        /** Distance from a scheduled event at which the vehicle is considered to have arrived, in meters. */
+        const val ARRIVAL_EPSILON_METERS: Double = 1e-6
+
+        /** Time quantum below which a tick is considered exhausted, in seconds. */
+        const val TIME_EPSILON_SECONDS: Double = 1e-9
+
+        /** Hard cap on the segments one route tick may integrate (dwell phases + sub-steps). */
+        const val MAX_ROUTE_SEGMENTS_PER_TICK: Int = 512
+
         /** Joystick magnitudes below this are treated as "not moving". */
         const val JOYSTICK_DEAD_ZONE: Double = 0.02
+
+        /**
+         * Fraction of the configured jitter radius that equals one standard deviation.
+         *
+         * "Accuracy radius" in the Android UI is read as a three-sigma bound, so a 5 m setting
+         * means the receiver error is N(0, (5/3)²) per axis.
+         */
+        const val JITTER_SIGMA_FRACTION: Double = 1.0 / 3.0
+
+        /** Mean reversion of the simulated GPS error, per second (Ornstein-Uhlenbeck `α`). */
+        const val JITTER_MEAN_REVERSION_PER_S: Double = 0.05
+
+        /** Shortest integration step for the jitter process, in seconds. */
+        const val MIN_JITTER_STEP_S: Double = 0.01
 
         /**
          * Ground speed that used to gate the step counter, in meters/second.

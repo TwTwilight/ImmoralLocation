@@ -79,9 +79,28 @@ object GeoMath {
         )
     }
 
+    /**
+     * Point displaced from [start] by [eastM] meters east and [northM] meters north.
+     *
+     * Used for GPS noise, which is naturally expressed in a local east/north frame: a receiver's
+     * error is a small horizontal offset, not a random bearing and distance. Altitude is carried
+     * over unchanged (vertical error is reported separately).
+     */
+    fun offsetMeters(start: GeoPoint, eastM: Double, northM: Double): GeoPoint {
+        if (eastM == 0.0 && northM == 0.0) return start
+        val latRad = start.lat * DEG_TO_RAD
+        val cosLat = cos(latRad).coerceAtLeast(1e-6)
+        val lat = start.lat + (northM / EARTH_RADIUS_M) * RAD_TO_DEG
+        val lon = start.lon + (eastM / (EARTH_RADIUS_M * cosLat)) * RAD_TO_DEG
+        return GeoPoint(
+            lat = lat.coerceIn(-90.0, 90.0),
+            lon = normalizeLongitude(lon),
+            alt = start.alt,
+        )
+    }
+
     /** Wraps a bearing into `[0, 360)`; non-finite input maps to `0.0`. */
-    fun normalizeBearing(deg: Double): Double {
-        if (!deg.isFinite()) return 0.0
+    fun normalizeBearing(deg: Double): Double {        if (!deg.isFinite()) return 0.0
         val wrapped = deg % 360.0
         return if (wrapped < 0.0) wrapped + 360.0 else wrapped
     }

@@ -366,16 +366,19 @@ class SimulationEngineTest {
     @Test
     fun gpsJitterStaysWithinTheConfiguredRadius() {
         val engine = engineAtBeijing(SimulationConfig(gpsJitterMeters = 20.0))
-        repeat(20) {
-            val distance = GeoMath.distanceMeters(Reference.BEIJING, engine.position)
-            assertTrue(distance <= 20.0 + 1e-9, "jitter of $distance m exceeds 20 m")
+        // The error is a random walk that only advances while the simulation runs.
+        engine.running = true
+        repeat(60) {
             engine.tick(1_000L)
+            val distance = GeoMath.distanceMeters(Reference.BEIJING, engine.position)
+            assertTrue(distance <= 20.0 + 1e-6, "jitter of $distance m exceeds 20 m")
         }
     }
 
     @Test
     fun jitterIsStableWithinATick() {
         val engine = engineAtBeijing(SimulationConfig(gpsJitterMeters = 15.0))
+        engine.running = true
         engine.tick(1_000L)
         val first = engine.position
         val second = engine.position
@@ -388,7 +391,9 @@ class SimulationEngineTest {
         val engine = engineAtBeijing(
             SimulationConfig(gpsJitterMeters = 0.0, altitudeJitterMeters = 5.0),
         )
-        engine.tick(1_000L)
+        // The error is a random walk that starts at zero, so it needs a few epochs to develop.
+        engine.running = true
+        repeat(5) { engine.tick(1_000L) }
         assertSamePoint(Reference.BEIJING, engine.position, 1e-6)
         assertTrue(
             abs(engine.position.alt - Reference.BEIJING.alt) <= 5.0 + 1e-9,

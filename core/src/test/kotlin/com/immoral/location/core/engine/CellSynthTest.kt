@@ -4,6 +4,8 @@ import com.immoral.location.core.geo.GeoMath
 import com.immoral.location.core.model.GeoPoint
 import com.immoral.location.core.model.SimulatedCell
 import com.immoral.location.core.model.SimulationConfig
+import kotlin.math.abs
+import kotlin.math.log10
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -117,6 +119,147 @@ class CellSynthTest {
             assertEquals(CellSynth.MCC_CHINA, serving.mcc)
             assertTrue(serving.cid > 0L, "cid must be positive at $point")
             assertTrue(serving.lac in 0..65_535, "tac out of range at $point: ${serving.lac}")
+        }
+    }
+
+    // ------------------------------------------------------------------ signal continuity
+    //
+    // The defect these guard against: the level used to be a per-grid-cell constant picked by hashing
+    // the eNodeB, so a signal-strength plot showed a 220 m plateau and a step at every grid border. A
+    // real report instead moves by a couple of dB per 20 m step, is continuous across a handover, and
+    // is a function of the distance to the antenna rather than of the cell identity.
+
+    /** A straight walk of [steps] × [stepM] metres from [from] along [bearingDeg]. */
+    private fun walk(from: GeoPoint, bearingDeg: Double, steps: Int, stepM: Double): List<GeoPoint> =
+        (0..steps).map { GeoMath.destination(from, bearingDeg, it * stepM) }
+
+    @Test
+    fun twentyMetreStepsMoveTheSignalByAFewDecibels() {
+        val points = walk(shanghai, 12.0, 50, 20.0)
+        val exact = points.map { CellSynth.servingRssiExact(it) }
+        val reported = points.map { servingAt(it).dbm }
+
+        var worstExact = 0.0
+        var worstReported = 0
+        var changed = 0
+        for (step in 1 until points.size) {
+            val delta = abs(exact[step] - exact[step - 1])
+            worstExact = maxOf(worstExact, delta)
+            assertTrue(delta > 0.0, "step $step left the level untouched at ${points[step]}")
+            // The raw law is steeper where the walk passes close to a mast; the *report* saturates
+            // there, which is exactly what a handset under a site does.
+            assertTrue(delta <= 10.0, "step $step moved the raw level by $delta dB")
+            val reportedDelta = abs(reported[step] - reported[step - 1])
+            worstReported = maxOf(worstReported, reportedDelta)
+            assertTrue(
+                reportedDelta <= 6,
+                "step $step moved the reported level by $reportedDelta dB, which is a jump, not a walk",
+            )
+            if (reportedDelta != 0) changed++
+        }
+        // A whole-dBm report cannot change on every step — it is quantised, and a sideways step at the
+        // edge of a cell genuinely shifts the distance by little — but a level that only takes a
+        // handful of values over a kilometre is the plateau defect again.
+        assertTrue(
+            changed >= (points.size - 1) * 2 / 3,
+            "only $changed of ${points.size - 1} steps changed the reported level",
+        )
+        assertTrue(
+            reported.toSet().size >= 10,
+            "1 km of walking only produced these levels: ${reported.toSet()} " +
+                "(worst raw step $worstExact dB, worst reported step $worstReported dB)",
+        )
+    }
+
+    @Test
+    fun theLevelFollowsTheDistanceToTheServingAntenna() {
+        // Sweep enough positions that distances vary widely, then check the reported level against the
+        // log-distance law: level_i - level_j must equal 10 n log10(d_j / d_i) up to the ±SHADOW_DB
+        // slow-fading term. This is the property that makes the value a *measurement*, not a label.
+        val samples = (walk(shanghai, 40.0, 30, 20.0) + walk(fiveHundredMetersNorth, 200.0, 30, 20.0))
+            .map { Triple(CellSynth.antennaDistancesM(it).first(), CellSynth.servingRssiExact(it), it) }
+            .filter { it.first > CellSynth.MIN_DISTANCE_M + 1.0 }
+        for (a in samples) {
+            for (b in samples) {
+                val law = 10.0 * CellSynth.PATH_LOSS_EXPONENT * log10(b.first / a.first)
+                val seen = a.second - b.second
+                assertTrue(
+                    abs(law - seen) <= 2.0 * CellSynth.SHADOW_DB + 1e-6,
+                    "at ${a.third} vs ${b.third}: ${a.first} m vs ${b.first} m predicts $law dB, " +
+                        "reported $seen dB",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun theNearerAntennaIsAlwaysTheStrongerCell() {
+        for (point in walk(shanghai, 33.0, 40, 25.0)) {
+            val cells = cellsAt(point)
+            val distances = CellSynth.antennaDistancesM(point)
+            assertEquals(cells.size, distances.size, "distance list does not match the cell list")
+            for (i in 1 until cells.size) {
+                for (j in 1 until cells.size) {
+                    if (distances[i] < distances[j]) {
+                        assertTrue(
+                            cells[i].dbm >= cells[j].dbm,
+                            "at $point neighbour $i (${distances[i]} m, ${cells[i].dbm} dBm) is " +
+                                "weaker than neighbour $j (${distances[j]} m, ${cells[j].dbm} dBm)",
+                        )
+                    }
+                }
+            }
+            assertTrue(
+                cells.drop(1).all { it.dbm <= cells.first().dbm },
+                "at $point the serving cell ${cells.first().dbm} is not the strongest: " +
+                    cells.map { it.dbm },
+            )
+        }
+    }
+
+    @Test
+    fun aHandoverDoesNotStepTheSignal() {
+        var crossings = 0
+        var worst = 0
+        val points = walk(shanghai, 8.0, 60, 20.0)
+        for (step in 1 until points.size) {
+            val before = servingAt(points[step - 1])
+            val after = servingAt(points[step])
+            if (before.cid == after.cid) continue
+            crossings++
+            worst = maxOf(worst, abs(before.dbm - after.dbm))
+        }
+        assertTrue(crossings >= 3, "1.2 km of walking only handed over $crossings times")
+        assertTrue(worst <= 6, "a handover jumped the level by $worst dB")
+    }
+
+    @Test
+    fun theLevelDoesNotStayConstantInsideOneGridCell() {
+        // 30 m around one position stays inside a ~220 m eNodeB cell for most starting points, so this
+        // is the "the level must not be a per-cell constant" check.
+        val around = walk(shanghai, 0.0, 4, 15.0).drop(1) +
+            walk(shanghai, 90.0, 4, 15.0).drop(1) +
+            walk(shanghai, 180.0, 4, 15.0).drop(1)
+        val centre = servingAt(shanghai)
+        val sameCell = (listOf(shanghai) + around).map { servingAt(it) }.filter { it.cid == centre.cid }
+        assertTrue(sameCell.size >= 5, "the sample left the grid cell: ${sameCell.size} of 13")
+        assertTrue(
+            sameCell.map { it.dbm }.toSet().size >= 2,
+            "one grid cell reports a single level across ${sameCell.size} positions: " +
+                sameCell.map { it.dbm },
+        )
+    }
+
+    @Test
+    fun everyReportedLevelStaysInsideTheClampWhileWalking() {
+        for (point in walk(shanghai, 27.0, 80, 25.0)) {
+            for (cell in cellsAt(point)) {
+                assertTrue(
+                    cell.dbm in CellSynth.MIN_DBM..CellSynth.MAX_DBM,
+                    "$point reported ${cell.dbm} dBm outside the documented clamp",
+                )
+                assertEquals(CellSynth.levelFor(cell.dbm), cell.level, "$point: level/dbm mismatch")
+            }
         }
     }
 }

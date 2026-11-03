@@ -184,11 +184,24 @@ class CellSynthPlausibilityTest {
 
     @Test
     fun aMicroMovementDoesNotFlickerTheIdentifiers() {
-        // 10 m: well inside one eNodeB grid cell and one tracking area, so nothing may change. This is
-        // the property that stops the set from looking random between two reads one tick apart.
+        // 10 m: well inside one eNodeB grid cell and one tracking area, so no identifier may change.
+        // This is the property that stops the set from looking random between two reads one tick
+        // apart. The *level* is a distance measurement and is allowed to move by a dB or two — that
+        // is what a real handset reports over ten metres — but not to jump.
         val point = Reference.SHANGHAI
         val near = GeoMath.destination(point, 0.0, 10.0)
-        assertEquals(servingAt(point), servingAt(near), "a 10 m move changed the serving cell")
+        val before = servingAt(point)
+        val after = servingAt(near)
+        assertEquals(before.type, after.type, "the RAT changed over 10 m")
+        assertEquals(before.mcc to before.mnc, after.mcc to after.mnc, "the PLMN changed over 10 m")
+        assertEquals(before.lac, after.lac, "the TAC changed over 10 m")
+        assertEquals(before.cid, after.cid, "the ECI changed over 10 m")
+        assertEquals(before.pci, after.pci, "the PCI changed over 10 m")
+        assertEquals(before.registered, after.registered, "registration changed over 10 m")
+        assertTrue(
+            kotlin.math.abs(before.dbm - after.dbm) <= 3,
+            "a 10 m move moved the level from ${before.dbm} to ${after.dbm} dBm",
+        )
     }
 
     @Test

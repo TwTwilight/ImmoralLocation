@@ -4,6 +4,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
+import com.immoral.location.core.engine.AccuracySynth
 import com.immoral.location.core.engine.SimulationEngine
 import com.immoral.location.core.model.EngineState
 import com.immoral.location.core.model.GeoPoint
@@ -19,7 +20,6 @@ import com.immoral.location.ipc.WireState
 import com.immoral.location.ipc.toWire
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.abs
 
 /**
  * The engine host that lives **inside `system_server`**.
@@ -43,6 +43,8 @@ object EngineRuntime {
         val lat: Double,
         val lon: Double,
         val alt: Double,
+        /** Height above mean sea level, i.e. [alt] minus the local geoid separation. */
+        val mslAltM: Double,
         val speedMps: Double,
         val bearingDeg: Double,
         val accuracyGpsM: Double,
@@ -109,6 +111,57 @@ object EngineRuntime {
     private var deltaUsedMs = 0L
     private var nmeaCache: List<String> = emptyList()
 
+    /**
+     * Full width of the tick-scheduling jitter window: ±3 % of the nominal interval
+     * (`TICK_JITTER_SPAN / 2` on either side). See [nextTickDelayMs].
+     */
+    private const val TICK_JITTER_SPAN = 0.06
+
+    /**
+     * RNG for the scheduling jitter. Fixed seed on purpose: an acceptance replay must be able to
+     * predict the same schedule, and the sequence — not its unpredictability — is what breaks the
+     * metronome. Only ever touched from the single engine thread inside [tickRunnable].
+     */
+    private val tickRandom = java.util.Random(0x1BAD_5EEDL)
+
+    /**
+     * Scheduling delay for the next tick: the nominal interval with a small deterministic jitter.
+     *
+     * A perfectly constant period is a timer signature no GNSS chipset produces. Consecutive
+     * `Location.getElapsedRealtimeNanos()` deltas from a real receiver wobble by a few percent
+     * (binder/looper latency, UART readout, scheduler), while `postDelayed(intervalMs)` reproduces
+     * the configured value to the millisecond for hours — a fingerprint that survives any check of
+     * our own coordinates.
+     *
+     * Invariants this must not break:
+     *  * **Only the schedule jitters.** [SimulationEngine.tick] still receives the *measured* delta
+     *    (`SystemClock.elapsedRealtime()` difference), so movement stays exactly consistent with the
+     *    reported coordinates and speed.
+     *  * **The nominal value is untouched.** [intervalMs] keeps the configured value and the
+     *    `tick.diag` line keeps its exact field order/format (`qa-e2e` parses it).
+     *  * **The mean is unchanged.** The draw is uniform on `[nominal - s, nominal + s]` with
+     *    `s = 3 % of nominal`, so `E[delay] = nominal` (the mean of a uniform draw is its mid-point)
+     *    and the truncation to `Long` costs less than 1 ms per interval. Over any number of ticks the
+     *    average cadence is therefore the configured one, not a drifted one.
+     *  * **Bounded.** The window is clipped into
+     *    [SimulationConfig.MIN_INTERVAL_MS]..[SimulationConfig.MAX_INTERVAL_MS], so a delay can never
+     *    leave the range the rest of the engine guarantees. At the very edge of that range the window
+     *    necessarily becomes one-sided (a delay below `MIN_INTERVAL_MS` is not allowed at all), which
+     *    moves the mean at most 1.5 % of the nominal value *into* the legal range — the best a bounded
+     *    delay can do, and only reachable when someone configures 100 ms or 10 s exactly.
+     */
+    private fun nextTickDelayMs(nominalMs: Long): Long {
+        val nominal = nominalMs.coerceIn(
+            SimulationConfig.MIN_INTERVAL_MS,
+            SimulationConfig.MAX_INTERVAL_MS,
+        )
+        val swing = nominal * (TICK_JITTER_SPAN / 2.0)
+        val low = (nominal - swing).coerceAtLeast(SimulationConfig.MIN_INTERVAL_MS.toDouble())
+        val high = (nominal + swing).coerceAtMost(SimulationConfig.MAX_INTERVAL_MS.toDouble())
+        val delay = (low + (high - low) * tickRandom.nextDouble()).toLong()
+        return delay.coerceIn(SimulationConfig.MIN_INTERVAL_MS, SimulationConfig.MAX_INTERVAL_MS)
+    }
+
     private val tickRunnable = object : Runnable {
         override fun run() {
             val current = handler ?: return
@@ -152,7 +205,9 @@ object EngineRuntime {
                         "m mode=" + snapValue.config.mode + " running=" + snapValue.running,
                 )
             }
-            if (ticking) current.postDelayed(this, intervalMs.coerceIn(100L, 10_000L))
+            // The *schedule* carries a ±3 % jitter (see [nextTickDelayMs]); `engine.tick` above still
+            // received the measured delta and `tick.diag` still reports the nominal interval.
+            if (ticking) current.postDelayed(this, nextTickDelayMs(intervalMs))
         }
     }
 
@@ -384,6 +439,16 @@ object EngineRuntime {
             current.removeCallbacks(tickRunnable)
             current.post(tickRunnable)
             Log.rate("ticker", 1_000L, "ticker started (interval ${intervalMs}ms)")
+            // Evidence that the cadence is not a metronome: name the jitter, its bound and what it
+            // does NOT touch. Emitted once per session (the acceptance run greps the log for it).
+            Log.once(
+                "ticker.jitter",
+                "ticker: scheduling delay jittered ±3% around the nominal ${intervalMs}ms " +
+                    "(window ${(intervalMs * (1.0 - TICK_JITTER_SPAN / 2.0)).toLong()}.." +
+                    "${(intervalMs * (1.0 + TICK_JITTER_SPAN / 2.0)).toLong()}ms, clipped to " +
+                    "${SimulationConfig.MIN_INTERVAL_MS}..${SimulationConfig.MAX_INTERVAL_MS}ms); " +
+                    "engine deltas stay measured, tick.diag keeps the nominal interval, mean cadence unchanged",
+            )
         }
     }
 
@@ -409,8 +474,6 @@ object EngineRuntime {
         val lat = state.point.lat
         val lon = state.point.lon
         val jitter = cfg.gpsJitterMeters
-        val baseAccuracy = 3.0 + (abs((lat * 10_000).toLong() + (lon * 10_000).toLong()) % 6).toDouble()
-        val gpsAccuracy = (baseAccuracy + jitter).coerceIn(3.0, 60.0)
         val nowMs = System.currentTimeMillis()
         val sats = if (cfg.gpsSignalSimulation) {
             try {
@@ -431,16 +494,33 @@ object EngineRuntime {
         } else if (!cfg.gpsSignalSimulation) {
             nmeaCache = emptyList()
         }
+        // The accuracy an app reads has to follow from the constellation it also reads: a strong,
+        // well-spread sky cannot coexist with a 25 m fix, and a constant number is a fingerprint in
+        // itself. `AccuracySynth` derives it as UERE x HDOP over the same satellites plus a slow
+        // deterministic wander, so the two channels agree and the value still moves over time.
+        val gpsAccuracy = try {
+            AccuracySynth.accuracyMeters(state.point, sats, nowMs, jitter)
+        } catch (_: Throwable) {
+            AccuracySynth.DEFAULT_HDOP * 3.0
+        }
+        // MSL height = ellipsoid height - local geoid separation. Both heights are part of a real
+        // GNSS fix on Android 14+; reporting only the ellipsoid one is a "no geoid model" tell.
+        val mslAltM = try {
+            state.point.alt - engine.geoidSeparationMeters(state.point)
+        } catch (_: Throwable) {
+            state.point.alt
+        }
         return Snap(
             running = state.running,
             lat = lat,
             lon = lon,
             alt = state.point.alt,
+            mslAltM = mslAltM,
             speedMps = state.speedMps,
             bearingDeg = state.bearingDeg,
             accuracyGpsM = gpsAccuracy,
-            accuracyNetworkM = (gpsAccuracy + 18.0).coerceIn(15.0, 120.0),
-            accuracyFusedM = (gpsAccuracy + 4.0).coerceIn(5.0, 40.0),
+            accuracyNetworkM = AccuracySynth.networkAccuracyMeters(gpsAccuracy),
+            accuracyFusedM = AccuracySynth.fusedAccuracyMeters(gpsAccuracy),
             steps = state.steps,
             headingDeg = state.headingDeg,
             updatedAtMs = nowMs,

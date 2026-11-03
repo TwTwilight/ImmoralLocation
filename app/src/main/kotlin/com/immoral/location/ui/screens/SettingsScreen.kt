@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.SatelliteAlt
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.Traffic
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -375,14 +376,24 @@ fun SettingsScreen(
                 checked = config.routeRepeat,
                 onCheckedChange = { on -> onUpdate { it.copy(routeRepeat = on) } },
                 icon = Icons.Filled.Repeat,
-                shape = groupItemShape(0, 3),
+                shape = groupItemShape(0, 4),
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            SwitchGroupRow(
+                title = stringResource(R.string.route_traffic_stops),
+                subtitle = stringResource(R.string.shell_route_traffic_desc),
+                checked = config.routeTrafficStops,
+                onCheckedChange = { on -> onUpdate { it.copy(routeTrafficStops = on) } },
+                icon = Icons.Filled.Traffic,
+                shape = groupItemShape(1, 4),
+                modifier = Modifier.testTag("e2e.tool.route.stops"),
             )
             Spacer(modifier = Modifier.height(2.dp))
             NavRow(
                 title = stringResource(R.string.route_import_gpx),
                 subtitle = stringResource(R.string.route_import_hint),
                 icon = Icons.Filled.FileUpload,
-                shape = groupItemShape(1, 3),
+                shape = groupItemShape(2, 4),
                 onClick = actions.onImportGpx,
             )
             Spacer(modifier = Modifier.height(2.dp))
@@ -390,7 +401,7 @@ fun SettingsScreen(
                 title = stringResource(R.string.route_export_gpx),
                 subtitle = stringResource(R.string.route_export_hint),
                 icon = Icons.Filled.FileDownload,
-                shape = groupItemShape(2, 3),
+                shape = groupItemShape(3, 4),
                 onClick = actions.onExportGpx,
             )
 

@@ -1,8 +1,11 @@
 package com.immoral.location.core.engine
 
+import com.immoral.location.core.geo.GeoMath
 import com.immoral.location.core.model.GeoPoint
 import com.immoral.location.core.model.SimulatedCell
 import kotlin.math.floor
+import kotlin.math.log10
+import kotlin.math.roundToInt
 
 /**
  * Deterministic cellular-network synthesis.
@@ -30,6 +33,30 @@ import kotlin.math.floor
  * crossing a few kilometres enters a new tracking area. [MAX_ENODEB_ID] and the ECI layout
  * (`eNodeB id << 8 | sector`) follow 3GPP TS 36.413, and every PLMN in [OPERATORS] is a real,
  * currently assigned pair.
+ *
+ * ## The radio model behind `dbm`
+ *
+ * A reported level that is constant inside a 220 m grid cell and jumps at its border is the one
+ * thing a signal-strength plot catches immediately, so the level is a *distance* measurement:
+ *
+ *  * every eNodeB has a **deterministic antenna position** near its own grid-cell centre
+ *    ([ANTENNA_OFFSET_FRACTION] of the cell extent, from the per-cell hash — not from the query),
+ *  * the serving level is `REFERENCE_DBM - 10 n log10(d / REFERENCE_DISTANCE_M)` with n =
+ *    [PATH_LOSS_EXPONENT] (3GPP TS 36.942 urban-macro exponent, 3.0..3.5) and a handset 100 m from
+ *    a city macro hearing ≈[REFERENCE_DBM] dBm,
+ *  * a smooth ±[SHADOW_DB] dB slow-fading term, correlated over ≈[SHADOW_GRID_DEG]° (≈50 m), stands
+ *    in for street clutter and building penetration — that is why two equidistant positions do not
+ *    report the same number, exactly like the log-normal shadowing of the propagation literature,
+ *  * a neighbour is the *same law with the transmit power cancelled*: it is weaker by
+ *    `10 n log10(d_neighbour / d_serving)`, so the serving cell is the strongest by construction and
+ *    the neighbour ordering follows the distances.
+ *
+ * Two consequences are worth stating because tests rely on them. First, the level is continuous
+ * across a handover: a point on the border between two cells is, by symmetry, the same distance from
+ * both antennas, so the value moves by the antenna jitter only. Second, it saturates inside
+ * [MIN_DBM]..[MAX_DBM] — climbing onto the antenna of a cell pins the report at [MAX_DBM], which is
+ * what a handset under a mast actually does, and beyond ~[MIN_DBM] the model says "this cell is
+ * noise".
  *
  * **Deliberate limitation** (recorded in `docs/STEALTH.md`): this is a *plausible tuple*, not a
  * lookup of the real neighbouring cells at that position — no public cell database is consulted, so
@@ -89,9 +116,47 @@ internal object CellSynth {
     private const val SALT_ENODEB = 0x5a7e_ce11_0012L
     private const val SALT_SECTOR = 0x5a7e_ce11_0013L
     private const val SALT_PCI = 0x5a7e_ce11_0014L
-    private const val SALT_DBM = 0x5a7e_ce11_0015L
     private const val SALT_COUNT = 0x5a7e_ce11_0016L
     private const val SALT_RING = 0x5a7e_ce11_0017L
+    private const val SALT_ANTENNA_LAT = 0x5a7e_ce11_0018L
+    private const val SALT_ANTENNA_LON = 0x5a7e_ce11_0019L
+    private const val SALT_SHADOW = 0x5a7e_ce11_001aL
+
+    // ------------------------------------------------------------ radio model
+    //
+    // Calibrated to what a handset in a dense Chinese or European city reports, not to a full link
+    // budget: these cells are only ≈220 m across, so the "mast density" is far higher than a real
+    // macro grid and a textbook budget would put every sample tens of dB too strong.
+
+    /** Reference distance of the log-distance law, in metres: a small-urban macro's cell radius. */
+    internal const val REFERENCE_DISTANCE_M = 100.0
+
+    /**
+     * RSRP at [REFERENCE_DISTANCE_M]: the level a camped-on handset hears in a served city cell.
+     *
+     * Together with [PATH_LOSS_EXPONENT] this is the law `Fakes.kt` inverts to derive a timing advance
+     * from the reported level (`internal` constants do not cross the module boundary), so the two
+     * calibrations have to be changed together.
+     */
+    private const val REFERENCE_DBM = -86.0
+
+    /** Urban-macro path-loss exponent (3GPP TS 36.942 for the 2 GHz band is 3.0..3.5). */
+    internal const val PATH_LOSS_EXPONENT = 3.2
+
+    /** Distance floor of the law, so `log10` stays finite when the query sits on the antenna. */
+    internal const val MIN_DISTANCE_M = 10.0
+
+    /** A neighbour is never reported at exactly the serving level: that would look like a decode bug. */
+    private const val MIN_NEIGHBOUR_GAP_DB = 1.0
+
+    /** Amplitude of the slow-fading (clutter / penetration) term, in dB. */
+    internal const val SHADOW_DB = 2.0
+
+    /** Lattice pitch of the slow-fading field: ≈50 m, the correlation length of shadowing. */
+    private const val SHADOW_GRID_DEG = 0.0005
+
+    /** How far from its grid-cell centre an antenna sits, as a fraction of the cell extent. */
+    private const val ANTENNA_OFFSET_FRACTION = 0.02
 
     /**
      * A real PLMN plus the identifier ranges this synthesiser uses for it.
@@ -168,10 +233,38 @@ internal object CellSynth {
      *
      * @return the registered serving cell first, then unregistered neighbours.
      */
-    fun synthesize(position: GeoPoint): List<SimulatedCell> {
+    fun synthesize(position: GeoPoint): List<SimulatedCell> = build(position, null)
+
+    /**
+     * Test-visible: the distance in metres from [position] to the antenna of every cell
+     * [synthesize] returns, in the same order.
+     *
+     * The level of a cell is a function of exactly this distance, so tests can assert the ordering
+     * property ("the nearer antenna is the stronger cell") instead of pinning numbers.
+     */
+    internal fun antennaDistancesM(position: GeoPoint): List<Double> {
+        val out = ArrayList<Double>(1 + MAX_NEIGHBOURS)
+        build(position, out)
+        return out
+    }
+
+    /**
+     * The exact (unrounded, unclamped) RSRP of the serving cell at [position], in dBm.
+     *
+     * Test-visible for one reason: the reported value is quantised to whole dBm and saturated at
+     * [MAX_DBM]..[MIN_DBM], and a test that wants to show "the signal moves with every step" must
+     * look at the physical quantity, not at the saturated report.
+     */
+    internal fun servingRssiExact(position: GeoPoint): Double =
+        rssiExact(position, gridOf(position, ENODEB_GRID_DEG))
+
+    private fun build(position: GeoPoint, distances: MutableList<Double>?): List<SimulatedCell> {
         val operator = operatorFor(position)
         val enodebGrid = gridOf(position, ENODEB_GRID_DEG)
-        val serving = cellAt(operator, enodebGrid, serving = true)
+        val servingDistance = distanceToAntennaM(position, enodebGrid)
+        val servingExact = rssiExact(position, enodebGrid)
+        distances?.add(servingDistance)
+        val serving = cellAt(operator, enodebGrid, serving = true, dbm = clampDbm(servingExact))
 
         val count = MIN_NEIGHBOURS +
             (hash(enodebGrid, SALT_COUNT) % (MAX_NEIGHBOURS - MIN_NEIGHBOURS + 1).toLong()).toInt()
@@ -180,12 +273,14 @@ internal object CellSynth {
         val start = (hash(enodebGrid, SALT_RING) % RING.size.toLong()).toInt()
         val neighbours = (0 until count).map { index ->
             val (dLat, dLon) = RING[(start + index) % RING.size]
-            cellAt(
-                operator,
-                Grid(enodebGrid.lat + dLat, enodebGrid.lon + dLon),
-                serving = false,
-                servingDbm = serving.dbm,
-            )
+            val grid = Grid(enodebGrid.lat + dLat, enodebGrid.lon + dLon)
+            val distance = distanceToAntennaM(position, grid)
+            distances?.add(distance)
+            // The same path-loss law with the transmit power cancelled out: a neighbour is weaker by
+            // exactly the extra path loss to its own antenna, so the serving cell stays the strongest
+            // and two neighbours are ordered by their distances.
+            val gap = maxOf(MIN_NEIGHBOUR_GAP_DB, pathLossDb(distance) - pathLossDb(servingDistance))
+            cellAt(operator, grid, serving = false, dbm = clampDbm(servingExact - gap))
         }
         // Two neighbours on the same PCI look like a decode error, and a neighbour on the serving PCI
         // is impossible: nudge the offender up the PCI space (bounded, still 0..503).
@@ -229,22 +324,13 @@ internal object CellSynth {
         operator: Operator,
         enodebGrid: Grid,
         serving: Boolean,
-        servingDbm: Int = MAX_DBM,
+        dbm: Int,
     ): SimulatedCell {
         val tac = tacFor(operator, tacGridForEnodebGrid(enodebGrid))
         val enodebId = 1 + hash(enodebGrid, SALT_ENODEB) % MAX_ENODEB_ID
         val sector = MIN_SECTOR +
             (hash(enodebGrid, SALT_SECTOR) % (MAX_SECTOR - MIN_SECTOR + 1).toLong()).toInt()
         val pci = (hash(enodebGrid, SALT_PCI) % (MAX_PCI + 1).toLong()).toInt()
-        val dbm = if (serving) {
-            // -75..-92 dBm: a camped-on LTE cell in a city.
-            MAX_DBM - (hash(enodebGrid, SALT_DBM) % 18L).toInt()
-        } else {
-            // A neighbouring eNodeB one grid step away is a few dB weaker — never stronger than the
-            // cell the phone is registered to, which apps do check.
-            val gap = 5 + (hash(enodebGrid, SALT_DBM) % 12L).toInt()
-            (servingDbm - gap).coerceIn(MIN_DBM, -86)
-        }
         return SimulatedCell(
             type = RAT_LTE,
             mcc = operator.mcc,
@@ -257,6 +343,73 @@ internal object CellSynth {
             registered = serving,
         )
     }
+
+    // ------------------------------------------------------------ radio model
+
+    /** Whole dBm inside [MIN_DBM]..[MAX_DBM], which is the range a report is allowed to carry. */
+    private fun clampDbm(exact: Double): Int = exact.roundToInt().coerceIn(MIN_DBM, MAX_DBM)
+
+    /** Received level of the cell [grid] as heard at [position], before rounding and clamping. */
+    private fun rssiExact(position: GeoPoint, grid: Grid): Double =
+        REFERENCE_DBM - pathLossDb(distanceToAntennaM(position, grid)) + shadowDb(position)
+
+    /** Path loss in dB relative to [REFERENCE_DISTANCE_M] (0 dB there, growing with distance). */
+    private fun pathLossDb(distanceM: Double): Double =
+        10.0 * PATH_LOSS_EXPONENT * log10(maxOf(distanceM, MIN_DISTANCE_M) / REFERENCE_DISTANCE_M)
+
+    /** Distance from [position] to the antenna of [grid], in metres. */
+    private fun distanceToAntennaM(position: GeoPoint, grid: Grid): Double =
+        GeoMath.distanceMeters(position, antennaOf(grid))
+
+    /**
+     * Where the site of [grid] actually stands: near the centre of its own coverage area, by an
+     * amount that belongs to the *cell* (hash) and never to the query position.
+     *
+     * The offset is deliberately small ([ANTENNA_OFFSET_FRACTION] of the extent): it exists so cells
+     * differ from each other, not so the level jumps when the serving cell changes. A point on the
+     * border of two grid cells is equidistant from both centres, so keeping the sites near those
+     * centres keeps the reported level continuous across a handover.
+     */
+    private fun antennaOf(grid: Grid): GeoPoint {
+        val offsetDeg = ENODEB_GRID_DEG * ANTENNA_OFFSET_FRACTION
+        return GeoPoint(
+            lat = (grid.lat + 0.5) * ENODEB_GRID_DEG + fraction(hash(grid, SALT_ANTENNA_LAT)) * offsetDeg,
+            lon = (grid.lon + 0.5) * ENODEB_GRID_DEG + fraction(hash(grid, SALT_ANTENNA_LON)) * offsetDeg,
+        )
+    }
+
+    /**
+     * Slow fading: a smooth ±[SHADOW_DB] dB field with a ≈50 m correlation length.
+     *
+     * It is the same value for every cell at one position on purpose. What changes between two
+     * equidistant spots is the local clutter and the building the phone is in, and that is shared by
+     * all links from that spot — which is also why it cancels out of the serving/neighbour gap and
+     * cannot break "a neighbour is never stronger than the serving cell". Smoothstep interpolation
+     * keeps the field `C1`, so it never introduces a step while walking.
+     */
+    private fun shadowDb(position: GeoPoint): Double {
+        val x = position.lat / SHADOW_GRID_DEG
+        val y = position.lon / SHADOW_GRID_DEG
+        val x0 = floor(x).toLong()
+        val y0 = floor(y).toLong()
+        val tx = smoothStep(x - x0)
+        val ty = smoothStep(y - y0)
+        val v00 = latticeNoise(x0, y0)
+        val v10 = latticeNoise(x0 + 1, y0)
+        val v01 = latticeNoise(x0, y0 + 1)
+        val v11 = latticeNoise(x0 + 1, y0 + 1)
+        val near = v00 + (v10 - v00) * tx
+        val far = v01 + (v11 - v01) * tx
+        return SHADOW_DB * (near + (far - near) * ty)
+    }
+
+    private fun latticeNoise(x: Long, y: Long): Double = fraction(hash(Grid(x, y), SALT_SHADOW))
+
+    /** `C1` ramp; a plain linear interpolation would leave a kink on every lattice line. */
+    private fun smoothStep(t: Double): Double = t * t * (3.0 - 2.0 * t)
+
+    /** Maps a hash into `[-1, 1]`. */
+    private fun fraction(h: Long): Double = ((h % 2_001L).toDouble() - 1_000.0) / 1_000.0
 
     /** TAC inside the operator's band, stable for every position inside one tracking area. */
     private fun tacFor(operator: Operator, tacGrid: Grid): Int {

@@ -138,6 +138,21 @@ data class SimulationConfig(
     val independentPackages: Set<String> = emptySet(),
     val routeRepeat: Boolean = false,
     val routeSpeedMps: Double = 2.0,
+    /**
+     * When `true`, route playback at vehicle speeds inserts synthetic traffic/idle stops: the
+     * simulated vehicle brakes to a complete standstill, waits 15..60 s and accelerates again,
+     * like a car crossing a signalised city.
+     *
+     * The schedule itself is a pure function of the plan (see `RoutePlan.trafficStops`), so this
+     * flag only switches the behaviour on — it never changes *where* the stops are.
+     *
+     * Default `false` on purpose:
+     *  * every existing acceptance run and saved profile keeps the uninterrupted playback it
+     *    documented, and
+     *  * a pedestrian plan could not produce a stop even when the flag is on, because the
+     *    scheduler only runs for 8..40 m/s (29..144 km/h).
+     */
+    val routeTrafficStops: Boolean = false,
 ) {
     /**
      * Speed actually used for movement.
