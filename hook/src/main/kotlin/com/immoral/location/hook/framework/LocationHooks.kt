@@ -1044,6 +1044,18 @@ object LocationHooks {
             realLast[name] = Location(value)
             captured++
         }
+        if (captured == 0) {
+            // The provider managers answered nothing (Android 15 has no readable cache there); the
+            // service still holds what `dumpsys location` prints.
+            for ((provider, value) in readServiceLastKnown()) {
+                if (Fakes.isFabricated(value)) {
+                    fabricated++
+                    continue
+                }
+                realLast[providerFor(provider)] = Location(value)
+                captured++
+            }
+        }
         if (captured > 0) {
             Log.i(
                 "snapshot: captured the platform's own last-known fix for " +
@@ -1074,9 +1086,58 @@ object LocationHooks {
         for (name in arrayOf("getLastLocationUnsafe", "getLastLocation", "getLastKnownLocation", "getLastLocationSafe")) {
             val getter = Refl.methodOf(cls, name, 0) ?: continue
             if (getter.returnType != Location::class.java) continue
-            return Refl.invoke(getter, instance) as? Location
+            val fromGetter = Refl.invoke(getter, instance) as? Location
+            if (fromGetter != null) return fromGetter
         }
         return null
+    }
+
+    /**
+     * The platform's own last-known fix per provider, read through the system `LocationManager`.
+     *
+     * On Android 15 the provider managers expose **no** last-location getter (the install log lists
+     * no `LocationProviderManager#getLastLocation*` target), so [readLastLocation] always answers
+     * null there and the capture would come back empty on every engine start — measured 2026-11-03:
+     * "no genuine last-known fix available yet (fabricated=0, managers=4)". Asking the service is
+     * the remaining seam; it answers null too when the platform has delivered nothing for that
+     * provider since boot, which is the honest answer at that point.
+     */
+    private fun readServiceLastKnown(): List<Pair<String, Location>> {
+        val manager = systemLocationManager
+        if (manager == null) {
+            Log.once("realfix.nolm", "snapshot: no system LocationManager to read last-known from")
+            return emptyList()
+        }
+        val providers = try {
+            manager.allProviders
+        } catch (t: Throwable) {
+            Log.once("realfix.providers", "snapshot: allProviders failed: ${t.javaClass.simpleName}")
+            return emptyList()
+        }
+        val found = ArrayList<Pair<String, Location>>(providers.size)
+        for (provider in providers) {
+            val value = try {
+                manager.getLastKnownLocation(provider)
+            } catch (t: Throwable) {
+                Log.once(
+                    "realfix.last.$provider",
+                    "snapshot: last-known($provider) failed: ${t.javaClass.simpleName}: ${t.message}",
+                )
+                null
+            } ?: continue
+            found.add(provider to value)
+        }
+        return found
+    }
+
+    /** `LocationManager` from the system-server context; resolved once, `null` when unavailable. */
+    private val systemLocationManager: android.location.LocationManager? by lazy {
+        try {
+            val context = com.immoral.location.hook.BridgeHost.hostContext()
+            context?.getSystemService(android.content.Context.LOCATION_SERVICE) as? android.location.LocationManager
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun publishRealToManager(snap: EngineRuntime.Snap) {
@@ -1749,6 +1810,11 @@ object LocationHooks {
         var newestTrusted = false
         fun consider(candidate: Location, trusted: Boolean) {
             if (Fakes.containsFabricated(candidate)) return
+            // A mocked fix is not "where the phone really is": test providers (`cmd location
+            // set-test-provider-location`) and every fake-location app on the device inject those.
+            // Measured 2026-11-03 on the test device: without this, 回到真实位置 happily jumped to
+            // coordinates the device had never been at.
+            if (candidate.isMock) return
             val best = newest
             if (best != null) {
                 val order = candidate.elapsedRealtimeNanos.compareTo(best.elapsedRealtimeNanos)

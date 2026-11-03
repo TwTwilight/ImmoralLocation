@@ -40,9 +40,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.SatelliteAlt
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.FilledTonalIconButton
@@ -905,12 +905,13 @@ fun MapScreen(
                 )
                 ChromeFabGroupDivider()
                 // 回到真实位置: the phone's own position, not the simulated one. The plate is
-                // icon-only, so the glyph has to carry the difference on its own: a GNSS crosshair
-                // (GpsFixed) rather than a second MyLocation arrow, which would be the same picture
-                // twice with two different meanings. TalkBack reads 回到真实位置 via the content
-                // description.
+                // icon-only, so the glyph has to carry the difference on its own — and a crosshair
+                // (GpsFixed) next to MyLocation rendered as the *same picture twice*, which read as
+                // a duplicated button (caught on device, not in review). A satellite says "this
+                // comes from the real GNSS receiver" and is unmistakable at 24 dp. TalkBack reads
+                // 回到真实位置 via the content description.
                 ChromeFab(
-                    icon = Icons.Filled.GpsFixed,
+                    icon = Icons.Filled.SatelliteAlt,
                     contentDescription = stringResource(R.string.map_real_location),
                     onClick = onJumpReal,
                     tag = "e2e.fab.real",
