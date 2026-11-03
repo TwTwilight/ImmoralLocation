@@ -55,6 +55,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.alpha
@@ -95,6 +103,17 @@ fun SearchPill(
     modifier: Modifier = Modifier,
     readOnly: Boolean = false,
 ) {
+    // The pill shows plain text until it is tapped and only *then* becomes a text field. A field
+    // that is focusable at launch steals focus from the window, so the keyboard used to pop up on
+    // every cold start and hide the whole bottom sheet.
+    var editing by rememberSaveable { mutableStateOf(false) }
+    var hadFocus by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(editing) {
+        if (editing) runCatching { focusRequester.requestFocus() }
+    }
+
     Surface(
         modifier = modifier
             .height(Dimens.searchBarHeight)
@@ -108,7 +127,10 @@ fun SearchPill(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = readOnly) { onClick() }
+                .clickable(enabled = !editing && !readOnly) {
+                    onClick()
+                    editing = true
+                }
                 .padding(start = 16.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -122,30 +144,56 @@ fun SearchPill(
             // A placeholder ellipsised to a lone "..." is worse than no placeholder: it reads as a broken
             // field (frame at 720x1280). Below this width the icon alone carries the affordance.
             BoxWithConstraints(modifier = Modifier.weight(1f)) {
-                if (query.isEmpty() && maxWidth >= 120.dp) {
-                    Text(
-                        text = stringResource(R.string.map_search_placeholder),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                val showPlaceholder = query.isEmpty() && maxWidth >= 120.dp
+                if (!editing || readOnly) {
+                    if (showPlaceholder) {
+                        Text(
+                            text = stringResource(R.string.map_search_placeholder),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    } else {
+                        Text(
+                            text = query,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                if (editing && !readOnly) {
+                    BasicTextField(
+                        value = query,
+                        onValueChange = onQueryChange,
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = MaterialTheme.typography.bodyLarge.fontSize,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester)
+                            // Leave edit mode when the field really loses focus (map tap, IME
+                            // dismissed). The first onFocusChanged arrives *before* the field is
+                            // focused; treating that as "lost" dropped straight back to text.
+                            .onFocusChanged { state ->
+                                if (state.isFocused) {
+                                    hadFocus = true
+                                } else if (hadFocus) {
+                                    hadFocus = false
+                                    editing = false
+                                }
+                            },
                     )
                 }
-                BasicTextField(
-                    value = query,
-                    onValueChange = onQueryChange,
-                    readOnly = readOnly,
-                    singleLine = true,
-                    textStyle = TextStyle(
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = MaterialTheme.typography.bodyLarge.fontSize,
-                        fontWeight = FontWeight.Medium,
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
-                    modifier = Modifier.fillMaxWidth(),
-                )
             }
             if (query.isNotEmpty() && !readOnly) {
                 androidx.compose.material3.IconButton(
@@ -179,6 +227,9 @@ fun ChromeFab(
     modifier: Modifier = Modifier,
     active: Boolean = false,
     tag: String? = null,
+    // Inside [ChromeFabGroup] the plate is the container: a button with its own fill, hairline and
+    // shadow on top of it read as "a box of boxes".
+    grouped: Boolean = false,
 ) {
     Surface(
         onClick = onClick,
@@ -186,18 +237,18 @@ fun ChromeFab(
             .size(Dimens.fabSize)
             .then(if (tag != null) Modifier.testTag(tag) else Modifier),
         shape = FabShape,
-        color = if (active) {
-            MaterialTheme.colorScheme.primary
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
+        color = when {
+            active -> MaterialTheme.colorScheme.primary
+            grouped -> androidx.compose.ui.graphics.Color.Transparent
+            else -> MaterialTheme.colorScheme.surfaceContainerHigh
         },
         contentColor = if (active) {
             MaterialTheme.colorScheme.onPrimary
         } else {
             MaterialTheme.colorScheme.onSurface
         },
-        border = if (active) null else BorderStroke(1.dp, chromeBorder()),
-        shadowElevation = Elevation.fab,
+        border = if (active || grouped) null else BorderStroke(1.dp, chromeBorder()),
+        shadowElevation = if (grouped) 0.dp else Elevation.fab,
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
@@ -280,13 +331,17 @@ fun ChromeFabGroup(
         // this the plate stretched to the whole map width and the three buttons floated in its
         // middle — caught in the first capture of this round, not by reasoning.
         modifier = modifier.width(Dimens.fabGroupWidth),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, chromeBorder()),
         shadowElevation = Elevation.fab,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, content = content)
+        Column(
+            modifier = Modifier.padding(vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            content = content,
+        )
     }
 }
 

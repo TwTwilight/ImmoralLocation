@@ -239,7 +239,7 @@ class SettingsStore(context: Context) {
             putString(KEY_ROUTE_PROFILE, request.profile.id)
         }
         writePoints(KEY_ROUTE_WAYPOINTS, request.validWaypoints)
-        writePoints(KEY_ROUTE_PATH, clean)
+        writePoints(KEY_ROUTE_PATH, ordered)
         writePoints(KEY_ROUTE, stops)
     }
 
@@ -255,7 +255,7 @@ class SettingsStore(context: Context) {
             GeoMath.distanceMeters(clean.first(), origin) > GeoMath.distanceMeters(clean.last(), origin)
         ) clean.reversed() else clean
         _routePath.value = ordered
-        writePoints(KEY_ROUTE_PATH, clean)
+        writePoints(KEY_ROUTE_PATH, ordered)
     }
 
     /** Removes the planned route, keeping any raw waypoints the user had put on the map. */
@@ -313,6 +313,24 @@ class SettingsStore(context: Context) {
         _savedRoutes.value = next
         writeJson(KEY_SAVED_ROUTES, ListSerializer(SavedRoute.serializer()), next)
         return next
+    }
+
+    /** Renames a saved route in place (keeps its position in the list). */
+    fun renameSavedRoute(id: String, name: String) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        val next = _savedRoutes.value.map { if (it.id == id) it.copy(name = clean) else it }
+        _savedRoutes.value = next
+        writeJson(KEY_SAVED_ROUTES, ListSerializer(SavedRoute.serializer()), next)
+    }
+
+    /** Puts a deleted route back at [index] (snackbar 撤销). */
+    fun restoreSavedRoute(route: SavedRoute, index: Int) {
+        val current = _savedRoutes.value.filter { it.id != route.id }.toMutableList()
+        current.add(index.coerceIn(0, current.size), route)
+        val next = current.take(SAVED_ROUTE_LIMIT)
+        _savedRoutes.value = next
+        writeJson(KEY_SAVED_ROUTES, ListSerializer(SavedRoute.serializer()), next)
     }
 
     fun deleteSavedRoute(id: String) {
@@ -481,6 +499,50 @@ class SettingsStore(context: Context) {
         }
     }
 
+    /** 清除最近使用: forgets the recent teleport targets and the recently searched places. */
+    fun clearRecents() {
+        _recentPositions.value = emptyList()
+        _recentPlaces.value = emptyList()
+        try {
+            prefs.edit {
+                remove(KEY_RECENT)
+                remove(KEY_RECENT_PLACES)
+            }
+        } catch (t: Throwable) {
+            // ignore
+        }
+    }
+
+    /** Removes one recent teleport target. */
+    fun removeRecentPosition(point: GeoPoint) {
+        val next = _recentPositions.value.filterNot { it.lat == point.lat && it.lon == point.lon }
+        _recentPositions.value = next
+        try {
+            prefs.edit {
+                putString(KEY_RECENT, json.encodeToString(ListSerializer(GeoPoint.serializer()), next))
+            }
+        } catch (t: Throwable) {
+            // ignore
+        }
+    }
+
+    // --------------------------------------------------------------- start page
+
+    private val _startPage = MutableStateFlow(prefs.getString(KEY_START_PAGE, null) ?: START_PAGE_LAST)
+
+    /** Which tab the app opens on: [START_PAGE_LAST] (default), [START_PAGE_MAP] or [START_PAGE_QUICK]. */
+    val startPage: StateFlow<String> = _startPage.asStateFlow()
+
+    /** The tab that was on screen last, restored when [startPage] is [START_PAGE_LAST]. */
+    var lastTab: String?
+        get() = prefs.getString(KEY_LAST_TAB, null)
+        set(value) = prefs.edit { putString(KEY_LAST_TAB, value) }
+
+    fun setStartPage(page: String) {
+        _startPage.value = page
+        prefs.edit { putString(KEY_START_PAGE, page) }
+    }
+
     private fun readRecent(): List<GeoPoint> = try {
         val raw = prefs.getString(KEY_RECENT, null)
         if (raw.isNullOrBlank()) {
@@ -533,6 +595,13 @@ class SettingsStore(context: Context) {
         private const val KEY_ROUTE_PROFILE = "route_profile"
         private const val KEY_SAVED_ROUTES = "saved_routes_json"
         private const val KEY_RECENT_PLACES = "recent_places"
+        private const val KEY_START_PAGE = "start_page"
+
+        private const val KEY_LAST_TAB = "last_tab"
+
+        const val START_PAGE_LAST: String = "last"
+        const val START_PAGE_QUICK: String = "quick"
+        const val START_PAGE_MAP: String = "map"
 
         /**
          * Default tile server: the canonical OSM carto style. Unlike the German mirror it renders

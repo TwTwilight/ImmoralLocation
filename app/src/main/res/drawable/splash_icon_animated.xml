@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Launch animation (Android 12+ splash screen): the ghost pin appears, the dots hop one after the
+  other, and the solid pin drops into place with a small overshoot while its shadow spreads.
+  Targets the named groups of drawable/splash_icon (the launcher artwork on a disc).
+-->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:drawable="@drawable/splash_icon">
+
+    <target android:name="ghost">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator android:propertyName="scaleX" android:valueFrom="0" android:valueTo="1"
+                    android:duration="260" android:interpolator="@android:interpolator/fast_out_slow_in" />
+                <objectAnimator android:propertyName="scaleY" android:valueFrom="0" android:valueTo="1"
+                    android:duration="260" android:interpolator="@android:interpolator/fast_out_slow_in" />
+            </set>
+        </aapt:attr>
+    </target>
+
+    <target android:name="dot1">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator android:propertyName="scaleX" android:valueFrom="0" android:valueTo="1"
+                    android:startOffset="180" android:duration="160" android:interpolator="@android:interpolator/overshoot" />
+                <objectAnimator android:propertyName="scaleY" android:valueFrom="0" android:valueTo="1"
+                    android:startOffset="180" android:duration="160" android:interpolator="@android:interpolator/overshoot" />
+            </set>
+        </aapt:attr>
+    </target>
+
+    <target android:name="dot2">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator android:propertyName="scaleX" android:valueFrom="0" android:valueTo="1"
+                    android:startOffset="260" android:duration="160" android:interpolator="@android:interpolator/overshoot" />
+                <objectAnimator android:propertyName="scaleY" android:valueFrom="0" android:valueTo="1"
+                    android:startOffset="260" android:duration="160" android:interpolator="@android:interpolator/overshoot" />
+            </set>
+        </aapt:attr>
+    </target>
+
+    <target android:name="dot3">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator android:propertyName="scaleX" android:valueFrom="0" android:valueTo="1"
+                    android:startOffset="340" android:duration="160" android:interpolator="@android:interpolator/overshoot" />
+                <objectAnimator android:propertyName="scaleY" android:valueFrom="0" android:valueTo="1"
+                    android:startOffset="340" android:duration="160" android:interpolator="@android:interpolator/overshoot" />
+            </set>
+        </aapt:attr>
+    </target>
+
+    <target android:name="pin">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator android:propertyName="translateY" android:valueFrom="-22" android:valueTo="0"
+                    android:startOffset="380" android:duration="420" android:interpolator="@android:interpolator/overshoot" />
+                <objectAnimator android:propertyName="scaleX" android:valueFrom="0" android:valueTo="1"
+                    android:startOffset="380" android:duration="300" android:interpolator="@android:interpolator/fast_out_slow_in" />
+                <objectAnimator android:propertyName="scaleY" android:valueFrom="0" android:valueTo="1"
+                    android:startOffset="380" android:duration="300" android:interpolator="@android:interpolator/fast_out_slow_in" />
+            </set>
+        </aapt:attr>
+    </target>
+
+    <target android:name="shadow">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator android:propertyName="scaleX" android:valueFrom="0" android:valueTo="1"
+                    android:startOffset="520" android:duration="320" android:interpolator="@android:interpolator/overshoot" />
+                <objectAnimator android:propertyName="scaleY" android:valueFrom="0" android:valueTo="1"
+                    android:startOffset="520" android:duration="320" android:interpolator="@android:interpolator/fast_out_slow_in" />
+            </set>
+        </aapt:attr>
+    </target>
+</animated-vector>

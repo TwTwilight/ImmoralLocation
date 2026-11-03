@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -26,28 +25,28 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.AltRoute
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.AltRoute
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Explore
-import androidx.compose.material.icons.filled.FileDownload
-import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SatelliteAlt
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -55,7 +54,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,6 +72,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -160,55 +159,47 @@ fun PeekPanel(
             dragHandle()
         }
         Column(modifier = Modifier.padding(horizontal = Dimens.sheetPadding)) {
-            // What is happening. One tap opens the precise readout, which is why the whole row is
-            // the target; the chevron lives inside the summary line (audit S7) instead of floating
-            // alone at the far right. A confirmed-missing module adds its chip at the row's end.
+            // One summary block instead of two loose rows: *what is happening* (state · mode ·
+            // speed) over *where* (tabular coordinates), the whole block one tap target for the
+            // precise readout, with the way into the saved places at its right edge.
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onOpenStatus() }
-                    .padding(vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                PeekStatusText(
-                    running = running,
-                    modeLabel = modeLabel,
-                    accuracyLabel = accuracyLabel,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            // Where we are, and the way to everywhere we saved. Coordinates are `labelSmall` +
-            // `tnum` (spec §2): they must be readable and stable, never the headline. The 收藏 link
-            // is navigation only — the ♡ in the action row is the one save/unsave control (S1).
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = coordinates,
-                    style = MaterialTheme.typography.labelSmall.tabular(),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    // A stable handle for the *live* position. Without it a check can only scrape
-                    // every `dd.dddd, ddd.dddd` node in the tree — and while the planner is open
-                    // those are the route's 起点/终点, static by design, which made a real movement
-                    // sample impossible to distinguish from two frozen route fields.
+                Column(
                     modifier = Modifier
                         .weight(1f)
-                        .testTag("e2e.peek.position"),
-                )
-                if (hint != null) {
-                    PeekHintChip(text = hint, onClick = onHintClick)
-                    Spacer(modifier = Modifier.width(8.dp))
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onOpenStatus() }
+                        .padding(vertical = 4.dp),
+                ) {
+                    PeekStatusText(
+                        running = running,
+                        modeLabel = modeLabel,
+                        accuracyLabel = accuracyLabel,
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = coordinates,
+                        style = MaterialTheme.typography.bodySmall.tabular(),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        // A stable handle for the *live* position (the route fields show static
+                        // coordinates too).
+                        modifier = Modifier
+                            .padding(start = 16.dp)
+                            .testTag("e2e.peek.position"),
+                    )
+                    if (hint != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        PeekHintChip(text = hint, onClick = onHintClick, modifier = Modifier.padding(start = 12.dp))
+                    }
                 }
                 PeekFavoritesLink(count = favouriteCount, onClick = onOpenFavorites)
             }
-
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
             TransportModeRow(selected = speed, onSelect = onSpeedSelect)
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -224,16 +215,26 @@ fun PeekPanel(
                         .height(48.dp)
                         .testTag("e2e.action.primary"),
                     contentPadding = PaddingValues(horizontal = 12.dp),
+                    // 停止 is the one destructive-ish state of this button; it takes the quiet error
+                    // container rather than the loud primary it has while idle.
+                    colors = if (running) {
+                        androidx.compose.material3.ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                    } else {
+                        androidx.compose.material3.ButtonDefaults.buttonColors()
+                    },
                 ) {
                     Icon(
-                        imageVector = if (running) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        imageVector = if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = stringResource(
-                            if (running) R.string.action_pause_short else R.string.action_start_short,
+                            if (running) R.string.action_stop_short else R.string.action_start_short,
                         ),
                         maxLines = 1,
                     )
@@ -246,7 +247,7 @@ fun PeekPanel(
                         .testTag("e2e.action.route"),
                     contentPadding = PaddingValues(horizontal = 12.dp),
                 ) {
-                    Icon(Icons.Filled.AltRoute, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.AutoMirrored.Filled.AltRoute, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(stringResource(R.string.action_route_short), maxLines = 1)
                 }
@@ -291,7 +292,7 @@ fun PeekPanel(
 fun SheetHandle(modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
-            .padding(vertical = 10.dp)
+            .padding(top = 10.dp, bottom = 8.dp)
             .size(width = Dimens.handleWidth, height = Dimens.handleHeight)
             .background(
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
@@ -320,8 +321,6 @@ fun ToolsPanel(
     overlayPermissionGranted: Boolean = true,
     modifier: Modifier = Modifier,
     onManageFavorites: () -> Unit = {},
-    onImportGpx: () -> Unit = {},
-    onExportGpx: () -> Unit = {},
     recentPositions: List<GeoPoint> = emptyList(),
     onPickRecent: (GeoPoint) -> Unit = {},
     onPickApps: () -> Unit = {},
@@ -357,7 +356,7 @@ fun ToolsPanel(
             onChange = { on -> onUpdate { it.copy(gpsSignalSimulation = on) } },
         )
         ToolSwitchRow(
-            icon = Icons.Filled.DirectionsWalk,
+            icon = Icons.AutoMirrored.Filled.DirectionsWalk,
             title = stringResource(R.string.settings_step),
             checked = config.stepSimulation,
             tag = "e2e.tool.steps",
@@ -376,28 +375,24 @@ fun ToolsPanel(
             onChange = { on -> onUpdate { it.copy(independentMode = on) } },
         )
 
-        Spacer(modifier = Modifier.height(6.dp))
-        SectionLabel(stringResource(R.string.settings_interval))
-        IntervalChips(
-            current = config.updateIntervalMs,
-            tag = "e2e.tool.interval",
-            onChange = { ms -> onUpdate { it.copy(updateIntervalMs = ms) } },
-        )
-
-        Spacer(modifier = Modifier.height(10.dp))
-        // 自定义速度: selecting CUSTOM in the peek row is useless without a way to dial it in.
-        LabeledSlider(
-            title = stringResource(R.string.speed_custom),
-            valueText = Fmt.trimZero(config.customSpeedMps) + " m/s",
-            value = config.customSpeedMps.toFloat().coerceIn(0.5f, 30f),
-            valueRange = 0.5f..30f,
-            onValueChange = { value ->
-                onUpdate {
-                    it.copy(speed = SpeedLevel.CUSTOM, customSpeedMps = value.toDouble())
-                }
-            },
-            modifier = Modifier.testTag("e2e.tool.customspeed"),
-        )
+        // 自定义速度: selecting CUSTOM in the peek row is useless without a way to dial it in, so the
+        // slider shows up right here as soon as CUSTOM is the active preset.
+        if (config.speed == SpeedLevel.CUSTOM) {
+            Spacer(modifier = Modifier.height(10.dp))
+            LabeledSlider(
+                title = stringResource(R.string.speed_custom),
+                valueText = { Fmt.trimZero(it.toDouble()) + " m/s" },
+                value = config.customSpeedMps.toFloat().coerceIn(0.5f, 60f),
+                valueRange = 0.5f..60f,
+                onValueChange = { value ->
+                    val snapped = (value * 10f).toInt() / 10.0
+                    onUpdate {
+                        it.copy(speed = SpeedLevel.CUSTOM, customSpeedMps = snapped)
+                    }
+                },
+                modifier = Modifier.testTag("e2e.tool.customspeed"),
+            )
+        }
 
         if (config.independentMode) {
             ShortcutRow(
@@ -450,22 +445,10 @@ fun ToolsPanel(
             warn = !overlayPermissionGranted,
         )
         ShortcutRow(
-            icon = Icons.Filled.Bookmark,
+            icon = Icons.Filled.Settings,
             title = stringResource(R.string.tools_all_settings),
             subtitle = stringResource(R.string.tools_all_settings_desc),
             onClick = onOpenSettings,
-        )
-        ShortcutRow(
-            icon = Icons.Filled.FileUpload,
-            title = stringResource(R.string.route_import_gpx),
-            subtitle = stringResource(R.string.route_import_hint),
-            onClick = onImportGpx,
-        )
-        ShortcutRow(
-            icon = Icons.Filled.FileDownload,
-            title = stringResource(R.string.route_export_gpx),
-            subtitle = stringResource(R.string.route_export_hint),
-            onClick = onExportGpx,
         )
 
         Spacer(modifier = Modifier.height(14.dp))
@@ -661,31 +644,6 @@ private fun ShortcutRow(
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(20.dp),
         )
-    }
-}
-
-/** 更新频率 as four presets — a slider inside a half sheet is unusable with a 20 Hz tick. */
-@Composable
-private fun IntervalChips(
-    current: Long,
-    tag: String,
-    onChange: (Long) -> Unit,
-) {
-    val presets = listOf(200L, 500L, 1_000L, 2_000L, 5_000L)
-    FlowRow(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag(tag),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        presets.forEach { ms ->
-            FilterChip(
-                selected = current == ms,
-                onClick = { onChange(ms) },
-                label = { Text("${ms} ms", style = MaterialTheme.typography.labelMedium.tabular()) },
-            )
-        }
     }
 }
 

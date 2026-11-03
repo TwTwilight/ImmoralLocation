@@ -84,7 +84,6 @@ fun FavoritesScreen(
     modifier: Modifier = Modifier,
 ) {
     var renaming by remember { mutableStateOf<FavoritePlace?>(null) }
-    var deleting by remember { mutableStateOf<FavoritePlace?>(null) }
 
     BoxWithConstraints(
         modifier = modifier
@@ -130,7 +129,7 @@ fun FavoritesScreen(
                             currentPosition = currentPosition,
                             onSelect = { onSelect(place) },
                             onRename = { renaming = place },
-                            onDelete = { deleting = place },
+                            onDelete = { onDelete(place) },
                         )
                     }
                 }
@@ -181,28 +180,6 @@ fun FavoritesScreen(
         )
     }
 
-    deleting?.let { place ->
-        AlertDialog(
-            onDismissRequest = { deleting = null },
-            title = { Text(stringResource(R.string.favorites_delete_title)) },
-            text = { Text(stringResource(R.string.favorites_delete_body, FavoriteText.displayName(place.name))) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDelete(place)
-                        deleting = null
-                    },
-                ) {
-                    Text(stringResource(R.string.action_delete))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleting = null }) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            },
-        )
-    }
 }
 
 /** One saved place: name, tabular coordinates, distance, and the two management actions. */

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 底部导航（issue #1） -->
+    <string name="shell_tab_quick">快捷</string>
+    <string name="shell_tab_map">地图</string>
+    <string name="shell_tab_custom">自定义</string>
+    <string name="shell_tab_settings">设置</string>
+    <string name="shell_tab_quick_title">快捷启动</string>
+    <string name="shell_tab_custom_title">自定义定位</string>
+
+    <!-- 快捷页 -->
+    <string name="shell_section_favorites">收藏地点</string>
+    <string name="shell_section_routes">已保存路线</string>
+    <string name="shell_add_place">添加</string>
+    <string name="shell_plan_route">规划</string>
+    <string name="shell_clear">清空</string>
+    <string name="shell_favorites_empty_body">在「自定义」输入坐标或搜索地点，或在地图上长按，即可收藏常用地点。</string>
+    <string name="shell_routes_empty_title">还没有保存的路线</string>
+    <string name="shell_routes_empty_body">在地图页规划路线后点「保存」，之后就能在这里一键开始。</string>
+    <string name="shell_show_all">显示全部 %1$d 个</string>
+    <string name="shell_show_less">收起</string>
+    <string name="shell_quick_hint">点按条目立即开始模拟 · 长按可重命名、删除或在地图中查看</string>
+    <string name="shell_show_on_map">在地图中查看</string>
+    <string name="shell_start_route">开始这条路线</string>
+    <string name="shell_edit_route">在地图中编辑</string>
+    <string name="shell_go_to_origin">移动到起点</string>
+    <string name="shell_save_as_favorite">收藏这个地点</string>
+    <string name="shell_remove_recent">从最近使用中移除</string>
+    <string name="shell_rename_route">重命名路线</string>
+    <string name="shell_route_name">路线名称</string>
+    <string name="shell_custom_position">自定义位置</string>
+    <string name="shell_current_position">当前模拟位置</string>
+    <string name="shell_last_position">上次的位置</string>
+    <string name="shell_following_route">正在沿路线移动</string>
+    <string name="shell_route_default_name">路线 %1$d</string>
+    <string name="shell_route_to">前往 %1$s</string>
+    <string name="shell_here">当前</string>
+    <string name="shell_waypoint_count">%1$d 个途经点</string>
+    <string name="shell_route_deleted">已删除路线</string>
+    <string name="shell_route_preparing">正在准备「%1$s」…</string>
+    <string name="shell_went_to">已移动到「%1$s」</string>
+    <string name="shell_recents_cleared">已清空最近使用</string>
+    <string name="shell_favorite_saved">已收藏「%1$s」</string>
+
+    <!-- 自定义定位 -->
+    <string name="shell_coordinate_label">自定义坐标</string>
+    <string name="shell_picked_on_map">地图选点</string>
+    <string name="shell_section_coordinate">输入坐标</string>
+    <string name="shell_coord_system">坐标来源</string>
+    <string name="shell_coord_wgs">GPS</string>
+    <string name="shell_coord_gcj">高德/腾讯</string>
+    <string name="shell_coord_bd">百度</string>
+    <string name="shell_coord_field">纬度, 经度</string>
+    <string name="shell_coord_help">支持逗号、空格分隔；经纬度顺序会自动识别</string>
+    <string name="shell_coord_ok">坐标有效</string>
+    <string name="shell_coord_converted">已换算为 GPS 坐标：%1$s</string>
+    <string name="shell_paste">粘贴</string>
+    <string name="shell_section_search">搜索地点</string>
+    <string name="shell_search_place_hint">输入地名、地址或 POI</string>
+    <string name="shell_section_more_ways">其他方式</string>
+    <string name="shell_pick_on_map">在地图上选点</string>
+    <string name="shell_pick_on_map_desc">打开地图，点按任意位置即可选中</string>
+    <string name="shell_use_current">使用当前模拟位置</string>
+    <string name="shell_start_here">在此开始模拟</string>
+    <string name="shell_pick_banner">点按地图选择位置</string>
+
+    <!-- 设置 -->
+    <string name="shell_section_movement">移动</string>
+    <string name="shell_speed">移动速度</string>
+    <string name="shell_heading_fixed">摇杆上方 = 正北 · 固定方向 %1$d°</string>
+    <string name="shell_overlay_permission">需要悬浮窗权限，点按后前往授权</string>
+    <string name="shell_gps_signal_desc">模拟卫星数量与信噪比</string>
+    <string name="shell_cell_desc">按当前位置生成附近基站信息</string>
+    <string name="shell_wifi_desc">按当前位置生成附近 WIFI 列表</string>
+    <string name="shell_step_desc">移动时同步增加计步器步数</string>
+    <string name="shell_section_fix">定位参数</string>
+    <string name="shell_route_repeat_desc">到达终点后从起点重新开始</string>
+    <string name="shell_section_map">地图</string>
+    <string name="shell_layers_row">图层与图源</string>
+    <string name="shell_tile_template">瓦片模板</string>
+    <string name="shell_tile_only_custom">仅在图源选择「自定义模板」时使用</string>
+    <string name="shell_start_page">启动时打开</string>
+    <string name="shell_start_page_desc">打开应用时显示的页面；「上次」会回到你离开时所在的页面</string>
+    <string name="shell_start_last">上次</string>
+    <string name="shell_satellites">卫星</string>
+    <string name="shell_saved">已保存</string>
+    <string name="action_stop_short">停止</string>
+    <string name="shell_open_lsposed">打开 LSPosed</string>
+    <string name="shell_lsposed_missing">没有找到 LSPosed 管理器</string>
+</resources>

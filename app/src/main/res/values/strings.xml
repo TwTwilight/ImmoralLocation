@@ -225,7 +225,7 @@
 
     <!-- 悬浮摇杆引导 -->
     <string name="overlay_prompt_title">切换到其他 App 时保持摇杆</string>
-    <string name="overlay_prompt_body">开启悬浮摇杆后，离开本应用也能继续控制移动，适合在导航、运动类应用里使用。之后可以随时在工具 › 设置里关闭。</string>
+    <string name="overlay_prompt_body">开启悬浮摇杆后，离开本应用也能继续控制移动，适合在导航、运动类应用里使用。之后可以随时在「设置 › 移动」里关闭。</string>
     <string name="overlay_prompt_enable">开启</string>
     <string name="overlay_prompt_later">稍后再说</string>
 
@@ -297,7 +297,7 @@
     <string name="tools_section_simulation">模拟项目</string>
     <string name="tools_section_shortcuts">快捷入口</string>
     <string name="tools_all_settings">全部设置</string>
-    <string name="tools_all_settings_desc">更新频率、抖动、瓦片地址、模块信息</string>
+    <string name="tools_all_settings_desc">更新频率、抖动、路线、图源与模块信息</string>
     <string name="layers_subtitle">底图图源</string>
     <string name="layers_desc">切换底图来源；中国图源使用 GCJ-02，标记与点击位置已自动换算。</string>
     <string name="overlay_running">悬浮摇杆已开启</string>

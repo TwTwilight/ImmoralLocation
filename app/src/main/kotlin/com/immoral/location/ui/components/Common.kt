@@ -24,6 +24,10 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -51,6 +55,8 @@ object Fmt {
 
     fun distance(meters: Double): String = when {
         !meters.isFinite() -> "--"
+        meters >= 100_000.0 -> String.format(Locale.US, "%.0f km", meters / 1000.0)
+        meters >= 10_000.0 -> String.format(Locale.US, "%.1f km", meters / 1000.0)
         meters >= 1000.0 -> String.format(Locale.US, "%.2f km", meters / 1000.0)
         else -> String.format(Locale.US, "%.0f m", meters)
     }
@@ -182,29 +188,33 @@ fun SwitchRow(
 @Composable
 fun LabeledSlider(
     title: String,
-    valueText: String,
+    valueText: @Composable (Float) -> String,
     value: Float,
     valueRange: ClosedFloatingPointRange<Float>,
     onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
     steps: Int = 0,
 ) {
+    // The slider drags a local draft and commits once on release: committing every frame pushed a
+    // full config over the bridge ~60 times a second while the thumb moved.
+    var draft by remember(value) { mutableFloatStateOf(value) }
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = title, style = MaterialTheme.typography.bodyMedium)
+            Text(text = title, style = MaterialTheme.typography.bodyLarge)
             Text(
-                text = valueText,
-                style = MaterialTheme.typography.labelLarge,
+                text = valueText(draft),
+                style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
                 color = MaterialTheme.colorScheme.primary,
             )
         }
         Slider(
-            value = value.coerceIn(valueRange.start, valueRange.endInclusive),
-            onValueChange = onValueChange,
+            value = draft.coerceIn(valueRange.start, valueRange.endInclusive),
+            onValueChange = { draft = it },
+            onValueChangeFinished = { onValueChange(draft) },
             valueRange = valueRange,
             steps = steps,
             modifier = Modifier

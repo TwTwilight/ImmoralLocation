@@ -51,6 +51,14 @@ class FavoritesStore(context: Context) {
         commit(_favorites.value.map { if (it.id == id) it.copy(name = clean) else it })
     }
 
+    /** Puts a deleted place back at [index] (snackbar 撤销). */
+    fun restore(place: FavoritePlace, index: Int) {
+
+        val current = _favorites.value.filterNot { it.id == place.id }.toMutableList()
+        current.add(index.coerceIn(0, current.size), place)
+        commit(current)
+    }
+
     fun remove(id: String) {
         commit(_favorites.value.filterNot { it.id == id })
     }

@@ -2,16 +2,48 @@ package com.immoral.location.ui
 
 import android.Manifest
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.ui.unit.dp
+import com.immoral.location.ui.theme.sheetContainer
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.EditLocationAlt
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.EditLocationAlt
+import androidx.compose.material.icons.outlined.Map
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.ui.Alignment
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -22,37 +54,49 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.AnnotatedString
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.immoral.location.App
 import com.immoral.location.BuildConfig
 import com.immoral.location.R
-import com.immoral.location.bridge.ModuleLink
 import com.immoral.location.core.geo.GeoMath
-import com.immoral.location.core.model.EngineState
-import com.immoral.location.core.model.FavoritePlace
 import com.immoral.location.core.model.GeoPoint
-import com.immoral.location.core.model.SimulationConfig
 import com.immoral.location.data.PreviewCounts
+import com.immoral.location.data.SettingsStore
 import com.immoral.location.map.TileSources
 import com.immoral.location.net.CoordinateParser
 import com.immoral.location.net.PlaceResult
 import com.immoral.location.net.SearchOutcome
 import com.immoral.location.service.SimulationService
 import com.immoral.location.ui.components.MessageCenter
-import com.immoral.location.ui.screens.AppPickerDialog
-import com.immoral.location.ui.screens.FavoritesScreen
-import com.immoral.location.ui.screens.MapScreen
 import com.immoral.location.ui.route.RoutePlace
 import com.immoral.location.ui.route.RoutePlannerHost
+import com.immoral.location.ui.screens.AppPickerDialog
+import com.immoral.location.ui.screens.CustomActions
+import com.immoral.location.ui.screens.CustomLocationScreen
+import com.immoral.location.ui.screens.CustomTarget
+import com.immoral.location.ui.screens.FavoritesScreen
+import com.immoral.location.ui.screens.MapFocusRequest
+import com.immoral.location.ui.screens.MapScreen
+import com.immoral.location.ui.screens.QuickActions
+import com.immoral.location.ui.screens.QuickScreen
+import com.immoral.location.ui.screens.SettingsActions
 import com.immoral.location.ui.screens.SettingsScreen
 import com.immoral.location.ui.screens.SheetDetent
+import com.immoral.location.ui.screens.launchLsposed
 import com.immoral.location.ui.sheets.HeadingSheetContent
 import com.immoral.location.ui.sheets.LayerSheetContent
 import com.immoral.location.ui.sheets.OverlayPromptContent
@@ -64,24 +108,36 @@ import kotlinx.coroutines.launch
 
 private const val SEARCH_TIMEOUT_MS = 8_000L
 
+/** Secondary sheets that deserve a real modal. */
+private enum class ModalSheet { NONE, STATUS, LAYERS, HEADING, FAVORITES, APPS, OVERLAY_PROMPT }
 
-/** Secondary sheets that still deserve a real modal (they are not part of the map IA). */
-private enum class ModalSheet { NONE, STATUS, LAYERS, HEADING, SETTINGS, FAVORITES, APPS, OVERLAY_PROMPT }
+/** The four top-level destinations (issue #1). */
+enum class AppTab(
+    val labelRes: Int,
+    val icon: ImageVector,
+    val selectedIcon: ImageVector,
+    val tag: String,
+) {
+    MAP(R.string.shell_tab_map, Icons.Outlined.Map, Icons.Filled.Map, "e2e.tab.map"),
+    QUICK(R.string.shell_tab_quick, Icons.Outlined.Bolt, Icons.Filled.Bolt, "e2e.tab.quick"),
+    CUSTOM(R.string.shell_tab_custom, Icons.Outlined.EditLocationAlt, Icons.Filled.EditLocationAlt, "e2e.tab.custom"),
+    SETTINGS(R.string.shell_tab_settings, Icons.Outlined.Settings, Icons.Filled.Settings, "e2e.tab.settings"),
+}
 
 /**
- * App shell.
+ * App shell: a Material 3 navigation bar over four destinations.
  *
- * One activity, **one** top-level surface (the map) and a single three-detent bottom sheet. The old
- * five-tab navigation bar is gone: 收藏 / 路线 / 设置 live inside the sheet, because a user who
- * drags the joystick must be able to see the marker move at the same time.
+ *  * **快捷** — saved places, saved routes and recents as lists; one tap starts. No map involved, so
+ *    the everyday "pick → start → switch to the target app" flow never waits for tiles (issue #1).
+ *  * **地图** — the full-bleed map with the joystick, the place card and the route planner, exactly
+ *    as before. It is composed the first time it is opened and then kept alive (paused while hidden)
+ *    so switching back is instant.
+ *  * **自定义** — coordinate input (with coordinate-system conversion), place search, pick on map.
+ *  * **设置** — every switch in one page.
  *
- * Wiring rules that keep this screen dumb:
- *  * every user intent is an `AppController` method;
- *  * the only transient feedback channel is the top-anchored snackbar owned by [MapScreen];
- *  * nothing outside the clipboard/notification permissions touches Android APIs directly.
+ * Every user intent still goes through [AppController]; this file only wires state to screens.
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
-
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun RootScreen(app: App, initialSearch: String? = null) {
     val scope = rememberCoroutineScope()
@@ -94,6 +150,9 @@ fun RootScreen(app: App, initialSearch: String? = null) {
     LaunchedEffect(controller) {
         controller.showMessage = { message ->
             scope.launch { messages.show(snackbarHost, message) }
+        }
+        controller.showAction = { message, action, onAction ->
+            scope.launch { messages.showAction(snackbarHost, message, action, onAction) }
         }
     }
     // A user command with no reply within ~1 s is surfaced instead of silently doing nothing.
@@ -109,6 +168,9 @@ fun RootScreen(app: App, initialSearch: String? = null) {
     val routeOrigin by app.settings.routeOrigin.collectAsStateWithLifecycle()
     val routeDestination by app.settings.routeDestination.collectAsStateWithLifecycle()
     val routeWaypoints by app.settings.routeWaypoints.collectAsStateWithLifecycle()
+    val savedRoutes by app.settings.savedRoutes.collectAsStateWithLifecycle()
+    val recentPlaces by app.settings.recentPlaces.collectAsStateWithLifecycle()
+    val startPage by app.settings.startPage.collectAsStateWithLifecycle()
     val favorites by app.favorites.favorites.collectAsStateWithLifecycle()
     val engineState by app.bridge.engineState.collectAsStateWithLifecycle()
     val link by app.bridge.link.collectAsStateWithLifecycle()
@@ -120,35 +182,30 @@ fun RootScreen(app: App, initialSearch: String? = null) {
     val recentPositions by app.settings.recentPositions.collectAsStateWithLifecycle()
     val overlayRunning by SimulationService.overlayRunning.collectAsStateWithLifecycle()
     val headingDeg by SimulationService.headingDegFlow.collectAsStateWithLifecycle()
+    val pendingRouteId by controller.routePlanner.pendingStartId.collectAsStateWithLifecycle()
 
-    // 悬浮窗权限 is an *edge state* the tools panel must be able to explain: without it the
-    // "悬浮摇杆" row silently does nothing visible until the system settings screen opens. Read on
-    // every RESUME (the user comes back from that screen) instead of on every recomposition.
+    // 悬浮窗权限 is an edge state the settings must be able to explain; re-read on every resume.
     var overlayPermission by remember { mutableStateOf(canDrawOverlays(context)) }
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val overlayRunningNow by rememberUpdatedState(overlayRunning)
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
-                    overlayPermission = canDrawOverlays(context)
-                }
+                Lifecycle.Event.ON_RESUME -> overlayPermission = canDrawOverlays(context)
 
-                androidx.lifecycle.Lifecycle.Event.ON_START -> {
-                    // Tell the framework our UI is on screen so it may publish the engine status row
-                    // (that row is world-readable; it must not keep updating in the background).
+                Lifecycle.Event.ON_START -> {
+                    // The framework may only publish the (world-readable) status row while our UI
+                    // is on screen.
                     controller.setUiVisible(true)
-                    // The floating pad is for *other* apps. While ours is in front the in-app FAB is
-                    // the control; the bubble would otherwise float over our own sheet (it covered
-                    // the switch that turns it off). Suspending keeps the user's preference intact.
+                    // The floating pad is for *other* apps; while ours is in front it would float
+                    // over our own controls.
                     if (overlayRunningNow) {
                         SimulationService.command(app, SimulationService.ACTION_SUSPEND_OVERLAY)
                     }
                 }
 
-                androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
+                Lifecycle.Event.ON_STOP -> {
                     controller.setUiVisible(false)
-                    // Leaving the app: bring the floating pad back for wherever the user goes next.
                     SimulationService.command(app, SimulationService.ACTION_RESUME_OVERLAY)
                 }
 
@@ -170,6 +227,25 @@ fun RootScreen(app: App, initialSearch: String? = null) {
     }
     val darkMap = isSystemInDarkTheme()
 
+    // ------------------------------------------------------------------ navigation state
+    // 首页 for the back button is the map (or 快捷 when the user pinned it); what the app *opens* on
+    // is, by default, simply the tab the user was on last time.
+    val homeTab = if (startPage == SettingsStore.START_PAGE_QUICK) AppTab.QUICK else AppTab.MAP
+    var tab by rememberSaveable {
+        val opening = when {
+            !initialSearch.isNullOrBlank() -> AppTab.MAP
+            startPage == SettingsStore.START_PAGE_LAST ->
+                AppTab.entries.firstOrNull { it.name == app.settings.lastTab } ?: AppTab.MAP
+            else -> homeTab
+        }
+        mutableStateOf(opening)
+    }
+    LaunchedEffect(tab) { app.settings.lastTab = tab.name }
+    var mapEverShown by rememberSaveable { mutableStateOf(tab == AppTab.MAP) }
+    var pickMode by rememberSaveable { mutableStateOf(false) }
+    var customTarget by remember { mutableStateOf<CustomTarget?>(null) }
+    var focusRequest by remember { mutableStateOf<MapFocusRequest?>(null) }
+
     var detent by rememberSaveable { mutableStateOf(SheetDetent.PEEK) }
     var modal by remember { mutableStateOf(ModalSheet.NONE) }
     var query by remember { mutableStateOf("") }
@@ -178,10 +254,34 @@ fun RootScreen(app: App, initialSearch: String? = null) {
     var showActivationHelp by remember { mutableStateOf(false) }
     var overlayPrompted by remember { mutableStateOf(false) }
 
+    val tabStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
+    val selectTab: (AppTab) -> Unit = { next ->
+        if (next != AppTab.MAP) pickMode = false
+        if (next == AppTab.MAP) mapEverShown = true
+        tab = next
+    }
+    val openMap: (GeoPoint?) -> Unit = { point ->
+        mapEverShown = true
+        tab = AppTab.MAP
+        focusRequest = point?.let { MapFocusRequest(it) }
+    }
+
+    // Back from a secondary tab returns to the home tab before it may leave the app.
+    // Back with the keyboard up closes the keyboard only. Android does not always swallow that
+    // press for us, and a press that reaches the activity finishes it — which is how typing a query
+    // and then pressing back used to close the app on top of the map.
+    val imeUpForBack = WindowInsets.isImeVisible
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    BackHandler(enabled = imeUpForBack) {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
+    BackHandler(enabled = !imeUpForBack && tab != homeTab && !pickMode) { selectTab(homeTab) }
+
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    // Offer the floating joystick once, and only when *this session* starts the simulation
-    // (never on launch just because the engine was already running).
+    // Offer the floating joystick once, and only when *this session* starts the simulation.
     var wasRunning by remember { mutableStateOf(engineState?.running == true) }
     LaunchedEffect(engineState?.running) {
         val running = engineState?.running == true
@@ -192,12 +292,9 @@ fun RootScreen(app: App, initialSearch: String? = null) {
         wasRunning = running
     }
 
-    // The ON_START hook alone missed the common case "user enables the pad from 工具 while already in
-    // the app", so the window appeared on the sheet. This effect covers both: entering the app with
-    // the pad on, and turning it on while in front.
     val lifecycleState by lifecycleOwner.lifecycle.currentStateFlow.collectAsStateWithLifecycle()
     LaunchedEffect(overlayRunning, lifecycleState) {
-        if (overlayRunning && lifecycleState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) {
+        if (overlayRunning && lifecycleState.isAtLeast(Lifecycle.State.STARTED)) {
             SimulationService.command(app, SimulationService.ACTION_SUSPEND_OVERLAY)
         }
     }
@@ -217,7 +314,8 @@ fun RootScreen(app: App, initialSearch: String? = null) {
         scope.launch { messages.show(snackbarHost, context.getString(R.string.action_copied)) }
     }
 
-    val startRun: () -> Unit = {
+    /** The simulation keeps a foreground notification; ask for it the first time anything starts. */
+    val ensureNotificationPermission: () -> Unit = {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 context,
@@ -229,10 +327,28 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                 }
             }
         }
-        controller.toggleRun()
     }
 
-    // 把「输入框里的文本」抽成显式参数，方便下面的 e2e 入口复用同一套逻辑。
+    val startRun: () -> Unit = {
+        ensureNotificationPermission()
+        controller.toggleRun()
+    }
+    val goTo: (GeoPoint, String) -> Unit = { point, label ->
+        ensureNotificationPermission()
+        controller.goTo(point, label)
+    }
+    val navigateTo: (GeoPoint, String) -> Unit = { point, label ->
+        controller.planTo(point, label)
+        detent = SheetDetent.FULL
+        openMap(null)
+    }
+    val openPlanner: () -> Unit = {
+        detent = SheetDetent.FULL
+        openMap(null)
+    }
+    val showModuleHelp: () -> Unit = { showActivationHelp = true }
+
+    // ------------------------------------------------------------------ map search
     val submitSearchText: (String) -> Unit = { raw ->
         val text = raw.trim()
         if (text.isEmpty()) {
@@ -243,8 +359,6 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                 controller.setPosition(direct)
                 searchState = SearchUiState()
             } else {
-                // One search surface only: the inline suggestion card under the pill. Opening a
-                // modal list as well would show the same results twice.
                 searchArmed = false
                 searchState = SearchUiState(query = text, loading = true)
                 controller.searchPlaces(text) { outcome ->
@@ -262,9 +376,7 @@ fun RootScreen(app: App, initialSearch: String? = null) {
         }
     }
 
-    // Live search: 450 ms after the user stops typing, the inline suggestion card under the pill
-    // shows results. Picking one disarms this so writing the chosen name into the field does not
-    // immediately re-open the list.
+    // Live search: 450 ms after the user stops typing the suggestion card under the pill updates.
     LaunchedEffect(query, searchArmed) {
         if (!searchArmed) return@LaunchedEffect
         val text = query.trim()
@@ -285,14 +397,7 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                 is SearchOutcome.Failure -> SearchUiState(query = text, error = outcome.message)
             }
         }
-        // The provider call is callback-based, so nothing drives the UI out of the loading state if
-        // the request simply never answers (qa-e2e saw `正在搜索…` for 8 s+ with network up). This is
-        // the only place that can turn that silent hang into a visible outcome.
-        //
-        // It must not fake a timeout for a *successful* empty result: `没有找到匹配的地点` arrives as
-        // Success(emptyList), which clears `loading`, so the condition below is false. Typing again
-        // cancels this coroutine through the `(query, searchArmed)` keys, so the guard can never fire
-        // for a query the user has already replaced.
+        // A request that never answers must still end in a visible outcome.
         delay(SEARCH_TIMEOUT_MS)
         if (searchState.loading && searchState.query == text) {
             searchState = SearchUiState(
@@ -314,8 +419,7 @@ fun RootScreen(app: App, initialSearch: String? = null) {
     val toggleFavouriteHere: () -> Unit = {
         val near = favorites.firstOrNull { GeoMath.distanceMeters(position, it.point) < 25.0 }
         if (near != null) {
-            controller.deleteFavorite(near)
-            controller.showMessage(context.getString(R.string.favorites_deleted))
+            controller.deleteFavoriteWithUndo(near)
         } else {
             controller.addCurrentFavorite()
         }
@@ -323,109 +427,277 @@ fun RootScreen(app: App, initialSearch: String? = null) {
 
     val toggleOverlay: (Boolean) -> Unit = { enabled -> controller.setOverlayEnabled(enabled) }
 
-    Box(
+    // The bar steps aside while the keyboard is up: a 80 dp bar pinned above the IME is dead space
+    // exactly when the screen is shortest.
+    val imeVisible = WindowInsets.isImeVisible
+    val bottomBarShown = !imeVisible
+
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            // Turns every `Modifier.testTag` below into a `resource-id` for `uiautomator dump`,
-            // which is what the e2e matrix asserts on instead of Chinese label matching.
+            // Turns every `Modifier.testTag` below into a `resource-id` for `uiautomator dump`.
             .semantics { testTagsAsResourceId = true },
     ) {
-        MapScreen(
-            state = engineState,
-            link = link,
-            config = config,
-            position = position,
-            favorites = favorites,
-            routeGeometry = routePath.ifEmpty { routePoints },
-            routeWaypoints = routeWaypoints,
-            routeOrigin = routeOrigin ?: routePoints.firstOrNull(),
-            routeDestination = routeDestination ?: routePoints.lastOrNull(),
-            tiles = tiles,
-            darkMap = darkMap,
-            headingDeg = headingDeg,
-            snackbarHostState = snackbarHost,
-            searchState = searchState,
-            onPickSuggestion = { result: PlaceResult ->
-                searchArmed = false
-                controller.setPosition(result.point)
-                controller.rememberRecent(result.point)
-                query = result.name
-                searchState = SearchUiState()
-                detent = SheetDetent.PEEK
-            },
-            query = query,
-            onQueryChange = { text ->
-                query = text
-                searchArmed = true
-            },
-            onSearchSubmit = { submitSearchText(query) },
-            onOpenTools = { detent = SheetDetent.HALF },
-            onOpenLayers = { modal = ModalSheet.LAYERS },
-            onToggleRun = startRun,
-            onSpeedSelect = controller::setSpeed,
-            onJoystick = controller::joystick,
-            onReleaseJoystick = controller::releaseJoystick,
-            onSetPosition = controller::setPosition,
-            onAddFavorite = controller::addFavorite,
-            onAddRoutePoint = controller::addRoutePoint,
-            onNavigateTo = { point ->
-                // 导航到这里 = route planner with the pin as destination and "here" as origin.
-                controller.routePlanner.resetOrigin()
-                controller.routePlanner.setDestination(RoutePlace(name = "", point = point))
-                detent = SheetDetent.FULL
-            },
-            onSelectFavorite = controller::jumpToFavorite,
-            onOpenRoutePlanner = { detent = SheetDetent.FULL },
-            onToggleFavoriteHere = toggleFavouriteHere,
-            onOpenStatus = { modal = ModalSheet.STATUS },
-            favouriteCount = favorites.size,
-            // The saved-places list is reachable from the peek card. Before this entry point the
-            // only control on the default surface that mentioned 收藏 was the heart — which saves
-            // (or, when the point already has a saved place, deletes) instead of opening the list.
-            onOpenFavorites = { modal = ModalSheet.FAVORITES },
-            detent = detent,
-            onDetentChange = { detent = it },
-            toolsContent = {
-                ToolsPanel(
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .then(
+                    if (bottomBarShown) Modifier.consumeWindowInsets(WindowInsets.navigationBars) else Modifier,
+                ),
+        ) {
+            if (mapEverShown) {
+                MapScreen(
+                    state = engineState,
+                    link = link,
                     config = config,
                     position = position,
                     favorites = favorites,
-                    onUpdate = controller::updateConfig,
-                    onPickFavorite = controller::jumpToFavorite,
-                    onAddCurrentFavorite = controller::addCurrentFavorite,
-                    onOpenSettings = { modal = ModalSheet.SETTINGS },
-                    onOpenLayers = { modal = ModalSheet.LAYERS },
-                    onOpenHeading = { modal = ModalSheet.HEADING },
-                    onToggleOverlay = toggleOverlay,
-                    overlayRunning = overlayRunning,
-                    overlayPermissionGranted = overlayPermission,
-                    onManageFavorites = { modal = ModalSheet.FAVORITES },
-                    onPickApps = { modal = ModalSheet.APPS },
-                    onImportGpx = {
-                        importLauncher.launch(arrayOf("application/gpx+xml", "text/xml", "*/*"))
+                    routeGeometry = routePath.ifEmpty { routePoints },
+                    routeWaypoints = routeWaypoints,
+                    routeOrigin = routeOrigin ?: routePoints.firstOrNull(),
+                    routeDestination = routeDestination ?: routePoints.lastOrNull(),
+                    tiles = tiles,
+                    darkMap = darkMap,
+                    headingDeg = headingDeg,
+                    snackbarHostState = snackbarHost,
+                    searchState = searchState,
+                    onPickSuggestion = { result: PlaceResult ->
+                        searchArmed = false
+                        controller.setPosition(result.point)
+                        controller.rememberRecent(result.point)
+                        app.settings.addRecentPlace(result.name, result.point)
+                        query = result.name
+                        searchState = SearchUiState()
+                        detent = SheetDetent.PEEK
                     },
-                    onExportGpx = { exportLauncher.launch("immoral-route.gpx") },
-                    recentPositions = recentPositions,
-                    onPickRecent = controller::setPosition,
+                    query = query,
+                    onQueryChange = { text ->
+                        query = text
+                        searchArmed = true
+                    },
+                    onSearchSubmit = { submitSearchText(query) },
+                    onOpenTools = { detent = SheetDetent.HALF },
+                    onOpenLayers = { modal = ModalSheet.LAYERS },
+                    onToggleRun = startRun,
+                    onSpeedSelect = controller::setSpeed,
+                    onJoystick = controller::joystick,
+                    onReleaseJoystick = controller::releaseJoystick,
+                    onSetPosition = controller::setPosition,
+                    onAddFavorite = controller::addFavorite,
+                    onAddRoutePoint = controller::addRoutePoint,
+                    // The map's own card says 导航到这里; the point has no name, so the planner
+                    // labels it by coordinate.
+                    onNavigateTo = { point -> navigateTo(point, "") },
+                    onSelectFavorite = controller::jumpToFavorite,
+                    onOpenRoutePlanner = { detent = SheetDetent.FULL },
+                    onToggleFavoriteHere = toggleFavouriteHere,
+                    onOpenStatus = { modal = ModalSheet.STATUS },
+                    favouriteCount = favorites.size,
+                    onOpenFavorites = { modal = ModalSheet.FAVORITES },
+                    detent = detent,
+                    onDetentChange = { detent = it },
+                    visible = tab == AppTab.MAP,
+                    bottomBarShown = bottomBarShown,
+                    pickMode = pickMode,
+                    onPickPoint = { point ->
+                        customTarget = CustomTarget(
+                            name = context.getString(R.string.shell_picked_on_map),
+                            point = point,
+                        )
+                        pickMode = false
+                        tab = AppTab.CUSTOM
+                    },
+                    onCancelPick = {
+                        pickMode = false
+                        tab = AppTab.CUSTOM
+                    },
+                    focusRequest = focusRequest,
+                    // Transient feedback belongs to the surface that is actually on screen: the tab
+                    // pages carry their own host, and a modal sheet gets one of its own below. A
+                    // message raised from inside a sheet used to render behind the sheet's scrim,
+                    // where it could be neither read nor tapped (撤销 was unreachable).
+                    snackbarEnabled = tab == AppTab.MAP && modal == ModalSheet.NONE,
+                    toolsContent = {
+                        ToolsPanel(
+                            config = config,
+                            position = position,
+                            favorites = favorites,
+                            onUpdate = controller::updateConfig,
+                            onPickFavorite = controller::jumpToFavorite,
+                            onAddCurrentFavorite = controller::addCurrentFavorite,
+                            onOpenSettings = { selectTab(AppTab.SETTINGS) },
+                            onOpenLayers = { modal = ModalSheet.LAYERS },
+                            onOpenHeading = { modal = ModalSheet.HEADING },
+                            onToggleOverlay = toggleOverlay,
+                            overlayRunning = overlayRunning,
+                            overlayPermissionGranted = overlayPermission,
+                            onManageFavorites = { modal = ModalSheet.FAVORITES },
+                            onPickApps = { modal = ModalSheet.APPS },
+                            recentPositions = recentPositions,
+                            onPickRecent = controller::setPosition,
+                        )
+                    },
+                    routeContent = { onHeightChange ->
+                        RoutePlannerHost(
+                            controller = controller.routePlanner,
+                            onDismiss = { detent = SheetDetent.PEEK },
+                            onContentHeightChange = onHeightChange,
+                            backEnabled = tab == AppTab.MAP,
+                        )
+                    },
                 )
-            },
-            routeContent = { onHeightChange ->
-                RoutePlannerHost(
-                    controller = controller.routePlanner,
-                    onDismiss = { detent = SheetDetent.PEEK },
-                    // The planner reports its content height so the FULL detent can hug it instead of
-                    // expanding to the screen and leaving a dead lower half (audit P1).
-                    onContentHeightChange = onHeightChange,
-                )
-            },
-        )
+            }
+
+            if (tab != AppTab.MAP) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.surface,
+                ) {
+                    // Each tab keeps its own saveable state (typed query, scroll position) while
+                    // another tab is in front, so switching away and back never wipes an input.
+                    tabStateHolder.SaveableStateProvider(tab.name) {
+                    when (tab) {
+                        AppTab.QUICK -> QuickScreen(
+                            state = engineState,
+                            link = link,
+                            config = config,
+                            position = position,
+                            favorites = favorites,
+                            savedRoutes = savedRoutes,
+                            pendingRouteId = pendingRouteId,
+                            recentPositions = recentPositions,
+                            recentPlaces = recentPlaces,
+                            snackbarHostState = snackbarHost,
+                            actions = QuickActions(
+                                onToggleRun = startRun,
+                                onGoTo = goTo,
+                                onShowOnMap = { point -> openMap(point) },
+                                onNavigateTo = { point, label -> navigateTo(point, label) },
+                                onSaveFavorite = controller::addFavorite,
+                                onRenameFavorite = controller::renameFavorite,
+                                onDeleteFavorite = controller::deleteFavoriteWithUndo,
+                                onStartRoute = { route ->
+                                    ensureNotificationPermission()
+                                    controller.startSavedRoute(route)
+                                },
+                                onEditRoute = { route ->
+                                    controller.routePlanner.loadSaved(route)
+                                    openPlanner()
+                                },
+                                onRenameRoute = controller::renameSavedRoute,
+                                onDeleteRoute = controller::deleteSavedRouteWithUndo,
+                                onPauseRoute = controller::pauseRoute,
+                                onResumeRoute = controller::playRoute,
+                                onStopRoute = controller::stopRoute,
+                                onRemoveRecent = { point -> app.settings.removeRecentPosition(point) },
+                                onClearRecents = controller::clearRecents,
+                                onOpenCustom = { selectTab(AppTab.CUSTOM) },
+                                onOpenMap = { openMap(null) },
+                                onPlanRoute = openPlanner,
+                                onOpenStatus = { modal = ModalSheet.STATUS },
+                                onModuleHelp = showModuleHelp,
+                                onCopy = copyToClipboard,
+                            ),
+                        )
+
+                        AppTab.CUSTOM -> CustomLocationScreen(
+                            position = position,
+                            target = customTarget,
+                            onTargetChange = { customTarget = it },
+                            snackbarHostState = snackbarHost,
+                            actions = CustomActions(
+                                onSearch = controller::searchPlaces,
+                                onPickOnMap = {
+                                    pickMode = true
+                                    detent = SheetDetent.PEEK
+                                    openMap(customTarget?.point)
+                                },
+                                onStartHere = goTo,
+                                onSaveFavorite = controller::addFavorite,
+                                onNavigateTo = { point, label -> navigateTo(point, label) },
+                                onShowOnMap = { point -> openMap(point) },
+                            ),
+                        )
+
+                        AppTab.SETTINGS -> SettingsScreen(
+                            config = config,
+                            link = link,
+                            moduleVersion = moduleVersion,
+                            tileUrl = customTileUrl,
+                            tilePreset = tilePreset,
+                            versionName = BuildConfig.VERSION_NAME,
+                            overlayRunning = overlayRunning,
+                            overlayPermission = overlayPermission,
+                            startPage = startPage,
+                            snackbarHostState = snackbarHost,
+                            actions = SettingsActions(
+                                onUpdate = controller::updateConfig,
+                                onTileUrlChange = controller::setTileUrl,
+                                onReset = controller::resetSettings,
+                                onOpenLayers = { modal = ModalSheet.LAYERS },
+                                onOpenHeading = { modal = ModalSheet.HEADING },
+                                onToggleOverlay = toggleOverlay,
+                                onImportGpx = {
+                                    importLauncher.launch(arrayOf("application/gpx+xml", "text/xml", "*/*"))
+                                },
+                                onExportGpx = { exportLauncher.launch("immoral-route.gpx") },
+                                onOpenStatus = { modal = ModalSheet.STATUS },
+                                onModuleHelp = showModuleHelp,
+                                onStartPageChange = controller::setStartPage,
+                            ),
+                        )
+
+                        AppTab.MAP -> Unit
+                    }
+                    }
+                }
+            }
+        }
+
+        if (bottomBarShown) {
+            // On the map the bar takes the sheet's own tone, so sheet + bar read as one bottom panel
+            // instead of two stacked slabs.
+            val barColor by animateColorAsState(
+                targetValue = if (tab == AppTab.MAP) sheetContainer() else MaterialTheme.colorScheme.surfaceContainer,
+                label = "navBarColor",
+            )
+            NavigationBar(
+                modifier = Modifier.testTag("e2e.navbar"),
+                containerColor = barColor,
+                tonalElevation = 0.dp,
+            ) {
+                AppTab.entries.forEach { item ->
+                    val selected = tab == item
+                    NavigationBarItem(
+                        selected = selected,
+                        onClick = {
+                            if (selected && item == AppTab.MAP) {
+                                // Re-tapping 地图 collapses whatever the sheet was showing.
+                                detent = SheetDetent.PEEK
+                            }
+                            selectTab(item)
+                        },
+                        icon = {
+                            Icon(
+                                imageVector = if (selected) item.selectedIcon else item.icon,
+                                contentDescription = null,
+                            )
+                        },
+                        label = { Text(stringResource(item.labelRes)) },
+                        modifier = Modifier.testTag(item.tag),
+                    )
+                }
+            }
+        }
     }
 
-    if (modal != ModalSheet.NONE) {
+    if (modal != ModalSheet.NONE && modal != ModalSheet.APPS) {
         ModalBottomSheet(
             onDismissRequest = { modal = ModalSheet.NONE },
             sheetState = sheetState,
         ) {
+            Box {
             when (modal) {
                 ModalSheet.STATUS -> StatusSheetContent(
                     state = engineState,
@@ -456,30 +728,15 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                     onBearingChange = controller::setFixedBearing,
                 )
 
-
-                ModalSheet.SETTINGS -> SettingsScreen(
-                    config = config,
-                    link = link,
-                    moduleVersion = moduleVersion,
-                    tileUrl = customTileUrl,
-                    versionName = BuildConfig.VERSION_NAME,
-                    onUpdate = controller::updateConfig,
-                    onTileUrlChange = controller::setTileUrl,
-                    onReset = controller::resetSettings,
-                )
-
                 ModalSheet.FAVORITES -> FavoritesScreen(
                     favorites = favorites,
                     currentPosition = position,
-
                     onSelect = { place ->
-                        // Jump first, then close: the confirmation snackbar lives on the map
-                        // surface, so leaving the sheet open hid the only feedback the user gets.
                         controller.jumpToFavorite(place)
                         modal = ModalSheet.NONE
                     },
                     onRename = controller::renameFavorite,
-                    onDelete = controller::deleteFavorite,
+                    onDelete = controller::deleteFavoriteWithUndo,
                     onAddCurrent = controller::addCurrentFavorite,
                 )
 
@@ -493,6 +750,14 @@ fun RootScreen(app: App, initialSearch: String? = null) {
 
                 ModalSheet.APPS -> Unit
                 ModalSheet.NONE -> Unit
+            }
+            SnackbarHost(
+                hostState = snackbarHost,
+                // Top of the sheet, not the bottom: the bottom of a sheet is its primary action.
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
             }
         }
     }
@@ -509,15 +774,25 @@ fun RootScreen(app: App, initialSearch: String? = null) {
     }
 
     if (showActivationHelp) {
-        androidx.compose.material3.AlertDialog(
+        AlertDialog(
             onDismissRequest = { showActivationHelp = false },
-            title = { androidx.compose.material3.Text(stringResource(R.string.hint_activate_title)) },
-            text = { androidx.compose.material3.Text(stringResource(R.string.hint_activate_body)) },
+            title = { Text(stringResource(R.string.hint_activate_title)) },
+            text = { Text(stringResource(R.string.hint_activate_body)) },
             confirmButton = {
-                androidx.compose.material3.TextButton(
-                    onClick = { showActivationHelp = false },
+                TextButton(
+                    onClick = {
+                        showActivationHelp = false
+                        if (!launchLsposed(context)) {
+                            controller.showMessage(context.getString(R.string.shell_lsposed_missing))
+                        }
+                    },
                 ) {
-                    androidx.compose.material3.Text(stringResource(R.string.action_ok))
+                    Text(stringResource(R.string.shell_open_lsposed))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showActivationHelp = false }) {
+                    Text(stringResource(R.string.action_ok))
                 }
             },
         )
@@ -528,4 +803,3 @@ fun RootScreen(app: App, initialSearch: String? = null) {
 private fun canDrawOverlays(context: android.content.Context): Boolean =
     Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
         android.provider.Settings.canDrawOverlays(context)
-

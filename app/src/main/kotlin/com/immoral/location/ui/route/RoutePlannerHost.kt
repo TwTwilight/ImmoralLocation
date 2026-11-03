@@ -187,8 +187,13 @@ fun RoutePlannerHost(
     controller: RoutePlannerController,
     onDismiss: () -> Unit,
     onContentHeightChange: (Int) -> Unit = {},
+    backEnabled: Boolean = true,
 ) {
     val searchTarget by controller.searchTarget.collectAsStateWithLifecycle()
+    // Back inside the stop picker returns to the plan, not out of the sheet.
+    androidx.activity.compose.BackHandler(enabled = backEnabled && searchTarget != null) {
+        controller.closeSearch()
+    }
 
     Surface(
         modifier = Modifier
@@ -424,18 +429,18 @@ private fun StopEditRow(controller: RoutePlannerController) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        AssistChip(
+        // A text button like its two neighbours: a 48 dp-tall outlined chip next to two text
+        // buttons read as a different kind of control for the same kind of job.
+        TextButton(
             onClick = { controller.openSearch(RouteFieldTarget(RouteFieldKind.WAYPOINT, -1)) },
-            label = { Text(stringResource(R.string.rp_add_waypoint), maxLines = 1) },
-            leadingIcon = {
-                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-            },
             modifier = Modifier
-                // 48 dp like every other control in the sheet: the audit rule is explicit that a
-                // 32 dp chip may not sit next to 48 dp text buttons in the same row (P4/§10.2.6).
-                .height(ActionHeight)
+                .heightIn(min = ActionHeight)
                 .testTag("e2e.route.addwaypoint"),
-        )
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(stringResource(R.string.rp_add_waypoint), maxLines = 1)
+        }
         Spacer(modifier = Modifier.weight(1f))
         TextButton(
             onClick = controller::swapEnds,
@@ -573,10 +578,12 @@ private fun ResultCard(
                     label = stringResource(R.string.rp_duration),
                     value = RoutePlannerStrings.durationLabel(result.durationSeconds),
                 )
-                StatColumn(
-                    label = stringResource(R.string.rp_waypoint_total),
-                    value = RoutePlannerStrings.countLabel(result.waypointCount),
-                )
+                if (result.waypointCount > 0) {
+                    StatColumn(
+                        label = stringResource(R.string.rp_waypoint_total),
+                        value = RoutePlannerStrings.countLabel(result.waypointCount),
+                    )
+                }
             }
             Spacer(modifier = Modifier.height(10.dp))
             SheetSupporting(

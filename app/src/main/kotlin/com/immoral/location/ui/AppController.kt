@@ -71,6 +71,10 @@ class AppController(
     /** Replaced by the host so messages land in the app's snackbar. */
     var showMessage: (String) -> Unit = {}
 
+    /** Snackbar with one action (撤销); replaced by the host. */
+    var showAction: (message: String, action: String, onAction: () -> Unit) -> Unit =
+        { message, _, _ -> showMessage(message) }
+
     // ----------------------------------------------------------- configuration
 
     fun updateConfig(transform: (SimulationConfig) -> SimulationConfig) {
@@ -103,7 +107,7 @@ class AppController(
 
     fun setTileUrl(url: String) {
         settings.setTileUrl(url)
-        showMessage(app.getString(R.string.action_save))
+        showMessage(app.getString(R.string.shell_saved))
     }
 
     fun setTilePreset(preset: TilePreset) {
@@ -113,7 +117,7 @@ class AppController(
 
     fun setTiandituKey(key: String) {
         settings.setTiandituKey(key)
-        showMessage(app.getString(R.string.action_save))
+        showMessage(app.getString(R.string.shell_saved))
     }
 
     // ---------------------------------------------------------------- search
@@ -372,7 +376,12 @@ class AppController(
         if (created == null) {
             showMessage(app.getString(R.string.favorites_invalid_position))
         } else {
-            showMessage(app.getString(R.string.favorites_saved))
+            showMessage(
+                app.getString(
+                    R.string.shell_favorite_saved,
+                    com.immoral.location.ui.components.FavoriteText.displayName(created.name),
+                ),
+            )
         }
     }
 
@@ -389,6 +398,64 @@ class AppController(
     fun renameFavorite(place: FavoritePlace, name: String) = favorites.rename(place.id, name)
 
     fun deleteFavorite(place: FavoritePlace) = favorites.remove(place.id)
+
+    /** Deletes [place] and offers 撤销 in the snackbar. */
+    fun deleteFavoriteWithUndo(place: FavoritePlace) {
+        val index = favorites.favorites.value.indexOfFirst { it.id == place.id }
+        favorites.remove(place.id)
+        showAction(
+            app.getString(R.string.favorites_deleted),
+            app.getString(R.string.tap_chip_undo),
+        ) { favorites.restore(place, index) }
+    }
+
+    /** Deletes a saved route and offers 撤销. */
+    fun deleteSavedRouteWithUndo(route: com.immoral.location.core.route.SavedRoute) {
+        val index = routePlanner.deleteSaved(route)
+        showAction(
+            app.getString(R.string.shell_route_deleted),
+            app.getString(R.string.tap_chip_undo),
+        ) { settings.restoreSavedRoute(route, index) }
+    }
+
+    fun renameSavedRoute(route: com.immoral.location.core.route.SavedRoute, name: String) =
+        routePlanner.renameSaved(route, name)
+
+    /** 快捷 page: one tap on a saved route plans it and starts playback as soon as it lands. */
+    fun startSavedRoute(route: com.immoral.location.core.route.SavedRoute) {
+        routePlanner.loadSaved(route, startWhenReady = true)
+        showMessage(app.getString(R.string.shell_route_preparing, route.name))
+    }
+
+    /**
+     * 去这里 from a list (收藏 / 最近 / 自定义): teleport, remember it, and say where we are now.
+     */
+    fun goTo(point: GeoPoint, label: String) {
+        if (!point.isValidLatLon()) {
+            showMessage(app.getString(R.string.favorites_invalid_position))
+            return
+        }
+        setPosition(point)
+        settings.addRecentPlace(label, point)
+        showMessage(app.getString(R.string.shell_went_to, label))
+    }
+
+    /**
+     * 导航到这里: the planner opens with this point as destination and the live position as origin.
+     * [label] (a searched place name, when we have one) is kept so the saved route can be called
+     * something better than two coordinates.
+     */
+    fun planTo(point: GeoPoint, label: String) {
+        routePlanner.resetOrigin()
+        routePlanner.setDestination(com.immoral.location.ui.route.RoutePlace(name = label, point = point))
+    }
+
+    fun clearRecents() {
+        settings.clearRecents()
+        showMessage(app.getString(R.string.shell_recents_cleared))
+    }
+
+    fun setStartPage(page: String) = settings.setStartPage(page)
 
     fun jumpToFavorite(place: FavoritePlace) {
         setPosition(place.point)

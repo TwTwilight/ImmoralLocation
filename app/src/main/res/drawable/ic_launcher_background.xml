@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Adaptive icon background: MD3 tonal ramp (light lavender -> deep violet) plus a
-  soft top-left glow. Gradients inside a VectorDrawable need API 24+, which is
-  fine here because this layer is only reachable through the -v26 adaptive icon;
-  pre-26 devices get drawable/ic_launcher_legacy instead.
+  Adaptive icon background: a Material You violet ramp (light top-left to deep bottom-right) with a
+  soft glow behind the pin. Gradients need API 24+, which is fine: this layer is only reachable via
+  the -v26 adaptive icon; older devices get drawable/ic_launcher_legacy.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
@@ -16,12 +15,12 @@
         <aapt:attr name="android:fillColor">
             <gradient
                 android:type="linear"
-                android:startX="0"
+                android:startX="10"
                 android:startY="0"
-                android:endX="84.2"
+                android:endX="98"
                 android:endY="108"
-                android:startColor="#FFA08BF2"
-                android:endColor="#FF3A1F8C" />
+                android:startColor="#FF8E7CF5"
+                android:endColor="#FF3A2398" />
         </aapt:attr>
     </path>
 
@@ -29,10 +28,10 @@
         <aapt:attr name="android:fillColor">
             <gradient
                 android:type="radial"
-                android:centerX="25.9"
-                android:centerY="10.8"
-                android:gradientRadius="102.6"
-                android:startColor="#3DFFFFFF"
+                android:centerX="62"
+                android:centerY="48"
+                android:gradientRadius="46"
+                android:startColor="#33FFFFFF"
                 android:endColor="#00FFFFFF" />
         </aapt:attr>
     </path>

@@ -165,8 +165,8 @@ fun StatusSheetContent(
             )
             if (counts.satellites > 0) {
                 StatTile(
-                    label = stringResource(R.string.status_satellites, counts.satellitesUsed, counts.satellites),
-                    value = "",
+                    label = stringResource(R.string.shell_satellites),
+                    value = "${counts.satellitesUsed}/${counts.satellites}",
                     modifier = Modifier.weight(1f),
                 )
             }

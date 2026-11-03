@@ -1,5 +1,6 @@
 package com.immoral.location.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -142,6 +143,12 @@ enum class SheetDetent {
 private data class TapChip(val point: GeoPoint, val previous: GeoPoint)
 
 /**
+ * "Centre the map on [point]" coming from another tab (在地图中查看). [nonce] makes two requests for
+ * the same point distinct, so the second tap still moves the camera.
+ */
+data class MapFocusRequest(val point: GeoPoint, val nonce: Long = System.nanoTime())
+
+/**
  * The single top-level surface: a full-bleed map with everything else floating on top of it.
  *
  * Layout, all overlaying the map:
@@ -195,6 +202,13 @@ fun MapScreen(
     toolsContent: @Composable ColumnScope.() -> Unit,
     routeContent: @Composable ColumnScope.(onHeightChange: (Int) -> Unit) -> Unit,
     modifier: Modifier = Modifier,
+    visible: Boolean = true,
+    bottomBarShown: Boolean = false,
+    pickMode: Boolean = false,
+    onPickPoint: (GeoPoint) -> Unit = {},
+    onCancelPick: () -> Unit = {},
+    focusRequest: MapFocusRequest? = null,
+    snackbarEnabled: Boolean = true,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val density = LocalDensity.current
@@ -202,6 +216,9 @@ fun MapScreen(
     val favoriteTapHandler by rememberUpdatedState(onSelectFavorite)
     val altitudeRef by rememberUpdatedState(position.alt)
     val positionRef by rememberUpdatedState(position)
+    val pickModeRef by rememberUpdatedState(pickMode)
+    val pickHandler by rememberUpdatedState(onPickPoint)
+    val visibleRef by rememberUpdatedState(visible)
 
     var joystickEnabled by rememberSaveable { mutableStateOf(false) }
     var pendingPoint by remember { mutableStateOf<GeoPoint?>(null) }
@@ -225,9 +242,14 @@ fun MapScreen(
     // The map callbacks are captured once by the (remembered) backend, so they must only read
     // state through `rememberUpdatedState` refs, never through captured values.
     val handleTap: (GeoPoint) -> Unit = remember {
-        { raw ->
+        tap@{ raw ->
             dismissIme()
             val point = raw.copy(alt = altitudeRef)
+            if (pickModeRef) {
+                // 自定义 → 在地图上选点: the tap is an answer, not a teleport.
+                pickHandler(point)
+                return@tap
+            }
             val previous = positionRef
             selectedFavoriteId = null
             pendingPoint = null
@@ -241,9 +263,13 @@ fun MapScreen(
     val handleLongPress: (GeoPoint) -> Unit = remember {
         { raw ->
             dismissIme()
-            selectedFavoriteId = null
-            tapChip = null
-            pendingPoint = raw.copy(alt = altitudeRef)
+            if (pickModeRef) {
+                pickHandler(raw.copy(alt = altitudeRef))
+            } else {
+                selectedFavoriteId = null
+                tapChip = null
+                pendingPoint = raw.copy(alt = altitudeRef)
+            }
         }
     }
     val handleFavoriteTap: (FavoritePlace) -> Unit = remember {
@@ -363,7 +389,7 @@ fun MapScreen(
     DisposableEffect(lifecycleOwner, backend) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> backend.onResume()
+                Lifecycle.Event.ON_RESUME -> if (visibleRef) backend.onResume()
                 Lifecycle.Event.ON_PAUSE -> backend.onPause()
                 else -> Unit
             }
@@ -376,6 +402,29 @@ fun MapScreen(
     }
 
     LaunchedEffect(palette, backend) { backend.setPalette(palette) }
+
+    // The map stays composed while another tab is in front (so coming back is instant), but it must
+    // not keep rendering frames nobody can see.
+    LaunchedEffect(visible, backend) {
+        if (visible) backend.onResume() else backend.onPause()
+    }
+
+    // 在地图中查看 from another tab: centre on the point once per request.
+    LaunchedEffect(focusRequest, backend) {
+        val request = focusRequest ?: return@LaunchedEffect
+        delay(120)
+        backend.animateTo(request.point, 17f)
+    }
+
+    // Back unwinds the map's own layers before it may leave the tab: card → chip → sheet.
+    BackHandler(enabled = visible && pickMode) { onCancelPick() }
+    BackHandler(enabled = visible && !pickMode && (pendingPoint != null || tapChip != null || detent != SheetDetent.PEEK)) {
+        when {
+            pendingPoint != null -> pendingPoint = null
+            tapChip != null -> tapChip = null
+            else -> onDetentChange(SheetDetent.PEEK)
+        }
+    }
 
     val tileTemplate = tiles?.template
     LaunchedEffect(tileTemplate, darkMap, backend) {
@@ -434,12 +483,13 @@ fun MapScreen(
         //
         // The peek block itself measures *without* the gesture-bar inset (the sheet's Column owns
         // that padding, at its very bottom), so the PEEK detent has to add it back here.
-        val navInsetPx = WindowInsets.navigationBars.getBottom(density)
+        // With the app's navigation bar under the map, the gesture-bar inset belongs to that bar.
+        val navInsetPx = if (bottomBarShown) 0 else WindowInsets.navigationBars.getBottom(density)
         // The sheet is bottom-anchored with an explicit height, so an IME inset cannot be padded
         // inside it — that squeezed the picker's list to zero height. Instead the sheet keeps its
         // bottom edge above the keyboard: height capped by the space left over, lifted by the inset.
         // Zero when no keyboard is up, so every other state is byte-identical.
-        val imeInsetPx = WindowInsets.ime.getBottom(density)
+        val imeInsetPx = if (bottomBarShown) 0 else WindowInsets.ime.getBottom(density)
         val navInsetTopPx = WindowInsets.statusBars.getTop(density)
         val peekPx = (
             if (peekHeightPx > 0) {
@@ -500,7 +550,9 @@ fun MapScreen(
         // The floating chrome steps aside whenever the sheet leaves the peek detent or a place
         // card is showing: the card owns the bottom third of the screen in that moment, and at
         // half/full the tools/route panel would otherwise collide with the FAB stack.
-        val chromeVisible = detent == SheetDetent.PEEK && pendingPoint == null
+        // …and it stays out of the keyboard's way too: typing in the search pill leaves only the
+        // pill, the card and the map.
+        val chromeVisible = detent == SheetDetent.PEEK && pendingPoint == null && imeInsetPx <= 0
         val chromeAlpha by animateFloatAsState(
             targetValue = if (chromeVisible) 1f else 0f,
             animationSpec = tween(durationMillis = 160),
@@ -586,12 +638,15 @@ fun MapScreen(
                     bottom = Dimens.chromeGap,
                 ),
         ) {
-            androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+            if (pickMode) {
+                PickBanner(onCancel = onCancelPick)
+            } else androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
                 SearchPill(
                     query = query,
                     onQueryChange = onQueryChange,
                     onSubmit = onSearchSubmit,
-                    onClick = onSearchSubmit,
+                    // Tapping the pill only opens the field; searching is the IME action.
+                    onClick = {},
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(modifier = Modifier.width(Dimens.chromeGap))
@@ -612,7 +667,7 @@ fun MapScreen(
                     tag = "e2e.fab.tools",
                 )
             }
-            if (!hasNetwork) {
+            if (!hasNetwork && !pickMode) {
                 Spacer(modifier = Modifier.height(Dimens.chromeGap))
                 Surface(
                     shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
@@ -634,7 +689,7 @@ fun MapScreen(
             val parsedCoordinate = remember(query) {
                 CoordinateParser.parse(query.trim())
             }
-            val showSuggestions = query.isNotBlank() &&
+            val showSuggestions = !pickMode && query.isNotBlank() &&
                 (parsedCoordinate != null || searchState.loading ||
                     searchState.error != null || searchState.results.isNotEmpty())
             if (showSuggestions) {
@@ -668,7 +723,7 @@ fun MapScreen(
                 .testTag("e2e.snackbar"),
             contentAlignment = Alignment.TopCenter,
         ) {
-            SnackbarHost(
+            if (visible && snackbarEnabled) SnackbarHost(
                 hostState = snackbarHostState,
                 modifier = Modifier.fillMaxWidth(),
             ) { data ->
@@ -819,6 +874,7 @@ fun MapScreen(
                     onClick = onOpenLayers,
                     active = false,
                     tag = "e2e.fab.layer",
+                    grouped = true,
                 )
                 ChromeFabGroupDivider()
                 ChromeFab(
@@ -827,6 +883,7 @@ fun MapScreen(
                     onClick = { joystickEnabled = !joystickEnabled },
                     active = joystickEnabled,
                     tag = "e2e.fab.joystick",
+                    grouped = true,
                 )
                 ChromeFabGroupDivider()
                 ChromeFab(
@@ -834,6 +891,7 @@ fun MapScreen(
                     contentDescription = stringResource(R.string.map_back_to_position),
                     onClick = { backend.animateTo(position) },
                     tag = "e2e.fab.locate",
+                    grouped = true,
                 )
             }
         }
@@ -890,17 +948,24 @@ fun MapScreen(
         // the inset: the planner's own height is content-sized (~1 000 px), so subtracting the 894 px
         // keyboard left ~130 px — room for the header and the search field but no result rows at all.
         // Zero-inset (no keyboard) keeps `sheetPx` and every other state unchanged.
-        val layoutSheetPx = if (imeInsetPx > 0) {
-            (totalPx - imeInsetPx - navInsetTopPx).coerceAtLeast(halfPx)
-        } else {
-            sheetPx
+        // While the keyboard is up the sheet must never grow behind it: at PEEK it gets out of the
+        // way entirely (the search card owns the visible band, exactly like Maps' collapsed sheet),
+        // and the planner keeps everything between the search pill and the keyboard instead of the
+        // screen height, which used to make the sheet cover the map and the keyboard at once.
+        val aboveImePx = (totalPx - imeInsetPx).coerceAtLeast(0f)
+        val layoutSheetPx = when {
+            imeInsetPx <= 0 -> sheetPx
+            detent == SheetDetent.PEEK -> 0f
+            else -> (aboveImePx - chromeTopPx).coerceIn(with(density) { 240.dp.toPx() }, sheetPx)
         }
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(with(density) { layoutSheetPx.toDp() })
-                .offset(y = -(with(density) { imeInsetPx.toDp() }))
+                // Over the app's navigation bar the sheet runs 2 dp *under* it, so its hairline and
+                // shadow end there and sheet + bar read as one continuous bottom panel.
+                .height(with(density) { layoutSheetPx.toDp() } + if (bottomBarShown) 2.dp else 0.dp)
+                .offset(y = -(with(density) { imeInsetPx.toDp() }) + if (bottomBarShown) 2.dp else 0.dp)
                 .testTag("e2e.sheet"),
             shape = SheetShape,
             color = sheetContainer(),
@@ -913,7 +978,11 @@ fun MapScreen(
             // The gesture-bar inset is applied once, at the bottom of the sheet, so the peek block
             // itself measures without it and the inset never ends up as a dead strip between the
             // action row and the tools panel at the HALF detent.
-            Column(modifier = Modifier.fillMaxSize().navigationBarsPadding()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (bottomBarShown) Modifier else Modifier.navigationBarsPadding()),
+            ) {
                 var dragAccum by remember { mutableFloatStateOf(0f) }
                 val threshold = with(density) { 22.dp.toPx() }
                 val dragState = rememberDraggableState { delta -> dragAccum += delta }
@@ -1010,6 +1079,39 @@ fun MapScreen(
     }
 }
 
-
-
-
+/** Replaces the search row while 自定义 → 在地图上选点 is waiting for a tap. */
+@Composable
+private fun PickBanner(onCancel: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(Dimens.searchBarHeight)
+            .testTag("e2e.map.pickbanner"),
+        shape = com.immoral.location.ui.theme.PillShape,
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        shadowElevation = 3.dp,
+    ) {
+        androidx.compose.foundation.layout.Row(
+            modifier = Modifier.padding(start = 18.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.MyLocation,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = stringResource(R.string.shell_pick_banner),
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onCancel) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        }
+    }
+}

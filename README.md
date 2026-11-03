@@ -3,24 +3,24 @@
   ImmoralLocation
 </h1>
 
-<p align="center"><img src="assets/01-main.png" width="280" alt="主界面"></p>
+<p align="center"><img src="assets/01-main.png" width="280" alt="地图主界面"></p>
 
 <table align="center">
   <tr>
-    <td align="center"><img src="assets/02-search.png" width="340" alt="搜索"></td>
-    <td align="center"><img src="assets/03-layers.png" width="340" alt="图层"></td>
+    <td align="center"><img src="assets/02-quick.png" width="340" alt="快捷启动"></td>
+    <td align="center"><img src="assets/03-search.png" width="340" alt="搜索"></td>
   </tr>
   <tr>
     <td align="center"><img src="assets/04-joystick.png" width="340" alt="摇杆"></td>
     <td align="center"><img src="assets/05-route.png" width="340" alt="路线规划"></td>
   </tr>
   <tr>
-    <td align="center"><img src="assets/06-tools.png" width="340" alt="工具面板"></td>
-    <td align="center"><img src="assets/07-place.png" width="340" alt="落针卡片"></td>
+    <td align="center"><img src="assets/06-place.png" width="340" alt="落针卡片"></td>
+    <td align="center"><img src="assets/07-settings.png" width="340" alt="设置"></td>
   </tr>
   <tr>
-    <td align="center"><img src="assets/08-tap.png" width="340" alt="单击小卡"></td>
-    <td align="center"><img src="assets/09-dark.png" width="340" alt="深色模式"></td>
+    <td align="center"><img src="assets/08-dark.png" width="340" alt="深色模式"></td>
+    <td align="center"></td>
   </tr>
 </table>
 

@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Splash-screen mark: the launcher artwork on its own violet disc. The disc is drawn here rather
+  than via windowSplashScreenIconBackgroundColor because some ROMs (MIUI) skip the circular mask and
+  paint that colour as a hard square. Radius 34 keeps it inside the splash icon's 2/3 safe circle.
+  Group names match drawable/splash_icon_animated.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FF6A54D6"
+        android:pathData="M20,54a34,34 0 1 0 68,0a34,34 0 1 0 -68,0Z" />
+
+
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.74"
+        android:scaleY="0.74"
+        android:translateX="-1.5">
+        <!-- the real position: an outlined ghost pin -->
+        <group
+            android:name="ghost"
+            android:pivotX="35"
+            android:pivotY="69">
+            <path
+                android:fillColor="#00000000"
+                android:pathData="M35,44.5C30.31,44.5 26.5,48.31 26.5,53C26.5,59.5 35,69 35,69C35,69 43.5,59.5 43.5,53C43.5,48.31 39.69,44.5 35,44.5Z"
+                android:strokeColor="#8CFFFFFF"
+                android:strokeWidth="3" />
+        </group>
+
+        <!-- the hop -->
+        <group
+            android:name="dot1"
+            android:pivotX="37.2"
+            android:pivotY="38.2">
+            <path
+                android:fillColor="#8CFFFFFF"
+                android:pathData="M35.2,38.2a2,2 0 1 0 4,0a2,2 0 1 0 -4,0Z" />
+        </group>
+        <group
+            android:name="dot2"
+            android:pivotX="41.7"
+            android:pivotY="32.6">
+            <path
+                android:fillColor="#B3FFFFFF"
+                android:pathData="M39.6,32.6a2.1,2.1 0 1 0 4.2,0a2.1,2.1 0 1 0 -4.2,0Z" />
+        </group>
+        <group
+            android:name="dot3"
+            android:pivotX="47.8"
+            android:pivotY="29.2">
+            <path
+                android:fillColor="#D9FFFFFF"
+                android:pathData="M45.6,29.2a2.2,2.2 0 1 0 4.4,0a2.2,2.2 0 1 0 -4.4,0Z" />
+        </group>
+
+        <!-- ground shadow of the simulated pin -->
+        <group
+            android:name="shadow"
+            android:pivotX="61"
+            android:pivotY="79">
+            <path
+                android:fillColor="#40160A4D"
+                android:pathData="M52,79a9,2.4 0 1 0 18,0a9,2.4 0 1 0 -18,0Z" />
+        </group>
+
+        <!-- the simulated position; the inner contour is wound the other way round so the aperture
+             survives both evenOdd and the legacy nonZero rasterizer -->
+        <group
+            android:name="pin"
+            android:pivotX="61"
+            android:pivotY="77">
+            <path
+                android:fillColor="#FFFFFFFF"
+                android:pathData="M61,32C52.72,32 46,38.72 46,47C46,58.5 61,77 61,77C61,77 76,58.5 76,47C76,38.72 69.28,32 61,32Z M66.8,47a5.8,5.8 0 1 1 -11.6,0a5.8,5.8 0 1 1 11.6,0Z" />
+        </group>
+
+    </group>
+</vector>

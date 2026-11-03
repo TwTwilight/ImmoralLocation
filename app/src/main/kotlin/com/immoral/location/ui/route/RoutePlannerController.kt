@@ -154,6 +154,14 @@ class RoutePlannerController(
     /** Recently teleported-to points, shown as plain coordinates in the search screen. */
     fun recentPoints(): List<GeoPoint> = recentPoints.invoke()
 
+    private val _pendingStartId = MutableStateFlow<String?>(null)
+
+    /**
+     * Id of the saved route that is being planned in order to start right away (快捷页 一键开始).
+     * The quick page shows a spinner on that row instead of a play button.
+     */
+    val pendingStartId: StateFlow<String?> = _pendingStartId.asStateFlow()
+
     private var planJob: Job? = null
 
     /** `31.2304,121.4787` / `31.2304 121.4787` / `31.2304，121.4787` — nothing but coordinates. */
@@ -291,10 +299,12 @@ class RoutePlannerController(
     fun plan() {
         val request = currentRequest()
         if (request == null) {
+            _pendingStartId.value = null
             _notice.value = context.getString(R.string.rp_error_missing)
             return
         }
         if (!request.isUsable) {
+            _pendingStartId.value = null
             _notice.value = context.getString(R.string.rp_error_same_point)
             _result.value = null
             return
@@ -310,12 +320,24 @@ class RoutePlannerController(
                 // crash the sheet.
                 _planning.value = false
                 _notice.value = t.message ?: context.getString(R.string.rp_error_osrm)
+                if (_pendingStartId.value != null) {
+                    _pendingStartId.value = null
+                    onMessage.invoke(_notice.value ?: context.getString(R.string.rp_error_osrm))
+                }
                 return@launch
             }
             _planning.value = false
             _result.value = outcome.result
             settings.setPlannedRoute(request, outcome.result)
             _notice.value = noticeFor(outcome.failures, outcome.degraded)
+            if (_pendingStartId.value != null) {
+                _pendingStartId.value = null
+                if (outcome.result.isUsable) {
+                    start()
+                } else {
+                    onMessage.invoke(context.getString(R.string.rp_error_osrm))
+                }
+            }
         }
     }
 
@@ -369,20 +391,50 @@ class RoutePlannerController(
         val saved = SavedRoute.from(
             request = request,
             result = _result.value,
-            name = "",
+            name = defaultRouteName(),
             nowMs = System.currentTimeMillis(),
         )
         settings.saveRoute(saved)
         onMessage.invoke(context.getString(R.string.rp_saved))
     }
 
-    /** Deletes a saved route. */
-    fun deleteSaved(route: SavedRoute) {
-        settings.deleteSavedRoute(route.id)
+    /**
+     * A readable default for a saved route: "王府井 → 北海公园" when both ends carry real names,
+     * "前往 北海公园" when only the destination does, else "路线 N" — never two raw coordinates.
+     */
+    private fun defaultRouteName(): String {
+        val origin = _origin.value?.name?.takeIf { isRealName(it) && it != context.getString(R.string.rp_current_location) }
+        val destination = _destination.value?.name?.takeIf { isRealName(it) }
+        return when {
+            origin != null && destination != null -> "$origin → $destination"
+            destination != null -> context.getString(R.string.shell_route_to, destination)
+            else -> context.getString(R.string.shell_route_default_name, settings.savedRoutes.value.size + 1)
+        }
     }
 
-    /** Re-opens a saved route and plans it again. */
-    fun loadSaved(route: SavedRoute) {
+    private fun isRealName(name: String): Boolean =
+        name.isNotBlank() && !name.startsWith("坐标") && !coordinateOnlyPattern.matches(name)
+
+    /** Deletes a saved route; returns its former index so the caller can offer 撤销. */
+    fun deleteSaved(route: SavedRoute): Int {
+        val index = settings.savedRoutes.value.indexOfFirst { it.id == route.id }
+        settings.deleteSavedRoute(route.id)
+        return index
+    }
+
+    /** Renames a saved route in place. */
+    fun renameSaved(route: SavedRoute, name: String) {
+        settings.renameSavedRoute(route.id, name)
+    }
+
+    /**
+     * Re-opens a saved route and plans it again.
+     *
+     * @param startWhenReady 	rue from the 快捷 page: playback starts as soon as the plan lands, so
+     *   one tap on a saved route is "start this route", with no planner in between.
+     */
+    fun loadSaved(route: SavedRoute, startWhenReady: Boolean = false) {
+        _pendingStartId.value = if (startWhenReady) route.id else null
         _origin.value = RoutePlace(RoutePlannerStrings.coordinateLabel(route.origin), route.origin)
         _destination.value = RoutePlace(
             RoutePlannerStrings.coordinateLabel(route.destination),
