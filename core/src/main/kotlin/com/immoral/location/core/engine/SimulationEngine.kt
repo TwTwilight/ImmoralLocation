@@ -485,10 +485,29 @@ class SimulationEngine(
      *
      * Using a stored epoch instead of `clock()` at each call site matters: `buildSnap` asks for the
      * satellites and then for the NMEA lines, and if each call read the clock the GNSS status and the
-     * GSV sentences of one published snapshot would describe skies microseconds apart. Before the
-     * first tick the engine falls back to the wall clock so a preview still has a valid epoch.
+     * GSV sentences of one published snapshot would describe skies microseconds apart.
+     *
+     * Before the first tick the wall clock is read **once** and kept ([pinnedSkyEpochMs]): a preview
+     * that asks for the constellation and then for the sentences must describe one sky, not two
+     * skies microseconds apart. This is not a cosmetic difference — C/N0 is rendered as whole dB-Hz
+     * in NMEA, so a value sitting on a rounding boundary flipped between the two reads and the
+     * *same* satellite was reported as 39 dB-Hz in `GnssStatus` and 40 dB-Hz in `$GGGSV`
+     * (measured: the cross-platform CI leg failed on exactly that while the local run passed).
+     *
+     * The pin is cleared by every [tick], after which [updatedAtMs] — the authoritative epoch — takes
+     * over for good.
      */
-    private fun skyEpochMs(): Long = if (updatedAtMs > 0L) updatedAtMs else clock()
+    @Volatile
+    private var pinnedSkyEpochMs: Long = 0L
+
+    private fun skyEpochMs(): Long {
+        if (updatedAtMs > 0L) return updatedAtMs
+        val alreadyPinned = pinnedSkyEpochMs
+        if (alreadyPinned != 0L) return alreadyPinned
+        val now = clock()
+        pinnedSkyEpochMs = now
+        return now
+    }
 
     /**
      * NMEA 0183 sentences describing the current state: fix data, recommended minimum, per-talker

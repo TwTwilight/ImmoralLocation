@@ -416,4 +416,32 @@ class SimulationEngineTest {
         }
         assertEquals(runOnce(), runOnce())
     }
+
+    /**
+     * Before the first tick the engine has no authoritative epoch, so it must *pin* one.
+     *
+     * Otherwise two reads of the same pre-tick engine answered from two different wall-clock
+     * instants: C/N0 drifts a few hundredths of a dB per second, which is invisible until it lands
+     * on a rounding boundary — and then the same satellite is 39 dB-Hz in `GnssStatus` and 40 in
+     * `$GGGSV`. CI (Linux) caught it while the local run passed; the fix is the pin, and this test
+     * reproduces it deterministically by advancing the injected clock between reads.
+     */
+    @Test
+    fun theSkyIsPinnedUntilTheFirstTick() {
+        var now = 1_700_000_000_000L
+        val engine = SimulationEngine(
+            Reference.BEIJING,
+            SimulationConfig(gpsSignalSimulation = true),
+        ).apply { clock = { now } }
+        val first = engine.satellites()
+        now += 7_000L
+        assertEquals(first, engine.satellites(), "two pre-tick reads must describe the same sky")
+        val firstNmea = engine.nmea(now)
+        now += 31_000L
+        assertEquals(firstNmea, engine.nmea(now - 31_000L), "NMEA of one instant must be reproducible")
+        // A tick makes the tick timestamp authoritative, so the sky is allowed to move again.
+        engine.running = true
+        engine.tick(1_000L)
+        assertNotEquals(first, engine.satellites())
+    }
 }
