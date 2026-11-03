@@ -56,6 +56,14 @@
 
     <!-- 地图 -->
     <string name="map_back_to_position">回到当前位置</string>
+    <!-- 回到真实位置：手机自己的位置，不是模拟点。 -->
+    <string name="map_real_location">回到真实位置</string>
+    <string name="map_real_jump_done">已跳到真实位置 %1$s, %2$s</string>
+    <string name="map_real_jump_stale_minutes">已跳到真实位置 %1$s, %2$s（真实定位已是 %3$d 分钟前）</string>
+    <string name="map_real_jump_stale_hours">已跳到真实位置 %1$s, %2$s（真实定位已是 %3$d 小时前）</string>
+    <string name="map_real_jump_unknown_age">已跳到真实位置 %1$s, %2$s（定位时间未知）</string>
+    <string name="map_real_jump_missing">模块还没有拿到真实定位，请到开阔处等 GPS 定位后再试</string>
+    <string name="map_real_jump_no_module">模块未激活，读不到真实位置</string>
     <string name="map_tap_hint">点击地图快速切换位置 · 长按添加收藏</string>
     <string name="map_route_hint">路线模式：点击地图追加路线点</string>
     <string name="map_add_favorite_title">添加收藏</string>

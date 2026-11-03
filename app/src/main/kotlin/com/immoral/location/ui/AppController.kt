@@ -7,6 +7,7 @@ import android.provider.Settings
 import com.immoral.location.App
 import com.immoral.location.BuildConfig
 import com.immoral.location.R
+import com.immoral.location.bridge.ModuleLink
 import com.immoral.location.core.geo.GeoMath
 import com.immoral.location.core.model.FavoritePlace
 import com.immoral.location.core.model.GeoPoint
@@ -22,6 +23,7 @@ import com.immoral.location.net.CoordinateParser
 import com.immoral.location.net.PlaceSearchClient
 import com.immoral.location.net.SearchOutcome
 import com.immoral.location.service.SimulationService
+import com.immoral.location.ui.components.Fmt
 import com.immoral.location.ui.route.RoutePlannerController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -169,6 +171,68 @@ class AppController(
 
     /** Records a picked search result in the 最近使用 list. */
     fun rememberRecent(point: GeoPoint) = settings.addRecentPosition(point)
+
+    /**
+     * 回到真实位置 — teleports the simulation to where the phone physically is, then hands the
+     * point to [onArrived] so the map can follow it.
+     *
+     * The fix comes from the module, never from `LocationManager`: while the engine runs, every
+     * caller — our own process included — is answered with the simulated point, so the framework's
+     * own copy of the real reports is the only trustworthy source. The age of that fix is reported
+     * rather than hidden: an indoor device may have last been located far from where it is now, and
+     * a jump that silently lands somewhere unexpected is worse than one that says why.
+     *
+     * Nothing is changed when no genuine fix exists — inventing a point is the one thing this
+     * action must not do.
+     */
+    fun jumpToRealLocation(onArrived: (GeoPoint) -> Unit = {}) {
+        scope.launch {
+            // IO, not Default: a stalled system_server must not eat a CPU-sized pool thread, and
+            // the caller cannot cancel a transaction that is already in flight.
+            val fix = withContext(Dispatchers.IO) { bridge.realFix() }
+            if (fix == null) {
+                // CHECKING is the 6 s startup grace, not "the module is missing": telling a user
+                // their module is inactive while it is still handshaking is a false alarm.
+                showMessage(
+                    app.getString(
+                        if (bridge.link.value == ModuleLink.INACTIVE) {
+                            R.string.map_real_jump_no_module
+                        } else {
+                            R.string.map_real_jump_missing
+                        },
+                    ),
+                )
+                return@launch
+            }
+            // A fix without an altitude keeps the configured one: 0 m would silently edit a value
+            // the user set, and "no altitude" is not "sea level".
+            val alt = if (fix.hasAlt) fix.alt else currentPosition().alt
+            val point = GeoPoint(fix.lat, fix.lon, alt)
+            if (!point.isValidLatLon()) {
+                showMessage(app.getString(R.string.map_real_jump_missing))
+                return@launch
+            }
+            setPosition(point)
+            // Fmt.coord hard-codes Locale.US, exactly like every other coordinate in the app: the
+            // format string's `%.6f` would otherwise render "31,230416, 121,473700" on a
+            // comma-decimal device, i.e. two numbers fused into one unreadable line.
+            val lat = Fmt.coord(fix.lat)
+            val lon = Fmt.coord(fix.lon)
+            // Only a genuinely old (or unknown-age) fix is called out; "2 分钟前" on every jump
+            // would be noise, and reporting an unknown time as "just now" would be a lie.
+            val minutes = fix.ageMs / 60_000L
+            val message = when {
+                fix.ageMs < 0L -> app.getString(R.string.map_real_jump_unknown_age, lat, lon)
+                fix.ageMs >= REAL_FIX_STALE_MS && minutes >= 90L ->
+                    app.getString(R.string.map_real_jump_stale_hours, lat, lon, minutes / 60L)
+                fix.ageMs >= REAL_FIX_STALE_MS ->
+                    app.getString(R.string.map_real_jump_stale_minutes, lat, lon, minutes)
+                else -> app.getString(R.string.map_real_jump_done, lat, lon)
+            }
+            showMessage(message)
+            onArrived(point)
+        }
+    }
 
     // ---------------------------------------------------------------- engine
 
@@ -470,4 +534,9 @@ class AppController(
     /** Distance from the current simulated position, for the favourites list. */
     fun distanceFromCurrent(place: FavoritePlace): Double =
         GeoMath.distanceMeters(currentPosition(), place.point)
+
+    private companion object {
+        /** A real fix older than this is announced with its age instead of as current. */
+        const val REAL_FIX_STALE_MS: Long = 120_000L
+    }
 }

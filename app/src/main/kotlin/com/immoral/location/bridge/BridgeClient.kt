@@ -19,6 +19,7 @@ import com.immoral.location.core.route.RoutePlan
 import com.immoral.location.ipc.IImmoralEngine
 import com.immoral.location.ipc.IImmoralStateCallback
 import com.immoral.location.ipc.WireResult
+import com.immoral.location.ipc.WireRealFix
 import com.immoral.location.ipc.WireState
 import com.immoral.location.ipc.toCore
 import com.immoral.location.ipc.toWire
@@ -426,6 +427,24 @@ class BridgeClient(context: Context) {
     /** Re-reads the engine snapshot (after the link came up, or from a refresh affordance). */
     fun requestState() {
         if (engine == null) sendHello() else pullSnapshot()
+    }
+
+    /**
+     * 回到真实位置: the newest **genuine** fix the framework holds, or `null`.
+     *
+     * A synchronous binder read, like [snapshot], so call it off the main thread. `null` is
+     * ambiguous by itself — no engine, or an engine that has never seen a real fix — so the caller
+     * checks [link] to say which. A transport failure drops the link exactly like any other call,
+     * because a dead binder must not be mistaken for "the device is nowhere".
+     */
+    fun realFix(): WireRealFix? {
+        val iface = engine ?: return null
+        return try {
+            iface.realFix()
+        } catch (t: Throwable) {
+            dropLink(describe(t))
+            null
+        }
     }
 
     fun setPosition(point: GeoPoint) = call(LABEL_POSITION, userFacing = true) { iface, id ->

@@ -1302,6 +1302,19 @@ object LocationHooks {
     /** Real (non-fabricated) last location per provider — kept so independent mode can hand it back. */
     private val realLast = ConcurrentHashMap<String, Location>()
 
+    /**
+     * The subset of [realLast] that came in through the **report path** and therefore passed
+     * [rememberReal]'s checks at the moment it was seen.
+     *
+     * Kept apart because the two maps answer different questions: [anyRealFix] serves unknown
+     * callers and must never hand back our own fix, so it re-checks the *current* simulation snap on
+     * every read — which is exactly wrong for 回到真实位置 once the user has jumped onto the real
+     * point (the genuine fix then sits inside the snap's 150 m window and would be discarded as
+     * ours). Values here were never accepted near a snap or a fabricated point, so a read only has
+     * to reject object-identity fabrications.
+     */
+    private val realReported = ConcurrentHashMap<String, Location>()
+
     /** Identity map: listener transport/registration instance -> receiving package. */
     private val identityByObject: MutableMap<Any, String> =
         java.util.Collections.synchronizedMap(java.util.IdentityHashMap<Any, String>())
@@ -1322,7 +1335,12 @@ object LocationHooks {
             // A delayed report of an earlier fake can arrive after the engine has moved, so the
             // current-snap test alone is not enough: check the recent fabricated set as well.
             if (Fakes.matchesFabricatedPoint(location.latitude, location.longitude)) continue
-            realLast[provider] = location
+            // Copy: the manager keeps the reference and re-stamps `elapsedRealtimeNanos` on it, so a
+            // stored original would look fresher than it is — which is the one thing a "where am I
+            // really" answer must not do (and it would win the newest-fix contest in latestRealFix).
+            val copy = Location(location)
+            realLast[provider] = copy
+            realReported[provider] = copy
         }
     }
 
@@ -1701,6 +1719,83 @@ object LocationHooks {
         }
         return null
     }
+
+    /**
+     * The newest genuine fix this process knows, for the app's 回到真实位置 action.
+     *
+     * The app cannot ask `LocationManager` — the module spoofs every caller, so our own process
+     * would be answered with the simulated point. The real world only survives in [realReported]
+     * (report-path captures, already checked against the snap when they were seen) and in
+     * [realLast] (the same plus the provider caches captured before the first injection).
+     *
+     * The rule is **newest first, then judge that one** — the opposite was the first version of this
+     * method and it broke the feature after a single use: filtering every candidate by the current
+     * snap threw away the genuine fix as soon as the user had jumped onto it, and the read fell
+     * through to *another provider's older, coarser* value, i.e. a jump to a wrong place labelled
+     * "真实位置". Picking the newest and then rejecting it (null) is the honest outcome when the
+     * newest cannot be proven genuine.
+     *
+     * Returns `null` when nothing genuine is known, which the app reports instead of teleporting
+     * somewhere invented.
+     */
+    fun latestRealFix(): Location? {
+        // A user pressing the button with the engine stopped is the one case where the provider
+        // cache can still hold a real fix: nothing has replaced it yet. Read it then, and only then
+        // — during a running engine the injected value owns that cache, and a cross-thread read
+        // would race the provider manager's lock for no benefit.
+        if (realLast.isEmpty() && EngineRuntime.activeSnap() == null) captureRealLastStandalone()
+
+        var newest: Location? = null
+        var newestTrusted = false
+        fun consider(candidate: Location, trusted: Boolean) {
+            if (Fakes.containsFabricated(candidate)) return
+            val best = newest
+            if (best != null) {
+                val order = candidate.elapsedRealtimeNanos.compareTo(best.elapsedRealtimeNanos)
+                if (order < 0) return
+                // Equal stamps: prefer the report-path copy, whose provenance we can defend.
+                if (order == 0 && !trusted) return
+            }
+            newest = candidate
+            newestTrusted = trusted
+        }
+        realLast.values.forEach { consider(it, trusted = false) }
+        realReported.values.forEach { consider(it, trusted = true) }
+
+        val winner = newest ?: return null
+        // [realReported] entries were filtered against the snap and the fabricated ring when they
+        // were captured, so they stay trustworthy even if the simulation now sits on top of them.
+        if (!newestTrusted) {
+            val snap = EngineRuntime.activeSnap()
+            if (snap != null && coordinatesMatchSnap(winner, snap)) return null
+            if (Fakes.matchesFabricatedPoint(winner.latitude, winner.longitude)) return null
+        }
+        return winner
+    }
+
+    /**
+     * [captureRealLastKnown] from a binder thread instead of the engine thread.
+     *
+     * The hooks that stand between us and the platform answer spoofed callers with the simulated
+     * fix unless the reentrancy guard is held, so the guard is taken here exactly like [inject]
+     * does. Nothing else is shared with the engine: the capture only reads the provider managers
+     * and writes [realLast].
+     */
+    private fun captureRealLastStandalone() {
+        if (reentrant.get() == true) return
+        reentrant.set(true)
+        try {
+            // An earlier engine run may have exhausted its own retries indoors; a user pressing
+            // 回到真实位置 is a fresh reason to look again.
+            snapshotGaveUp = false
+            captureRealLastKnown()
+        } catch (t: Throwable) {
+            Log.once("realfix.capture", "real-fix capture failed: ${t.javaClass.simpleName}")
+        } finally {
+            reentrant.set(false)
+        }
+    }
+
     private fun lastLocationHook(label: String): XC_MethodHook = object : XC_MethodHook() {
         override fun beforeHookedMethod(param: MethodHookParam) {
             try {

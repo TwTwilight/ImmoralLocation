@@ -15,6 +15,7 @@ import com.immoral.location.ipc.IImmoralStateCallback;
 import com.immoral.location.ipc.WireConfig;
 import com.immoral.location.ipc.WireDiagnostics;
 import com.immoral.location.ipc.WirePoint;
+import com.immoral.location.ipc.WireRealFix;
 import com.immoral.location.ipc.WireRoute;
 import com.immoral.location.ipc.WireState;
 
@@ -87,4 +88,19 @@ interface IImmoralEngine {
 
     /** Drops a subscription. Safe to call with an unknown callback. */
     oneway void unregisterCallback(IImmoralStateCallback callback);
+
+    /**
+     * Newest **genuine** fix the framework itself has observed, or `null` when it has none.
+     *
+     * This is the only way the app can learn where the device physically is: the module spoofs
+     * `LocationManagerService` for every process, so a `LocationManager` query from our own app
+     * returns the simulated point. The framework keeps the real reports it replaces
+     * (`LocationHooks.realLast`), and this read exposes them without ever handing them to another
+     * app. `ageMs` lets the caller say how old the fix is instead of presenting it as current.
+     *
+     * Appended last on purpose: existing transaction ids are unchanged, so a client built against
+     * the previous protocol can still decode every earlier call. It is the `apiVersion()` check, not
+     * this method, that decides whether such a client is allowed to talk to this build at all.
+     */
+    WireRealFix realFix();
 }

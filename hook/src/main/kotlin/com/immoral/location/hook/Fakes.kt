@@ -21,6 +21,9 @@ import java.lang.reflect.Method
  */
 object Fakes {
 
+    /** How many fabricated points the anti-contamination trail keeps (see [fabricatedPoints]). */
+    private const val FABRICATED_TRAIL_MAX = 512
+
     // ------------------------------------------------------------------ Location
 
     /**
@@ -247,13 +250,21 @@ object Fakes {
     private var locationResultResolved = false
 
     /** LocationResults built by this module — used to tell our synthetic fixes from real ones. */
-    /** Last points this module fabricated; a fake can come back to us long after we made it. */
+    /**
+     * Points this module fabricated, newest last; a fake can come back to us long after we made it.
+     *
+     * 512 entries ≈ 8.5 minutes at the default 1 Hz tick. The 64-entry ring this used to be was
+     * shorter than a real delay: measured 2026-11-03, a report of the *previous* simulated point
+     * arrived after the simulation had already moved 1 100 km away, its entry had been evicted, and
+     * 回到真实位置 captured it as "the real fix" — one tap later the marker teleported back into the
+     * fake. Delays are seconds, not minutes, so this window makes that impossible in practice.
+     */
     private val fabricatedPoints: ArrayDeque<DoubleArray> = ArrayDeque()
 
     private fun rememberFabricatedPoint(lat: Double, lon: Double) {
         synchronized(fabricatedPoints) {
             fabricatedPoints.addLast(doubleArrayOf(lat, lon))
-            while (fabricatedPoints.size > 64) fabricatedPoints.removeFirst()
+            while (fabricatedPoints.size > FABRICATED_TRAIL_MAX) fabricatedPoints.removeFirst()
         }
     }
 

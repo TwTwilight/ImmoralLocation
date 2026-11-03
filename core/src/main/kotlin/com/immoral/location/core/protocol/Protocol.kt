@@ -44,5 +44,9 @@ const val CORE_ENGINE_VERSION: String = "1.0.0"
  * layout is positional: a mismatch would silently decode into garbage instead of failing. The app
  * therefore compares this value against `IImmoralEngine.apiVersion()` and reports "restart the
  * device" rather than trusting a different layout.
+ *
+ * History: 1 = binder bridge; 2 = `realFix()` (回到真实位置) added — a *new* struct and a method
+ * appended to the interface, so an older client still speaks version 1 correctly and is refused
+ * only because this constant moved.
  */
-const val IPC_API_VERSION: Int = 1
+const val IPC_API_VERSION: Int = 2

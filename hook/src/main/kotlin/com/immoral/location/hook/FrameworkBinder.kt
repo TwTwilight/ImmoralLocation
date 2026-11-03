@@ -9,11 +9,13 @@ import android.os.RemoteException
 import android.os.SystemClock
 import com.immoral.location.core.protocol.CORE_ENGINE_VERSION
 import com.immoral.location.core.protocol.IPC_API_VERSION
+import com.immoral.location.hook.framework.LocationHooks
 import com.immoral.location.ipc.IImmoralEngine
 import com.immoral.location.ipc.IImmoralStateCallback
 import com.immoral.location.ipc.WireConfig
 import com.immoral.location.ipc.WireDiagnostics
 import com.immoral.location.ipc.WirePoint
+import com.immoral.location.ipc.WireRealFix
 import com.immoral.location.ipc.WireRestart
 import com.immoral.location.ipc.WireResult
 import com.immoral.location.ipc.WireRoute
@@ -121,6 +123,33 @@ object FrameworkBinder {
             return EngineRuntime.currentDiagnostics()
         }
 
+        /**
+         * 回到真实位置: the newest genuine fix the framework knows, or `null`.
+         *
+         * Reads only maps the location hooks keep updated, so it cannot block the engine thread and
+         * cannot be answered with our own fabricated fix. Kept out of [WireState] on purpose — the
+         * app's 2 Hz snapshot is the simulated point and must never carry a real one.
+         */
+        override fun realFix(): WireRealFix? {
+            assertAuthorized()
+            val fix = LocationHooks.latestRealFix() ?: return null
+            val hasAlt = try {
+                fix.hasAltitude()
+            } catch (_: Throwable) {
+                false
+            }
+            return WireRealFix(
+                lat = fix.latitude,
+                lon = fix.longitude,
+                alt = if (hasAlt) fix.altitude else 0.0,
+                accuracyMeters = if (fix.hasAccuracy()) fix.accuracy.toDouble() else 0.0,
+                provider = fix.provider ?: "",
+                // Unknown timestamp (0) is reported as -1: "no age" must not read as "just now".
+                ageMs = ageOf(fix.elapsedRealtimeNanos),
+                hasAlt = hasAlt,
+            )
+        }
+
         override fun registerCallback(callback: IImmoralStateCallback?, minIntervalMs: Int) {
             if (!authorized() || callback == null) return
             subscribe(callback, minIntervalMs)
@@ -139,6 +168,23 @@ object FrameworkBinder {
 
     /** The object handed out inside the handshake reply. */
     val engineInterface: IImmoralEngine get() = engine
+
+    /**
+     * Age of a fix in milliseconds, or -1 when the platform never stamped it.
+     *
+     * A `Location` rebuilt from an old parcel can carry `elapsedRealtimeNanos == 0`, and treating
+     * that as "now" would present a stale fix as current. A negative age is the honest answer, and
+     * the app simply leaves the age out of its message for it.
+     */
+    private fun ageOf(elapsedRealtimeNanos: Long): Long {
+        if (elapsedRealtimeNanos <= 0L) return -1L
+        return try {
+            val now = android.os.SystemClock.elapsedRealtimeNanos()
+            ((now - elapsedRealtimeNanos) / 1_000_000L).coerceAtLeast(0L)
+        } catch (_: Throwable) {
+            -1L
+        }
+    }
 
     fun install() {
         EngineRuntime.addStateListener { state -> dispatchState(state) }

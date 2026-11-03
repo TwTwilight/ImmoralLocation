@@ -180,6 +180,60 @@ data class WireState(
     }
 }
 
+/**
+ * The newest **genuine** fix the framework holds, as read by `IImmoralEngine.realFix()`.
+ *
+ * Kept apart from [WireState] on purpose: the simulated point is the product, this is the answer to
+ * "where is the phone actually?", and mixing the two into one snapshot would invite the UI to
+ * print a real coordinate where the user expects the simulated one.
+ *
+ * [ageMs] is measured against `SystemClock.elapsedRealtime()` at the moment of the read, so the
+ * caller can say "定位来自 N 分钟前" instead of passing a stale fix off as current.
+ */
+data class WireRealFix(
+    val lat: Double,
+    val lon: Double,
+    val alt: Double,
+    val accuracyMeters: Double,
+    val provider: String,
+    val ageMs: Long,
+    /**
+     * Whether [alt] is a real altitude.
+     *
+     * Appended last so the layout only grows. Without it a fix that carries no altitude would be
+     * indistinguishable from one at sea level, and the jump would silently reset the simulated
+     * altitude to 0 m instead of keeping the user's value.
+     */
+    val hasAlt: Boolean = false,
+) : Parcelable {
+
+    override fun describeContents(): Int = 0
+
+    override fun writeToParcel(dest: Parcel, flags: Int) {
+        dest.writeDouble(lat)
+        dest.writeDouble(lon)
+        dest.writeDouble(alt)
+        dest.writeDouble(accuracyMeters)
+        dest.writeString(provider)
+        dest.writeLong(ageMs)
+        dest.writeInt(if (hasAlt) 1 else 0)
+    }
+
+    companion object CREATOR : Parcelable.Creator<WireRealFix> {
+        override fun createFromParcel(parcel: Parcel): WireRealFix = WireRealFix(
+            lat = parcel.readDouble(),
+            lon = parcel.readDouble(),
+            alt = parcel.readDouble(),
+            accuracyMeters = parcel.readDouble(),
+            provider = parcel.readString() ?: "",
+            ageMs = parcel.readLong(),
+            hasAlt = parcel.readInt() != 0,
+        )
+
+        override fun newArray(size: Int): Array<WireRealFix?> = arrayOfNulls(size)
+    }
+}
+
 data class WireRoute(
     val points: List<WirePoint>,
     val repeat: Boolean,

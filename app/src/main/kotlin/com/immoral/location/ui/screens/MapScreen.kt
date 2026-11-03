@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.SportsEsports
@@ -154,7 +155,7 @@ data class MapFocusRequest(val point: GeoPoint, val nonce: Long = System.nanoTim
  * Layout, all overlaying the map:
  *  * top: pill search bar (56dp) + the tools avatar;
  *  * top-centre, under the search bar: the **only** snackbar host in the app;
- *  * right edge: vertical FAB stack (图层 / 摇杆 / 定位), fading out when the sheet is full;
+ *  * right edge: vertical FAB stack (图层 / 摇杆 / 定位 / 真实位置), fading out when the sheet is full;
  *  * bottom-start (above the sheet): the opt-in joystick;
  *  * bottom: the M3 bottom sheet with peek / half / full detents.
  *
@@ -183,6 +184,7 @@ fun MapScreen(
     onSearchSubmit: () -> Unit,
     onOpenTools: () -> Unit,
     onOpenLayers: () -> Unit,
+    onJumpReal: () -> Unit,
     onToggleRun: () -> Unit,
     onSpeedSelect: (SpeedLevel) -> Unit,
     onJoystick: (Float, Float) -> Unit,
@@ -542,7 +544,9 @@ fun MapScreen(
         // window cannot hold search + 工具 + plate side by side. Both are measured here and drive one
         // set of consequences, so every form factor takes the same code path.
         val chromeRowDp = 56.dp + Dimens.chromeGap * 2
-        val plateDp = Dimens.fabSize * 3 + 2.dp
+        // Four buttons + three 1 dp dividers (the plate's own 8 dp of vertical padding is left out
+        // here exactly as it was for three, so the collision test stays a floor, not an estimate).
+        val plateDp = Dimens.fabSize * 4 + 3.dp
         val bandDp = with(density) { (totalPx - sheetPx).coerceAtLeast(0f).toDp() }
         val rowAvailDp = with(density) { totalWidthPx.toDp() } - Dimens.chromeMargin * 2
         val rowNeeds = 140.dp + Dimens.chromeGap + 96.dp + Dimens.chromeGap + Dimens.fabGroupWidth
@@ -897,6 +901,19 @@ fun MapScreen(
                     contentDescription = stringResource(R.string.map_back_to_position),
                     onClick = { backend.animateTo(position) },
                     tag = "e2e.fab.locate",
+                    grouped = true,
+                )
+                ChromeFabGroupDivider()
+                // 回到真实位置: the phone's own position, not the simulated one. The plate is
+                // icon-only, so the glyph has to carry the difference on its own: a GNSS crosshair
+                // (GpsFixed) rather than a second MyLocation arrow, which would be the same picture
+                // twice with two different meanings. TalkBack reads 回到真实位置 via the content
+                // description.
+                ChromeFab(
+                    icon = Icons.Filled.GpsFixed,
+                    contentDescription = stringResource(R.string.map_real_location),
+                    onClick = onJumpReal,
+                    tag = "e2e.fab.real",
                     grouped = true,
                 )
             }

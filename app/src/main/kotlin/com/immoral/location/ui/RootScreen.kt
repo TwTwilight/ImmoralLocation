@@ -475,6 +475,13 @@ fun RootScreen(app: App, initialSearch: String? = null) {
                     onSearchSubmit = { submitSearchText(query) },
                     onOpenTools = { detent = SheetDetent.HALF },
                     onOpenLayers = { modal = ModalSheet.LAYERS },
+                    onJumpReal = {
+                        // 回到真实位置 reads the fix from the module and only then moves both the
+                        // simulation and the camera, so the map follows the point that actually
+                        // arrived instead of a guess made before the binder answered.
+                        ensureNotificationPermission()
+                        controller.jumpToRealLocation { point -> focusRequest = MapFocusRequest(point) }
+                    },
                     onToggleRun = startRun,
                     onSpeedSelect = controller::setSpeed,
                     onJoystick = controller::joystick,
