@@ -294,6 +294,10 @@ fun MapScreen(
         if (detent != SheetDetent.PEEK) {
             pendingPoint = null
             tapChip = null
+            // Expanding the sheet means the user moved on from typing: the field gives up focus so
+            // the keyboard and the suggestion card do not sit on top of the panel.
+            focusManager.clearFocus()
+            keyboardController?.hide()
         }
     }
 
@@ -689,7 +693,9 @@ fun MapScreen(
             val parsedCoordinate = remember(query) {
                 CoordinateParser.parse(query.trim())
             }
-            val showSuggestions = !pickMode && query.isNotBlank() &&
+            // The card belongs to the peek state: at HALF/FULL the tools or the planner is the
+            // subject and a floating result list would cover it.
+            val showSuggestions = !pickMode && detent == SheetDetent.PEEK && query.isNotBlank() &&
                 (parsedCoordinate != null || searchState.loading ||
                     searchState.error != null || searchState.results.isNotEmpty())
             if (showSuggestions) {
